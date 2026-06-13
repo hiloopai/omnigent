@@ -50,7 +50,13 @@ permissions:
 
 concurrency:
   group: maintainer-approval-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  # Do not cancel in-progress runs. For a fork PR the pull_request_review
+  # run is the only one that can post the status (the fork pull_request
+  # token is read-only and skips the POST), so cancelling it would leave
+  # the required check permanently unreported. Each run re-reads live
+  # review state and the POST is idempotent, so letting queued runs finish
+  # in order is safe and converges on the latest verdict.
+  cancel-in-progress: false
 
 jobs:
   evaluate:
