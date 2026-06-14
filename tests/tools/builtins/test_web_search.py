@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from omnigent.tools.base import ToolContext
 from omnigent.tools.builtins import get_builtin_tool
 from omnigent.tools.builtins.web_search import WebSearchTool
+from omnigent.tools.builtins.web_search_nimble import _resolve_max_results
 
 # ── Registry ─────────────────────────────────────────
 
@@ -224,8 +226,7 @@ def test_nimble_backend_via_spec_config(tool_ctx: ToolContext) -> None:
 
 def test_nimble_answer_shown_first_when_present(tool_ctx: ToolContext) -> None:
     """
-    A non-null ``answer`` (enterprise answer mode) is shown before
-    the result list.
+    A non-null ``answer`` is shown before the result list.
     """
     fake_response = MagicMock()
     fake_response.json.return_value = {
@@ -287,8 +288,59 @@ def test_nimble_spec_config_used_in_http_call(tool_ctx: ToolContext) -> None:
     assert body["query"] == "test"
     # max_results comes from config as a str ("7") and must be coerced to int.
     assert body["max_results"] == 7, f"Expected int 7, got {body['max_results']!r}"
-    # Default tier is the non-enterprise 'lite' (never 'fast').
+    # Default tier is 'lite'.
     assert body["search_depth"] == "lite"
+
+
+def test_nimble_http_error_returns_error_string(tool_ctx: ToolContext) -> None:
+    """An HTTP error (e.g. 401) is returned as a string, never raised."""
+    fake_response = MagicMock()
+    fake_response.status_code = 401
+    tool = WebSearchTool(
+        config={"search_provider": "nimble", "api_key": "k"},
+        llm_provider="anthropic",
+    )
+    with patch("omnigent.tools.builtins.web_search_nimble.httpx.post") as mock_post:
+        mock_post.side_effect = httpx.HTTPStatusError(
+            "401", request=MagicMock(), response=fake_response
+        )
+        result = tool.invoke(json.dumps({"query": "test"}), tool_ctx)
+    assert "Nimble search error" in result
+    assert "401" in result
+
+
+def test_nimble_answer_kept_when_no_results(tool_ctx: ToolContext) -> None:
+    """A non-null ``answer`` is returned even when ``results`` is empty."""
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"answer": "Direct answer.", "results": []}
+    tool = WebSearchTool(
+        config={"search_provider": "nimble", "api_key": "k"},
+        llm_provider="anthropic",
+    )
+    with patch("omnigent.tools.builtins.web_search_nimble.httpx.post") as mock_post:
+        mock_post.return_value = fake_response
+        result = tool.invoke(json.dumps({"query": "test"}), tool_ctx)
+    assert result == "Direct answer.", f"Answer must not be dropped, got {result!r}"
+
+
+def test_nimble_rejects_unsupported_search_depth(tool_ctx: ToolContext) -> None:
+    """An unsupported ``search_depth`` is rejected with a clear error, no HTTP call."""
+    tool = WebSearchTool(
+        config={"search_provider": "nimble", "api_key": "k", "search_depth": "fast"},
+        llm_provider="anthropic",
+    )
+    with patch("omnigent.tools.builtins.web_search_nimble.httpx.post") as mock_post:
+        result = tool.invoke(json.dumps({"query": "test"}), tool_ctx)
+    assert "search_depth" in result
+    assert mock_post.call_count == 0, "Must not call the API for an invalid search_depth."
+
+
+def test_nimble_max_results_clamped() -> None:
+    """``max_results`` is coerced + clamped to Nimble's 1-100 range; junk → default."""
+    assert _resolve_max_results({}) == 5  # missing → default
+    assert _resolve_max_results({"max_results": "0"}) == 1  # below min → clamped up
+    assert _resolve_max_results({"max_results": "500"}) == 100  # above max → clamped down
+    assert _resolve_max_results({"max_results": "abc"}) == 5  # non-numeric → default
 
 
 # ── No search_provider set ───────────────────────────

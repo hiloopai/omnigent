@@ -38,9 +38,10 @@ _DEFAULT_NIMBLE_URL = "https://sdk.nimbleway.com/v1/search"
 # Nimble accepts 1-100; the API's own default is small (3).
 _DEFAULT_MAX_RESULTS: int = 5
 
-# Nimble's standard (non-enterprise) search tier. ``fast`` is enterprise
-# and intentionally not selectable here.
+# Supported search tiers. Non-default values are validated against this allowlist
+# so a misconfigured spec gets a clear error rather than an opaque API failure.
 _DEFAULT_SEARCH_DEPTH = "lite"
+_VALID_SEARCH_DEPTHS = frozenset({"lite", "deep"})
 
 
 def _nimble_url() -> str:
@@ -80,6 +81,12 @@ def _search_nimble(
     api_key = config.get("api_key")
     if not api_key:
         return "Error: api_key must be provided in the web_search config in config.yaml."
+    search_depth = config.get("search_depth", _DEFAULT_SEARCH_DEPTH)
+    if search_depth not in _VALID_SEARCH_DEPTHS:
+        return (
+            f"Error: unsupported search_depth {search_depth!r}. "
+            f"Use one of: {', '.join(sorted(_VALID_SEARCH_DEPTHS))}."
+        )
     try:
         resp = httpx.post(
             _nimble_url(),
@@ -90,7 +97,7 @@ def _search_nimble(
             json={
                 "query": query,
                 "max_results": _resolve_max_results(config),
-                "search_depth": config.get("search_depth", _DEFAULT_SEARCH_DEPTH),
+                "search_depth": search_depth,
             },
             timeout=30.0,
         )
@@ -111,15 +118,16 @@ def _format_results(data: dict[str, Any]) -> str:
     "content", ...}], "answer": str | None, ...}``. In the ``lite``
     tier ``content`` is absent and ``description`` carries the snippet,
     so we prefer ``content`` and fall back to ``description``. If the
-    response includes a non-null ``answer`` (enterprise answer mode),
-    it is shown first.
+    response includes a non-null ``answer``, it is shown first.
 
     :param data: The parsed JSON response from Nimble.
     :returns: An optional answer followed by numbered results.
     """
     results = data.get("results", [])
+    answer = data.get("answer")
     if not results:
-        return "No results found."
+        # Don't discard an answer just because the result list is empty.
+        return answer or "No results found."
 
     formatted: list[str] = []
     for i, item in enumerate(results):
@@ -129,7 +137,6 @@ def _format_results(data: dict[str, Any]) -> str:
         formatted.append(f"{i + 1}. {title}\n   {url}\n   {snippet}")
     body = "\n\n".join(formatted)
 
-    answer = data.get("answer")
     if answer:
         return f"{answer}\n\n{body}"
     return body
