@@ -263,7 +263,7 @@ jobs:
       TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       ALLOWED: ${{ needs.resolve.outputs.allowed }}
       REASON: ${{ needs.resolve.outputs.reason }}
-      E2E_UI_RESULT: ${{ needs.e2e-ui.result }}
+      E2E_UI_RESULT: ${{ needs['e2e-ui'].result }}
     steps:
       - name: Post final status
         run: |

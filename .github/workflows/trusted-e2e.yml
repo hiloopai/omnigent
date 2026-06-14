@@ -53,6 +53,7 @@ jobs:
       pull_number: ${{ steps.pr.outputs.pull_number }}
       head_sha: ${{ steps.pr.outputs.head_sha }}
       head_repo: ${{ steps.pr.outputs.head_repo }}
+      force_all_tests: ${{ steps.pr.outputs.force_all_tests }}
       allowed: ${{ steps.trust.outputs.allowed }}
       reason: ${{ steps.trust.outputs.reason }}
     steps:
@@ -71,7 +72,7 @@ jobs:
         run: |
           echo "pull_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           gh api "repos/$REPO/pulls/$PR_NUMBER" \
-            --jq '"head_sha=\(.head.sha)\nhead_repo=\(.head.repo.full_name)"' >> "$GITHUB_OUTPUT"
+            --jq '"head_sha=\(.head.sha)\nhead_repo=\(.head.repo.full_name)\nforce_all_tests=\(.labels | map(.name) | index("force-all-tests") != null)"' >> "$GITHUB_OUTPUT"
 
       - name: Load maintainers
         id: maintainers
@@ -181,7 +182,7 @@ jobs:
           PARALLELISM_INPUT: "2"
           SHARD_ID: ${{ matrix.shard_id }}
           NUM_SHARDS: ${{ matrix.num_shards }}
-          FORCE_ALL_TESTS: ${{ contains(github.event.pull_request.labels.*.name, 'force-all-tests') }}
+          FORCE_ALL_TESTS: ${{ needs.resolve.outputs.force_all_tests }}
           NIGHTLY_FULL: "false"
           E2E_TMP_BASE: /tmp/omnigent-e2e-${{ github.run_id }}-shard${{ matrix.shard_id }}
           PYTEST_PROGRESS_LOG_DIR: /tmp/omnigent-e2e-${{ github.run_id }}-shard${{ matrix.shard_id }}/progress
