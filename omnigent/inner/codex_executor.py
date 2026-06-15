@@ -30,6 +30,7 @@ from omnigent.spec.types import RetryPolicy
 from ._subprocess_lifecycle import close_subprocess_transport
 from .databricks_executor import (
     _read_databrickscfg,
+    _read_databrickscfg_host,
 )
 from .datamodel import OSEnvSandboxSpec, OSEnvSpec
 from .executor import (
@@ -2064,13 +2065,18 @@ class CodexExecutor(Executor):
                 # No gateway host supplied directly: derive the transport from
                 # a Databricks profile (the Databricks producer's fallback).
                 creds = _read_databrickscfg(databricks_profile)
-                if creds is None:
+                host = (
+                    creds.host
+                    if creds is not None
+                    else _read_databrickscfg_host(databricks_profile)
+                )
+                if not host:
                     raise OSError(
                         "CodexExecutor(gateway=True) requires gateway credentials via "
                         "the gateway base URL / auth command or a valid "
                         "~/.databrickscfg profile."
                     )
-                host = creds.host.rstrip("/")
+                host = host.rstrip("/")
                 base_url = (
                     base_url_override
                     if base_url_override is not None
