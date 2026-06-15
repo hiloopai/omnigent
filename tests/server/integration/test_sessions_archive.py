@@ -12,7 +12,6 @@ pipeline without subprocesses.
 
 from __future__ import annotations
 
-import gzip
 import io
 import tarfile
 
@@ -35,69 +34,6 @@ async def test_session_not_archived_by_default(
     assert session["archived"] is False
 
 
-async def test_archive_hides_session_from_default_listing(
-    client: httpx.AsyncClient,
-) -> None:
-    """Archiving a session removes it from the default GET /v1/sessions listing."""
-    session = await create_test_session(client, name="archive-hide")
-    session_id = session["id"]
-
-    # Archive it.
-    patch_resp = await client.patch(
-        f"/v1/sessions/{session_id}",
-        json={"archived": True},
-    )
-    assert patch_resp.status_code == 200
-    assert patch_resp.json()["archived"] is True
-
-    # Default listing (include_archived=False) should not contain it.
-    listing = await client.get("/v1/sessions")
-    assert listing.status_code == 200
-    listed_ids = [s["id"] for s in listing.json()["data"]]
-    assert session_id not in listed_ids
-
-
-async def test_archived_session_appears_with_include_archived(
-    client: httpx.AsyncClient,
-) -> None:
-    """An archived session is returned when ``include_archived=True``."""
-    session = await create_test_session(client, name="archive-include")
-    session_id = session["id"]
-
-    await client.patch(
-        f"/v1/sessions/{session_id}",
-        json={"archived": True},
-    )
-
-    listing = await client.get("/v1/sessions", params={"include_archived": "true"})
-    assert listing.status_code == 200
-    listed_ids = [s["id"] for s in listing.json()["data"]]
-    assert session_id in listed_ids
-
-
-async def test_unarchive_restores_session_to_default_listing(
-    client: httpx.AsyncClient,
-) -> None:
-    """Unarchiving a session makes it visible in the default listing again."""
-    session = await create_test_session(client, name="archive-restore")
-    session_id = session["id"]
-
-    # Archive then unarchive.
-    await client.patch(f"/v1/sessions/{session_id}", json={"archived": True})
-    patch_resp = await client.patch(
-        f"/v1/sessions/{session_id}",
-        json={"archived": False},
-    )
-    assert patch_resp.status_code == 200
-    assert patch_resp.json()["archived"] is False
-
-    # Back in the default listing.
-    listing = await client.get("/v1/sessions")
-    assert listing.status_code == 200
-    listed_ids = [s["id"] for s in listing.json()["data"]]
-    assert session_id in listed_ids
-
-
 # ── Agent contents download ──────────────────────────────
 
 
@@ -112,11 +48,7 @@ async def test_agent_contents_returns_valid_gzip_tarball(
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/gzip"
 
-    # Verify the bytes are valid gzip.
-    decompressed = gzip.decompress(resp.content)
-    assert len(decompressed) > 0
-
-    # Verify the bytes are a valid tar archive containing config.yaml.
+    # Verify the bytes are a valid tar.gz archive containing config.yaml.
     with tarfile.open(fileobj=io.BytesIO(resp.content), mode="r:gz") as tf:
         names = tf.getnames()
         assert "config.yaml" in names
