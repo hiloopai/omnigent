@@ -88,10 +88,13 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Check out CI scripts from main
+      - name: Check out CI scripts
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
-          ref: main             # trusted; the matrix script is not PR-controlled
+          # Triggering ref (not pinned to main): the script must exist on the
+          # running ref, and it is not a security gate -- it only shards tests
+          # and can't expose secrets (fork pull_request has none), so the PR's
+          # own copy is fine.
           sparse-checkout: .github/scripts/ci
           persist-credentials: false
       - name: Compute shard matrix
