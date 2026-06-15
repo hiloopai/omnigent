@@ -199,10 +199,17 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
           CHANGED: ${{ steps.push.outputs.changed }}
+          # App token used → push re-triggers CI; skipped (GITHUB_TOKEN fallback) → it won't.
+          APP_USED: ${{ steps.app-token.conclusion == 'success' }}
         run: |
           if [ "$CHANGED" = "true" ]; then
-            gh pr comment "$ISSUE" --repo "$REPO" \
-              --body "✅ Regenerated \`uv.lock\` + \`ap-web/package-lock.json\` against public PyPI/npm and pushed to this PR. CI will re-run on the new commit."
+            base="✅ Regenerated \`uv.lock\` + \`ap-web/package-lock.json\` against public PyPI/npm and pushed to this PR."
+            if [ "$APP_USED" = "true" ]; then
+              body="$base CI will re-run on the new commit."
+            else
+              body="$base ⚠️ No regen App configured, so this push won't auto-trigger CI — push any commit (or amend) to re-run checks."
+            fi
+            gh pr comment "$ISSUE" --repo "$REPO" --body "$body"
           else
             gh pr comment "$ISSUE" --repo "$REPO" \
               --body "ℹ️ Lockfiles already current against public PyPI/npm — nothing to regenerate."
