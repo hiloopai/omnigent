@@ -4,8 +4,9 @@ Runs ``omnigent run hello_world.yaml --harness cursor -p "..."`` as a real
 subprocess and asserts structural invariants (exit 0, a non-trivial assistant
 reply). This is the end-to-end gate for the cursor harness: the full path
 from CLI parse → spec materialize → spawn the ``cursor`` harness subprocess
-→ :class:`CursorExecutor` driving ``cursor-agent --print --output-format
-stream-json`` → stream-json parse → ``TurnComplete`` → the ``-p`` one-shot
+→ :class:`CursorExecutor` driving a persistent ``cursor-agent acp`` session
+(ACP / JSON-RPC over stdio: ``session/new`` → ``session/prompt`` streaming
+``session/update`` notifications) → ``TurnComplete`` → the ``-p`` one-shot
 printer.
 
 **Prerequisite (skipped when absent):**
@@ -22,10 +23,11 @@ and authenticated (auth is via the ambient ``cursor-agent login`` / env, which
 this run inherits, so a missing login surfaces as a real failure, not a skip).
 
 **What breaks if this fails (with prerequisites present):**
-- ``CursorExecutor`` regresses (subprocess orchestration, the stream-json →
-  ExecutorEvent translation, session resume, or the system-prompt injection).
-- The ``cursor-agent`` CLI changes its ``--print`` / ``--output-format
-  stream-json`` contract or its event schema.
+- ``CursorExecutor`` regresses (subprocess orchestration, the ``session/update``
+  → ExecutorEvent translation, persistent-session reuse, or the system-prompt
+  injection).
+- The ``cursor-agent acp`` ACP contract changes (the ``session/new`` /
+  ``session/prompt`` shape or the ``session/update`` event schema).
 - ``omnigent.cli`` for the ``-p`` one-shot path stops printing assistant text
   to stdout on turn complete, or harness dispatch for ``cursor`` regresses.
 """

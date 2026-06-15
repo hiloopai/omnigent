@@ -20,7 +20,6 @@ from omnigent.runtime.harnesses import _HARNESS_MODULES
 
 def test_harness_module_registered_in_module_registry() -> None:
     assert _HARNESS_MODULES.get("cursor") == "omnigent.inner.cursor_harness"
-    assert _HARNESS_MODULES.get("cursor") == "omnigent.inner.cursor_harness"
 
 
 def test_create_app_returns_fastapi_with_required_routes() -> None:

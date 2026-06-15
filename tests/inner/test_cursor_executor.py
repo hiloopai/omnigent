@@ -333,3 +333,162 @@ async def test_interrupt_cancels_and_drops_session(monkeypatch: pytest.MonkeyPat
 async def test_interrupt_unknown_session_returns_false() -> None:
     executor = _make_executor()
     assert await executor.interrupt_session("nope") is False
+
+
+# ---------------------------------------------------------------------------
+# Failure / lifecycle paths
+# ---------------------------------------------------------------------------
+
+
+def _patch_acp_class(monkeypatch: pytest.MonkeyPatch, cls: type) -> None:
+    monkeypatch.setattr(ce, "AcpClient", cls)
+
+
+async def test_session_setup_failure_surfaces_stderr_and_drops_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed ``session/new`` closes the spawned client (no orphaned
+    ``cursor-agent`` process), drops the session, and surfaces the stderr tail
+    so an auth failure is debuggable instead of a bare "closed the connection".
+    """
+    closed = {"count": 0}
+
+    class _FailingAcp:
+        def __init__(self, path: str, *, env: Any, cwd: Any, extra_args: Any = None) -> None:
+            self.running = False
+
+        async def start(self) -> dict[str, Any]:
+            self.running = True
+            return {}
+
+        async def new_session(
+            self, *, cwd: str, model: str | None, mcp_servers: Any = None
+        ) -> str:
+            raise ce.AcpError("session/new returned no sessionId")
+
+        async def close(self) -> None:
+            self.running = False
+            closed["count"] += 1
+
+        def stderr_tail(self) -> str:
+            return "cursor-agent: invalid CURSOR_API_KEY"
+
+    _patch_acp_class(monkeypatch, _FailingAcp)
+    executor = _make_executor()
+    events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert len(errors) == 1
+    assert "invalid CURSOR_API_KEY" in errors[0].message  # stderr tail surfaced
+    assert "conv1" not in executor._session_states  # session dropped
+    assert closed["count"] == 1  # the spawned client was closed → no leak
+
+
+async def test_mid_turn_acp_error_drops_session_and_includes_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the ACP server dies mid-turn (``prompt_stream`` raises ``AcpError``),
+    the session is dropped (so the next turn respawns) and stderr is attached."""
+    closed = {"count": 0}
+
+    class _DyingAcp:
+        def __init__(self, path: str, *, env: Any, cwd: Any, extra_args: Any = None) -> None:
+            self.running = False
+
+        async def start(self) -> dict[str, Any]:
+            self.running = True
+            return {}
+
+        async def new_session(
+            self, *, cwd: str, model: str | None, mcp_servers: Any = None
+        ) -> str:
+            return "sess-1"
+
+        async def prompt_stream(
+            self, session_id: str, blocks: Any
+        ) -> AsyncIterator[tuple[str, Any]]:
+            yield _chunk("agent_message_chunk", "partial")
+            raise ce.AcpError("server died")
+
+        async def close(self) -> None:
+            self.running = False
+            closed["count"] += 1
+
+        def stderr_tail(self) -> str:
+            return "panic: boom"
+
+    _patch_acp_class(monkeypatch, _DyingAcp)
+    executor = _make_executor()
+    events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert len(errors) == 1 and errors[0].retryable is True
+    assert "panic: boom" in errors[0].message
+    assert "conv1" not in executor._session_states
+    assert closed["count"] == 1
+
+
+async def test_prompt_error_closes_session_so_retry_rebuilds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JSON-RPC error response to ``session/prompt`` drops the session, so the
+    retry re-creates it (and re-sends the system prompt) instead of reusing a
+    wedged session with ``is_first_turn`` already False."""
+    scripts = [
+        [("error", {"code": -1, "message": "boom"})],
+        [_chunk("agent_message_chunk", "ok"), ("result", {"stopReason": "end_turn"})],
+    ]
+    state = _patch_acp(monkeypatch, scripts)
+    executor = _make_executor()
+    try:
+        turn1 = [e async for e in executor.run_turn([_user("first")], [], "SYS")]
+        turn2 = [e async for e in executor.run_turn([_user("second")], [], "SYS")]
+    finally:
+        await executor.close()
+
+    assert any(isinstance(e, ExecutorError) for e in turn1)
+    assert any(isinstance(e, TurnComplete) for e in turn2)
+    # Two session/new calls prove the errored session was dropped and rebuilt
+    # (contrast test_session_reused_across_turns, which sees exactly one).
+    assert len(state["new_session_models"]) == 2
+    assert state["closed"] >= 1
+
+
+async def test_session_restart_on_system_prompt_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing the system prompt across turns forces a fresh ``session/new``
+    (the prompt is baked in at session creation), unlike the reuse case."""
+    scripts = [
+        [_chunk("agent_message_chunk", "one"), ("result", {"stopReason": "end_turn"})],
+        [_chunk("agent_message_chunk", "two"), ("result", {"stopReason": "end_turn"})],
+    ]
+    state = _patch_acp(monkeypatch, scripts)
+    executor = _make_executor()
+    try:
+        _ = [e async for e in executor.run_turn([_user("first")], [], "SYS-A")]
+        _ = [e async for e in executor.run_turn([_user("second")], [], "SYS-B")]
+    finally:
+        await executor.close()
+
+    assert len(state["new_session_models"]) == 2
+    assert state["closed"] >= 1
+
+
+async def test_empty_prompt_completes_without_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A turn with nothing to send (no user text, no system prompt) completes
+    with ``TurnComplete(response=None)`` rather than prompting an empty turn."""
+    _patch_acp(monkeypatch, [])
+    executor = _make_executor()
+    try:
+        events = [
+            e
+            async for e in executor.run_turn(
+                [{"role": "assistant", "content": "x", "session_id": "conv1"}], [], ""
+            )
+        ]
+    finally:
+        await executor.close()
+
+    assert len(events) == 1
+    assert isinstance(events[0], TurnComplete) and events[0].response is None

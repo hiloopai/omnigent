@@ -386,7 +386,16 @@ class CursorExecutor(Executor):
             await self.close_session(key)
 
     async def _ensure_session(self, state: _CursorSessionState, model: str | None) -> None:
-        """Spawn the ACP server and open a session if one isn't live."""
+        """Spawn the ACP server and open a session if one isn't live.
+
+        On any failure during bring-up the freshly-spawned client is closed
+        before propagating, so a failed ``initialize`` / ``session/new`` (bad
+        ``CURSOR_API_KEY``, rejected model, transient init error) can't orphan a
+        live ``cursor-agent`` process and its reader tasks. ``AcpError`` /
+        ``OSError`` are re-raised as ``AcpError`` with the captured stderr tail
+        attached, so the caller surfaces *why* (e.g. an auth message) instead of
+        a bare "closed the connection".
+        """
         if state.client is not None and state.client.running:
             return
         cwd = self._cwd or os.getcwd()
@@ -396,8 +405,16 @@ class CursorExecutor(Executor):
             cwd=cwd,
             extra_args=["--sandbox", _sandbox_mode(self._os_env_spec)],
         )
-        await client.start()
-        state.session_id = await client.new_session(cwd=cwd, model=model, mcp_servers=[])
+        try:
+            await client.start()
+            state.session_id = await client.new_session(cwd=cwd, model=model, mcp_servers=[])
+        except BaseException as exc:
+            stderr = client.stderr_tail()
+            await client.close()
+            if isinstance(exc, (AcpError, OSError)):
+                suffix = f" Stderr: {stderr}" if stderr else ""
+                raise AcpError(f"{exc}{suffix}") from exc
+            raise
         state.client = client
 
     async def run_turn(
@@ -451,8 +468,16 @@ class CursorExecutor(Executor):
                             response_text += event.text
                         yield event
                 elif kind == "error":
+                    # A JSON-RPC error response to ``session/prompt`` leaves the
+                    # session suspect. Drop it (mirror the ``AcpError`` path
+                    # below) so the retry rebuilds a fresh session and re-sends
+                    # the system prompt, rather than reusing a wedged session
+                    # with ``is_first_turn`` already False.
+                    stderr = state.client.stderr_tail() if state.client is not None else ""
+                    await self.close_session(session_key)
+                    suffix = f" Stderr: {stderr}" if stderr else ""
                     yield ExecutorError(
-                        message=f"cursor-agent acp error: {payload}", retryable=True
+                        message=f"cursor-agent acp error: {payload}{suffix}", retryable=True
                     )
                     return
                 else:  # "result"

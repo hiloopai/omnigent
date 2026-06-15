@@ -44,9 +44,15 @@ _ACP_PROTOCOL_VERSION = 1
 _STREAM_READ_CHUNK_SIZE = 65536
 
 # Default per-request timeout. A single ``session/prompt`` can run the whole
-# agent turn (tool loop, long generation), so it is generous; session
-# setup calls resolve far quicker.
+# agent turn (tool loop, long generation), so it is generous.
 _REQUEST_TIMEOUT_SECONDS = 600.0
+
+# Tighter timeout for session-setup calls (``initialize`` / ``session/new``).
+# These resolve in well under a second on a healthy server, so the generous
+# turn budget above would only serve to hang the first turn for ten minutes
+# when cursor-agent spawns but never speaks ACP (wrong binary, stuck auth,
+# blocked network) — surface that as a fast, clear failure instead.
+_SETUP_TIMEOUT_SECONDS = 30.0
 
 
 async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> asyncio.subprocess.Process:  # type: ignore[explicit-any]
@@ -127,6 +133,7 @@ class AcpClient:
                 # cursor-agent uses its own native file tools in its cwd.
                 "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
             },
+            timeout=_SETUP_TIMEOUT_SECONDS,
         )
 
     async def new_session(
@@ -147,7 +154,7 @@ class AcpClient:
         params: AcpMessage = {"cwd": cwd, "mcpServers": mcp_servers or []}
         if model:
             params["model"] = model
-        result = await self.request("session/new", params)
+        result = await self.request("session/new", params, timeout=_SETUP_TIMEOUT_SECONDS)
         session_id = result.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise AcpError(f"session/new returned no sessionId: {result!r}")
@@ -176,32 +183,49 @@ class AcpClient:
         rid = self._send("session/prompt", {"sessionId": session_id, "prompt": blocks})
         fut = self._pending[rid]
 
-        while True:
-            getter: Task[AcpMessage] = asyncio.ensure_future(self._notifications.get())
-            done, _pending = await asyncio.wait({getter, fut}, return_when=asyncio.FIRST_COMPLETED)
-            if getter in done:
-                yield ("update", getter.result())
-                continue
-            # The prompt response landed; surface any already-queued updates
-            # before the terminal item, then stop.
-            getter.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await getter
-            while not self._notifications.empty():
-                yield ("update", self._notifications.get_nowait())
-            resp = fut.result()
-            if "error" in resp:
-                yield ("error", resp["error"])
-            else:
-                result = resp.get("result")
-                yield ("result", result if isinstance(result, dict) else {})
-            return
+        getter: Task[AcpMessage] | None = None
+        try:
+            while True:
+                getter = asyncio.ensure_future(self._notifications.get())
+                done, _pending = await asyncio.wait(
+                    {getter, fut}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if getter in done:
+                    yield ("update", getter.result())
+                    continue
+                # The prompt response landed; surface any already-queued updates
+                # before the terminal item, then stop.
+                getter.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await getter
+                getter = None
+                while not self._notifications.empty():
+                    yield ("update", self._notifications.get_nowait())
+                try:
+                    resp = fut.result()
+                except asyncio.CancelledError:
+                    # ``close()`` cancelled the in-flight prompt (an interrupt
+                    # tore the session down). Treat that as a clean end of turn
+                    # rather than letting CancelledError escape as an error.
+                    return
+                if "error" in resp:
+                    yield ("error", resp["error"])
+                else:
+                    result = resp.get("result")
+                    yield ("result", result if isinstance(result, dict) else {})
+                return
+        finally:
+            # If the consumer abandons this generator mid-turn (the interrupt
+            # path ``return``s out of the ``async for``), a still-pending
+            # ``getter`` would otherwise leak, blocked on ``Queue.get()`` forever.
+            if getter is not None and not getter.done():
+                getter.cancel()
 
     async def cancel(self, session_id: str) -> None:
         """Best-effort ``session/cancel`` notification to interrupt the turn."""
         if not self.running or self._proc is None or self._proc.stdin is None:
             return
-        with contextlib.suppress(Exception):
+        try:
             self._proc.stdin.write(
                 (
                     json.dumps(
@@ -216,17 +240,25 @@ class AcpClient:
                 ).encode("utf-8")
             )
             await self._proc.stdin.drain()
+        except Exception as exc:  # noqa: BLE001 — cancel is best-effort; a dead pipe is expected
+            # Leave a breadcrumb: a silently-failed cancel looks identical to an
+            # interrupt that simply didn't stop the turn.
+            logger.debug("AcpClient: session/cancel write failed: %s", exc)
 
-    async def request(self, method: str, params: AcpMessage) -> AcpMessage:
+    async def request(
+        self, method: str, params: AcpMessage, *, timeout: float = _REQUEST_TIMEOUT_SECONDS
+    ) -> AcpMessage:
         """Send a JSON-RPC request and await its result.
 
+        :param timeout: Seconds to await the response. Defaults to the generous
+            turn budget; setup calls pass :data:`_SETUP_TIMEOUT_SECONDS`.
         :raises AcpError: On a JSON-RPC error response, timeout, or dead server.
         """
         rid = self._send(method, params)
         try:
-            resp = await asyncio.wait_for(self._pending[rid], timeout=_REQUEST_TIMEOUT_SECONDS)
+            resp = await asyncio.wait_for(self._pending[rid], timeout=timeout)
         except asyncio.TimeoutError as exc:
-            raise AcpError(f"ACP {method} timed out") from exc
+            raise AcpError(f"ACP {method} timed out after {timeout:g}s") from exc
         if "error" in resp:
             raise AcpError(f"ACP {method} failed: {resp['error']}")
         result = resp.get("result")
@@ -301,7 +333,9 @@ class AcpClient:
         except asyncio.CancelledError:
             return
         except Exception as exc:  # noqa: BLE001 — reader logs and exits on any unexpected error
-            logger.debug("AcpClient reader error: %s", exc)
+            # An unexpected reader crash drops every subsequent message, which
+            # otherwise reads as a silent hang until the request timeout — warn.
+            logger.warning("AcpClient reader error: %s", exc)
         finally:
             # Fail any in-flight requests so awaiters don't hang on a dead server.
             for fut in self._pending.values():
@@ -338,6 +372,9 @@ class AcpClient:
             params = msg.get("params", {})
             options = params.get("options", []) if isinstance(params, dict) else []
             option_id = _pick_allow_option(options)
+            # Log the grant so a headless auto-allow is at least auditable after
+            # the fact (otherwise there is no record of what the agent was let do).
+            logger.debug("AcpClient: auto-allowing %s -> option %r", method, option_id)
             self._reply(request_id, {"outcome": {"outcome": "selected", "optionId": option_id}})
             return
         # Unknown server request (e.g. an fs op we declined capability for):

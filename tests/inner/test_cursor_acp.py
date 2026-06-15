@@ -242,3 +242,29 @@ async def test_request_failure_raises_acp_error(monkeypatch: Any) -> None:
             pass
     finally:
         await client.close()
+
+
+async def test_connection_closed_fails_pending_request(monkeypatch: Any) -> None:
+    """When the server's stdout closes with a request in flight, the pending
+    request fails with ``AcpError`` rather than hanging until the timeout —
+    the reader's ``finally`` fails every in-flight future on EOF."""
+
+    def responder(req: dict[str, Any]) -> list[str]:
+        if req.get("method") == "initialize":
+            return [_resp(req.get("id"), {})]
+        return []  # session/new gets no response — it stays pending
+
+    proc = _patch_spawn(monkeypatch, responder)
+    client = _make_client()
+    try:
+        await client.start()
+        task = asyncio.ensure_future(client.new_session(cwd="/tmp/x", model=None))
+        await asyncio.sleep(0)  # let the request be written before EOF
+        proc.stdout.feed_eof()  # server closes the connection mid-request
+        try:
+            await asyncio.wait_for(task, timeout=2.0)
+            raise AssertionError("expected AcpError")
+        except AcpError:
+            pass
+    finally:
+        await client.close()
