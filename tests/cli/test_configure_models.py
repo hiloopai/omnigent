@@ -2150,3 +2150,118 @@ def test_antigravity_set_api_key_non_aiza_declined_is_not_stored(isolated_config
     cfg = _config_yaml(isolated_config)
     assert "antigravity" not in cfg
     assert secrets.load_secret("antigravity") is None
+
+
+# ── Antigravity SDK-extra install offer (the optional ``antigravity`` extra) ──
+# Unlike Cursor (``cursor-sdk`` is a baseline dep, always installed → no offer),
+# the antigravity SDK ships in an OPTIONAL extra, so a user can paste a Gemini
+# key and still have no SDK. Setup must detect that and offer to install. These
+# tests force detection absent (the SDK is actually present in the test venv).
+
+
+@pytest.fixture()
+def _antigravity_sdk_absent(monkeypatch):
+    """Force ``google-antigravity`` detection to report missing.
+
+    Both ``_run_configure_harnesses_interactive`` (overview row) and
+    ``_manage_antigravity_harness`` (drill-in) resolve
+    ``antigravity_sdk_installed`` from the source module at call time, so
+    patching the module attribute is seen by both.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    monkeypatch.setattr(
+        "omnigent.onboarding.antigravity_auth.antigravity_sdk_installed",
+        lambda: False,
+    )
+
+
+def test_antigravity_overview_surfaces_install_command_when_sdk_missing(
+    isolated_config, _antigravity_sdk_absent
+) -> None:
+    """L1 overview: the Antigravity row names the extra install command when absent.
+
+    Parallel to the CLI harnesses' "not installed — open to install" sub-line and
+    the databricks extra hint. The exact ``pip install "omnigent[antigravity]"``
+    is shown (escaped so the literal brackets render). Without the SDK-detection
+    branch this line never appears.
+    """
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="q\n")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "not installed — open to install" in out
+    # The literal command (brackets included) reaches the rendered output.
+    assert 'pip install "omnigent[antigravity]"' in out
+
+
+def test_antigravity_drillin_offers_install_when_sdk_missing(
+    isolated_config, _antigravity_sdk_absent
+) -> None:
+    """Drilling into Antigravity with the SDK absent presents the install offer.
+
+    The three-choice offer (install / set key anyway / show command) appears on
+    entry. Here the user picks "show the command" (choice 3), which prints the
+    command and falls through to the key menu, then backs out.
+    """
+    # L1 5=Antigravity → install offer 3=show command → key menu q=back → L1 q.
+    stdin = "\n".join(["5", "3", "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+    out = result.output
+    assert "isn't installed" in out
+    assert 'pip install "omnigent[antigravity]"' in out
+
+
+def test_antigravity_key_settable_when_sdk_missing(
+    isolated_config, _antigravity_sdk_absent
+) -> None:
+    """The Gemini key is still storable when the SDK is absent (no hard block).
+
+    This is the deliberate divergence from pi: the ``antigravity:`` key is
+    independent of the SDK and useful the moment it's installed, so the drill-in
+    offers the install but does NOT gate key management on it. The user declines
+    the install ("set the key anyway" = choice 2), then sets the key — which must
+    persist exactly as it does with the SDK present.
+    """
+    # L1 5=Antigravity → install offer 2=set key anyway → key menu 1=Set →
+    # paste AIza key → key menu q=back → L1 q=quit.
+    stdin = "\n".join(["5", "2", "1", "AIza_key_no_sdk", "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+
+    cfg = _config_yaml(isolated_config)
+    assert cfg["antigravity"] == {"api_key_ref": "keychain:antigravity"}
+    assert secrets.load_secret("antigravity") == "AIza_key_no_sdk"
+
+
+def test_antigravity_install_now_invokes_runner_without_index(
+    isolated_config, _antigravity_sdk_absent, monkeypatch
+) -> None:
+    """Choosing "install it now" shells the install with ``omnigent[antigravity]``.
+
+    Mocks the subprocess (never really installs) and asserts the argv targets the
+    extra and carries NO hardcoded index URL / proxy — pip/uv inherit the user's
+    own config. Forces the ``uv``-absent path for a deterministic argv.
+    """
+    import subprocess
+
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], *, check: bool = False, timeout: float | None = None):
+        calls.append(argv)
+        return subprocess.CompletedProcess(args=argv, returncode=0)
+
+    monkeypatch.setattr("omnigent.onboarding.antigravity_auth.shutil.which", lambda name: None)
+    monkeypatch.setattr("omnigent.onboarding.antigravity_auth.subprocess.run", _run)
+
+    # L1 5=Antigravity → install offer 1=install now → key menu q=back → L1 q.
+    stdin = "\n".join(["5", "1", "q", "q"]) + "\n"
+    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
+    assert result.exit_code == 0, result.output
+
+    assert len(calls) == 1, f"expected exactly one install invocation, got {calls}"
+    argv = calls[0]
+    assert "omnigent[antigravity]" in argv
+    assert "install" in argv
+    # No index URL / proxy is baked into committed code.
+    assert not any("index" in part or "://" in part for part in argv)

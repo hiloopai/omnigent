@@ -12,12 +12,99 @@ key from being mis-consumed by claude-sdk / codex / pi / openai-agents. Mirrors
 
 from __future__ import annotations
 
+import importlib.util
+import shutil
+import subprocess
+import sys
+
 from omnigent.errors import OmnigentError
 from omnigent.onboarding.provider_config import load_config, resolve_secret
 
 # Stable secret-store name (and thus ``keychain:<name>``) so setup and the
 # resolver agree.
 ANTIGRAVITY_SECRET_NAME = "antigravity"
+
+# The pip extra that ships the Gemini-native SDK (``google-antigravity``). It is
+# OPTIONAL — not part of the default install — so a user can configure the
+# ``antigravity:`` key in setup and still have no SDK to run the harness. The
+# install command is surfaced verbatim where setup detects the extra missing.
+# (Cursor needs no parallel: ``cursor-sdk`` is a baseline dependency.) The
+# extra name carries literal brackets, so any markup-rendered surface must
+# escape it.
+ANTIGRAVITY_EXTRA = "antigravity"
+ANTIGRAVITY_EXTRA_INSTALL_COMMAND = 'pip install "omnigent[antigravity]"'
+
+
+def antigravity_sdk_installed() -> bool:
+    """Return whether the ``google-antigravity`` SDK (the extra) is importable.
+
+    The SDK is not part of the default install — it ships in the
+    ``antigravity`` (optional) extra. The ``harness: antigravity`` executor
+    imports it lazily on the first turn, so a user can paste a Gemini key in
+    ``omnigent setup`` and still have no SDK; setup uses this to detect that
+    and offer to install it.
+
+    Mirrors :func:`omnigent.onboarding.databricks_config.databricks_sdk_installed`:
+    uses :func:`importlib.util.find_spec` so the check never pays the cost of
+    importing the (heavy) SDK, and guards the ``ModuleNotFoundError`` that
+    ``find_spec`` raises when even the parent ``google`` namespace package is
+    absent (rather than returning ``None``).
+
+    :returns: ``True`` when ``google.antigravity`` is importable.
+    """
+    try:
+        return importlib.util.find_spec("google.antigravity") is not None
+    except ModuleNotFoundError:
+        # find_spec("google.antigravity") imports the parent `google` namespace
+        # package first; when even that is absent it raises instead of
+        # returning None.
+        return False
+
+
+def antigravity_install_command() -> list[str]:
+    """Return the argv that installs the ``antigravity`` extra into this env.
+
+    Prefers ``uv pip install`` when ``uv`` is on ``PATH`` (it installs into the
+    active environment correctly and is what the repo's dev/install flows use),
+    else falls back to this interpreter's own pip (``sys.executable -m pip``) so
+    the package lands in the running install rather than some other Python.
+
+    Deliberately carries **no index URL**: pip / uv pick up the user's own
+    configured index, so a private proxy is honored without ever hardcoding one
+    into committed code.
+
+    :returns: The install argv, e.g.
+        ``["uv", "pip", "install", "omnigent[antigravity]"]`` or
+        ``[sys.executable, "-m", "pip", "install", "omnigent[antigravity]"]``.
+    """
+    target = f"omnigent[{ANTIGRAVITY_EXTRA}]"
+    if shutil.which("uv") is not None:
+        return ["uv", "pip", "install", target]
+    return [sys.executable, "-m", "pip", "install", target]
+
+
+def install_antigravity_sdk() -> bool:
+    """Install the ``antigravity`` extra; return whether the SDK is now present.
+
+    Shells out to :func:`antigravity_install_command` and re-checks
+    :func:`antigravity_sdk_installed`. Surfaces pip/uv's own output (no capture)
+    so a failing install is visible. Mirrors
+    :func:`omnigent.onboarding.harness_install.install_harness_cli`.
+
+    :returns: ``True`` when ``google.antigravity`` is importable after the
+        attempt; ``False`` when the install process failed to spawn, timed out,
+        or the SDK is still absent afterward.
+    """
+    try:
+        subprocess.run(antigravity_install_command(), check=False, timeout=600)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    # find_spec caches negative results in ``sys.modules``-adjacent state via the
+    # import system's finders; invalidate caches so a just-installed package is
+    # seen without restarting the process.
+    importlib.invalidate_caches()
+    return antigravity_sdk_installed()
+
 
 # The dedicated top-level config block and the field that references the key.
 ANTIGRAVITY_CONFIG_KEY = "antigravity"
