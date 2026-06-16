@@ -27,7 +27,17 @@
 # decision. The waiver is only evaluated when MAINTAINERS is passed (the scan
 # does; the per-workflow pollers do not -- they just mirror the scan's result).
 #
+# Fork-e2e mirror: a fork PR's head commit is mirrored onto fork-e2e/pr-N so
+# e2e/e2e-ui run there as a `push` WITH the gateway secrets -- the one place
+# untrusted code meets secrets. That commit is byte-identical to the PR head, so
+# the `Security Scan` check already ran on it during the PR's pull_request event.
+# We therefore re-engage the gate on a fork-e2e/** push (scan=true) so the poller
+# MIRRORS that pre-computed result before any secret-bearing job runs, instead of
+# waving the push through as a "trusted" non-PR event. Any other push (main) is
+# genuinely trusted.
+#
 # Env in:  EVENT_NAME          (github.event_name)
+#          REF                 (github.ref; only needed to spot fork-e2e/** push)
 #          AUTHOR_ASSOCIATION  (github.event.pull_request.author_association)
 #          MAINTAINERS         (space-separated, from merge-ready/load-maintainers.sh;
 #                               optional -- when empty the skip label is ignored)
@@ -78,12 +88,24 @@ skip_label_effective() {
   return 1
 }
 
-# Only PRs carry untrusted contributor code through the gate. Every other
-# trigger -- push to main / fork-e2e/** (the mirror branch only exists after a
-# returning-contributor / maintainer-approval gate), schedule, dispatch -- is a
-# trusted context, so proceed without scanning.
+# PRs carry untrusted contributor code through the gate directly. A fork-e2e/**
+# push is the mirrored PR head running WITH secrets, so it must mirror that
+# commit's already-computed Security Scan result (handled by the poller). Every
+# other trigger -- push to main, schedule, dispatch -- is a trusted context.
 case "${EVENT_NAME:-}" in
   pull_request | pull_request_target) ;;
+  push)
+    case "${REF:-}" in
+      refs/heads/fork-e2e/*)
+        emit true "fork-e2e mirror push; mirror the PR's Security Scan result"
+        exit 0
+        ;;
+      *)
+        emit false "non-PR push (${REF:-unknown}); trusted context"
+        exit 0
+        ;;
+    esac
+    ;;
   *)
     emit false "non-PR event (${EVENT_NAME:-unknown}); trusted context"
     exit 0

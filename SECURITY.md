@@ -22,6 +22,13 @@ two pieces so the scan work happens only **once per PR**:
   (failure → the dependent CI jobs are skipped); trusted authors and non-PR
   events proceed immediately.
 
+The fork-e2e mirror (`fork-e2e-mirror.yml`) pushes a fork PR's head commit to a
+`fork-e2e/**` branch so `e2e`/`e2e-ui` run there **with secrets**. That push is
+the one place untrusted code meets secrets, so the gate does **not** wave it
+through as a trusted push: it mirrors the `Security Scan` result of the pushed
+commit (which is byte-identical to the PR head, where the scan already ran), and
+skips the secret-bearing e2e jobs if the scan did not pass.
+
 By trust tier (GitHub `author_association`):
 
 - **Trusted** (`OWNER` / `MEMBER` / `COLLABORATOR`) and all non-PR events

@@ -3,10 +3,12 @@ name: Security Gate
 # Reusable (workflow_call) gate, called as the FIRST job of each CI workflow;
 # their real jobs declare `needs: gate`. Does NOT scan — the single scan runs in
 # security-scan.yml. This poller only decides whether to let its caller proceed:
-#   - non-PR event or trusted author -> proceed immediately
+#   - trusted author or trusted non-PR event -> proceed immediately
 #   - untrusted PR -> wait for the `Security Scan` check on the head SHA and
 #     MIRROR its conclusion (success -> proceed; failure -> fail, skipping the
 #     dependent CI jobs).
+#   - fork-e2e/** push (a mirrored fork PR running WITH secrets) -> mirror the
+#     same `Security Scan` check, looked up on the pushed commit (== PR head).
 #
 # The scan (security-scan.yml) is blocking: a finding fails the `Security Scan`
 # check, which this poller mirrors to block dependent CI. Splitting scan from
@@ -36,6 +38,7 @@ jobs:
         id: gate
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
           AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
         run: |
           # Before the scanner lands on main the scripts are absent there --
@@ -48,14 +51,17 @@ jobs:
           bash .github/scripts/security-scan/should-scan.sh
 
       - name: Wait for Security Scan result
-        # Only untrusted PRs wait; trusted authors / non-PR events proceeded above.
+        # Only untrusted PRs and fork-e2e mirror pushes wait; trusted authors /
+        # trusted non-PR events proceeded above. For a PR the SHA is the PR head;
+        # for a fork-e2e/** push it is the mirrored commit (identical to the PR
+        # head), where the `Security Scan` check already ran on the PR event.
         if: ${{ steps.gate.outputs.scan == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          echo "Untrusted PR -- waiting for the single 'Security Scan' check on $HEAD_SHA"
+          echo "Untrusted run -- waiting for the single 'Security Scan' check on $HEAD_SHA"
           q='[.check_runs[] | select(.name=="Security Scan")] | sort_by(.started_at) | last'
           conclusion=""
           details_url=""
