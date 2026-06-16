@@ -85,11 +85,10 @@ def test_unknown_key_has_no_spec_and_is_not_installed() -> None:
         ("claude-native", "claude"),
         ("codex-native", "codex"),
         ("pi", "pi"),
-        ("cursor", "cursor-agent"),
     ],
 )
 def test_required_cli_for_cli_backed_harness(harness: str, binary: str) -> None:
-    """The three CLI-backed harnesses map to the binary their launch needs.
+    """The CLI-backed harnesses map to the binary their launch needs.
 
     Drift here (a wrong/missing mapping) would let sub-agent dispatch skip
     the preflight for a harness that actually needs a CLI, reintroducing the
@@ -98,6 +97,16 @@ def test_required_cli_for_cli_backed_harness(harness: str, binary: str) -> None:
     spec = hi.required_cli_for_harness(harness)
     assert spec is not None
     assert spec.binary == binary
+
+
+@pytest.mark.parametrize("harness", ["cursor", "claude-sdk", "openai-agents"])
+def test_sdk_harnesses_require_no_cli(harness: str) -> None:
+    """SDK-based harnesses (incl. ``cursor``, which drives the cursor-sdk Python
+    package) require no CLI binary, so the sub-agent dispatch preflight must not
+    flag them — otherwise it would block a launch that needs no CLI (and, for
+    cursor, print ``npm install -g None`` for its package-less spec)."""
+    assert hi.required_cli_for_harness(harness) is None
+    assert hi.missing_harness_cli(harness) is None
 
 
 @pytest.mark.parametrize(

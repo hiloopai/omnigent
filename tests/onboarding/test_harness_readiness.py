@@ -61,7 +61,7 @@ def test_sdk_and_unknown_harnesses_are_never_gated(
 # CLI-wrapping harnesses are gated on their binary being on PATH.
 @pytest.mark.parametrize(
     "harness",
-    ["claude-native", "native-claude", "codex", "codex-native", "native-codex", "pi", "cursor"],
+    ["claude-native", "native-claude", "codex", "codex-native", "native-codex", "pi"],
 )
 def test_cli_harness_configured_only_when_binary_installed(
     monkeypatch: pytest.MonkeyPatch, harness: str
@@ -78,6 +78,33 @@ def test_cli_harness_configured_only_when_binary_installed(
     assert harness_is_configured(harness) is True
     _no_clis_installed(monkeypatch)
     assert harness_is_configured(harness) is False
+
+
+def test_cursor_configured_gated_on_cursor_sdk_not_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cursor readiness follows the ``cursor-sdk`` package (its runtime), not
+    the ``cursor-agent`` CLI on PATH — so a valid SDK install with no standalone
+    cursor-agent is still launchable, and a missing SDK is not."""
+    import importlib.util as _ilu
+
+    _no_clis_installed(monkeypatch)  # cursor-agent absent from PATH
+    real_find_spec = _ilu.find_spec
+
+    def _with_sdk(name: str, *args: object, **kwargs: object) -> object:
+        return object() if name == "cursor_sdk" else real_find_spec(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    def _without_sdk(name: str, *args: object, **kwargs: object) -> object:
+        return None if name == "cursor_sdk" else real_find_spec(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_readiness.importlib.util.find_spec", _with_sdk
+    )
+    assert harness_is_configured("cursor") is True  # SDK present, CLI absent
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_readiness.importlib.util.find_spec", _without_sdk
+    )
+    assert harness_is_configured("cursor") is False  # SDK missing
 
 
 def test_configured_harness_map_covers_all_spellings(
@@ -141,9 +168,11 @@ def test_configured_harness_map_gates_only_cli_harnesses(
         "codex-native",
         "native-codex",
         "pi",
-        "cursor",
     ):
         assert result[cli] is False, f"{cli} should be gated on its CLI binary"
+    # Cursor drives the cursor-sdk Python package (installed in tests), not a
+    # CLI binary, so it is NOT gated on PATH and reads True here.
+    assert result["cursor"] is True
 
 
 def test_configured_harness_map_all_true_with_clis(

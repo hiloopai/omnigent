@@ -88,6 +88,20 @@ def _resolve_model(model: str | None) -> str:
     return model
 
 
+def _tools_fingerprint(tools: list[ToolSpec]) -> str:
+    """A stable fingerprint of the tool set (names + parameter schemas).
+
+    ``custom_tools`` are fixed at agent creation, so a changed tool set must
+    invalidate the persistent agent — otherwise removed tools stay callable and
+    newly-added tools are missing for the rest of the conversation.
+    """
+    entries = sorted(
+        (str(t.get("name", "")), json.dumps(t.get("parameters"), sort_keys=True, default=str))
+        for t in tools
+    )
+    return json.dumps(entries)
+
+
 # ---------------------------------------------------------------------------
 # Prompt building (unchanged contract from the ACP harness)
 # ---------------------------------------------------------------------------
@@ -135,8 +149,11 @@ def _build_cursor_prompt(
 
     :returns: The prompt string (empty when there is nothing to send).
     """
-    user_messages = [m for m in messages if m.get("role") == "user"]
-    if is_first_turn and len(messages) > 1 and len(user_messages) > 1:
+    # Serialize prior history on the first turn whenever there is any (e.g. a
+    # ``pass_history=True`` sub-agent handed a single user message plus assistant
+    # / tool context) — not only when multiple *user* messages are present, which
+    # would drop that context.
+    if is_first_turn and len(messages) > 1:
         lines = ["Conversation so far:"]
         for msg in messages:
             role = str(msg.get("role") or "user").replace("_", " ")
@@ -234,6 +251,7 @@ class _CursorSessionState:
     agent: Any = None  # cursor_sdk.AsyncAgent
     system_prompt: str | None = None
     model: str | None = None
+    tools_fingerprint: str | None = None
     has_sent_prompt: bool = False
 
 
@@ -276,6 +294,10 @@ class CursorExecutor(Executor):
         # Installed by the runtime adapter; routes a bridged-tool call back into
         # Omnigent's session (policy gating, sub-agent dispatch, logging).
         self._tool_executor: ToolExecutor | None = None
+        # Installed by the runtime adapter; evaluates PHASE_LLM_REQUEST /
+        # PHASE_LLM_RESPONSE policies (the same round-trip pi / claude-sdk use).
+        # ``None`` on single-process / pre-turn paths (then policy is a no-op).
+        self._policy_evaluator: Callable[[str, dict[str, Any]], Awaitable[Any]] | None = None
 
     def supports_streaming(self) -> bool:
         return True
@@ -408,12 +430,16 @@ class CursorExecutor(Executor):
     ) -> AsyncIterator[ExecutorEvent]:
         session_key = self._session_key(messages)
         model = _resolve_model((config.model if config else None) or self._model_override)
+        tools_fp = _tools_fingerprint(tools)
         state = self._session_states.setdefault(session_key, _CursorSessionState())
 
-        # The system prompt is baked into the first turn and the model/tools are
-        # fixed at agent creation, so a change to either means a fresh agent.
+        # System prompt, model, and tool set are all fixed at agent creation, so
+        # a change to any of them means a fresh agent (otherwise a changed tool
+        # set would leave the initial custom_tools stale for the conversation).
         if state.agent is not None and (
-            state.system_prompt != system_prompt or state.model != model
+            state.system_prompt != system_prompt
+            or state.model != model
+            or state.tools_fingerprint != tools_fp
         ):
             await self._close_state(state)
             state = _CursorSessionState()
@@ -421,6 +447,7 @@ class CursorExecutor(Executor):
         is_first_turn = not state.has_sent_prompt
         state.system_prompt = system_prompt
         state.model = model
+        state.tools_fingerprint = tools_fp
 
         try:
             await self._ensure_session(state, model, tools)
@@ -436,14 +463,36 @@ class CursorExecutor(Executor):
             yield TurnComplete(response=None)
             return
 
+        # PHASE_LLM_REQUEST policy (parity with claude-sdk / pi): evaluate before
+        # the LLM call so a DENY blocks it. No-op when no evaluator is wired.
+        policy_eval = self._policy_evaluator
+        if policy_eval is not None:
+            req_verdict = await policy_eval(
+                "PHASE_LLM_REQUEST",
+                {
+                    "model": model,
+                    "messages_count": sum(1 for m in messages if m.get("role") == "user") or 1,
+                    "tools_count": len(tools),
+                    "system_prompt_preview": system_prompt[:200] if system_prompt else "",
+                    "last_user_message": _latest_user_text(messages)[:500],
+                },
+            )
+            if getattr(req_verdict, "action", "") == "POLICY_ACTION_DENY":
+                reason = getattr(req_verdict, "reason", "") or "no reason given"
+                yield ExecutorError(message=f"LLM call denied by policy: {reason}")
+                return
+
         state.has_sent_prompt = True
         response_text = ""
+        tool_calls = 0
         try:
             run = await state.agent.send(prompt)
             async for message in run.messages():
                 for event in _sdk_message_to_events(message):
                     if isinstance(event, TextChunk):
                         response_text += event.text
+                    elif isinstance(event, ToolCallRequest):
+                        tool_calls += 1
                     yield event
             result = await run.wait()
         except asyncio.CancelledError:
@@ -459,7 +508,24 @@ class CursorExecutor(Executor):
             detail = getattr(result, "result", "") or "cursor-sdk run reported an error"
             yield ExecutorError(message=f"cursor-sdk run error: {detail}", retryable=True)
             return
+
         final = getattr(result, "result", "") or response_text or None
+        # PHASE_LLM_RESPONSE policy (parity with the peer harnesses): evaluate the
+        # completed response before TurnComplete so a DENY blocks persistence.
+        if policy_eval is not None:
+            resp_verdict = await policy_eval(
+                "PHASE_LLM_RESPONSE",
+                {
+                    "model": model,
+                    "text_preview": response_text[:500] if response_text else "",
+                    "tool_calls_count": tool_calls,
+                },
+            )
+            if getattr(resp_verdict, "action", "") == "POLICY_ACTION_DENY":
+                reason = getattr(resp_verdict, "reason", "") or "no reason given"
+                yield ExecutorError(message=f"LLM response denied by policy: {reason}")
+                return
+
         # The SDK RunResult carries no token counts, so the turn is left unpriced.
         yield TurnComplete(response=final, usage=None)
 

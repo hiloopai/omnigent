@@ -24,6 +24,8 @@ that would actually work.
 
 from __future__ import annotations
 
+import importlib.util
+
 from omnigent.harness_aliases import HARNESS_ALIASES, canonicalize_harness
 from omnigent.onboarding.harness_install import CURSOR_KEY, PI_KEY, harness_cli_installed
 from omnigent.onboarding.provider_config import (
@@ -89,9 +91,12 @@ def harness_is_configured(harness: str) -> bool:
     if canonical in _SDK_HARNESSES:
         return True
     if canonical == CURSOR_KEY:
-        # The daemon can only check the binary is on PATH (login state needs a
-        # subprocess), so gate on install like the other CLIs.
-        return harness_cli_installed(CURSOR_KEY)
+        # Cursor drives the ``cursor-sdk`` Python package (a baseline dependency
+        # that bundles its own bridge), NOT a ``cursor-agent`` CLI on PATH. Gate
+        # on the SDK being importable; its Cursor API key resolves at runtime
+        # from sources the daemon can't enumerate (like the other SDK harnesses),
+        # so the key is not gated here.
+        return importlib.util.find_spec("cursor_sdk") is not None
     if canonical not in _HARNESS_FAMILY and canonical != PI_SURFACE:
         # Unknown harness — the daemon has no install metadata for it, so
         # it can't assess readiness. Fail open (custom/newer harnesses,

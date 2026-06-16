@@ -405,3 +405,92 @@ async def test_missing_sdk_surfaces_executor_error(monkeypatch: pytest.MonkeyPat
     events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
     errors = [e for e in events if isinstance(e, ExecutorError)]
     assert len(errors) == 1 and "cursor-sdk" in errors[0].message
+
+
+# ---------------------------------------------------------------------------
+# Policy enforcement (PHASE_LLM_REQUEST / PHASE_LLM_RESPONSE)
+# ---------------------------------------------------------------------------
+
+
+def _policy(deny_phase: str | None) -> Any:
+    """Build a fake policy evaluator that DENIES on *deny_phase*, else ALLOWs."""
+
+    async def evaluator(phase: str, data: dict[str, Any]) -> Any:
+        action = "POLICY_ACTION_DENY" if phase == deny_phase else "POLICY_ACTION_ALLOW"
+        return SimpleNamespace(action=action, reason="blocked by test")
+
+    return evaluator
+
+
+async def test_policy_request_deny_blocks_before_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _install_fake_sdk(monkeypatch, [{"messages": [_assistant("hi")], "result": "hi"}])
+    executor = CursorExecutor(api_key="crsr_x")
+    executor._policy_evaluator = _policy("PHASE_LLM_REQUEST")
+    try:
+        events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+    finally:
+        await executor.close()
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert len(errors) == 1 and "call denied by policy" in errors[0].message
+    assert state["sent"] == []  # blocked before the LLM call
+    assert not any(isinstance(e, TurnComplete) for e in events)
+
+
+async def test_policy_response_deny_blocks_turn_complete(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _install_fake_sdk(monkeypatch, [{"messages": [_assistant("hi")], "result": "hi"}])
+    executor = CursorExecutor(api_key="crsr_x")
+    executor._policy_evaluator = _policy("PHASE_LLM_RESPONSE")
+    try:
+        events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+    finally:
+        await executor.close()
+    errors = [e for e in events if isinstance(e, ExecutorError)]
+    assert len(errors) == 1 and "response denied by policy" in errors[0].message
+    assert state["sent"] != []  # the call happened; the response was blocked after
+    assert not any(isinstance(e, TurnComplete) for e in events)
+
+
+async def test_policy_allow_completes_normally(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_sdk(monkeypatch, [{"messages": [_assistant("hi")], "result": "hi"}])
+    executor = CursorExecutor(api_key="crsr_x")
+    executor._policy_evaluator = _policy(None)  # never denies
+    try:
+        events = [e async for e in executor.run_turn([_user("hi")], [], "SYS")]
+    finally:
+        await executor.close()
+    assert any(isinstance(e, TurnComplete) for e in events)
+    assert not any(isinstance(e, ExecutorError) for e in events)
+
+
+# ---------------------------------------------------------------------------
+# Tool-set fingerprint invalidation + passed-history serialization
+# ---------------------------------------------------------------------------
+
+
+async def test_changed_tool_set_rebuilds_agent(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripts = [
+        {"messages": [_assistant("one")], "result": "one"},
+        {"messages": [_assistant("two")], "result": "two"},
+    ]
+    state = _install_fake_sdk(monkeypatch, scripts)
+    executor = CursorExecutor(api_key="crsr_x")
+    tools_a = [{"name": "alpha", "parameters": {"type": "object"}}]
+    tools_b = [{"name": "beta", "parameters": {"type": "object"}}]
+    try:
+        _ = [e async for e in executor.run_turn([_user("first")], tools_a, "SYS")]
+        _ = [e async for e in executor.run_turn([_user("second")], tools_b, "SYS")]
+    finally:
+        await executor.close()
+    # A changed tool set must rebuild the agent (custom_tools are fixed at create).
+    assert len(state["create_models"]) == 2
+
+
+def test_build_cursor_prompt_serializes_single_user_history() -> None:
+    # pass_history sub-agent: one user message plus prior assistant context.
+    messages = [
+        {"role": "assistant", "content": "earlier context"},
+        {"role": "user", "content": "follow up"},
+    ]
+    prompt = _build_cursor_prompt(messages, is_first_turn=True, system_prompt="SYS")
+    assert "Conversation so far:" in prompt
+    assert "earlier context" in prompt and "follow up" in prompt
