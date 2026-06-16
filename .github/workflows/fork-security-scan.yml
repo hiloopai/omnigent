@@ -1,0 +1,121 @@
+name: Fork Security Scan
+
+# Standalone required gate: statically scans EVERY PR's diff for credential-
+# exfiltration shapes and posts a `Fork Security Scan` commit status. Mark that
+# status as a required check in branch protection so it is a prerequisite for
+# the whole PR, not just the e2e mirror.
+#
+# On a blocking finding in a FORK PR (and no override), it escalates: applies
+# the `security-risk` label, comments at the author explaining how to recover,
+# and CLOSES the PR. Same-repo PRs only get the status (never auto-closed).
+# Recovery from a false positive: a maintainer applies the `security-scan-override`
+# label and reopens -- the `reopened` run then sees the label and passes.
+#
+# Trigger is `pull_request_target`, so the workflow + scanner always run from
+# the BASE branch (main) with the base token, even for fork PRs: the PR-head
+# copy never runs (a PR cannot weaken its own gate), and the job receives the
+# write token needed to label/comment/close. It checks out ONLY the scanner
+# from main (pinned, no persisted credentials) and reads the diff as TEXT via
+# the API -- it never checks out or executes PR-head code, and uses no LLM
+# secret. No `paths:` filter on purpose: a required check that is path-filtered
+# never reports on non-matching PRs and wedges the merge button.
+#
+# This is defense-in-depth + a reviewer aid, NOT a guarantee (obfuscation can
+# evade regexes) -- maintainer approval remains the primary gate.
+#
+# leak-scan-allow: pull_request_target
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+# Read-only at the top level (Scorecard Token-Permissions); write scope is on
+# the job.
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-security-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: scan
+    permissions:
+      contents: read
+      pull-requests: write  # label / comment / close on a blocking finding
+      statuses: write       # post the Fork Security Scan status
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+    steps:
+      - name: Check out scanner from main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: main             # trusted; the PR-head copy never runs the gate
+          sparse-checkout: .github/scripts/fork-e2e
+          persist-credentials: false
+
+      - name: Security scan of PR diff
+        id: scan
+        run: |
+          # Diff TEXT only -- never checks out or runs PR-head code. Writes
+          # clean=true|false + summary to $GITHUB_OUTPUT.
+          gh pr diff "$PR" --repo "$REPO" --patch > "$RUNNER_TEMP/pr.diff"
+          python3 .github/scripts/fork-e2e/security_scan.py "$RUNNER_TEMP/pr.diff"
+
+      - name: Check security-scan override label
+        id: override
+        run: |
+          if gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name' \
+               | grep -qx 'security-scan-override'; then
+            echo "override=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "override=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Post Fork Security Scan status
+        env:
+          # Fork-derived text (summary may contain PR file paths) via env + quoted.
+          CLEAN: ${{ steps.scan.outputs.clean }}
+          OVERRIDE: ${{ steps.override.outputs.override }}
+          SUMMARY: ${{ steps.scan.outputs.summary }}
+        run: |
+          if [[ "$CLEAN" == "true" ]]; then
+            STATE=success; DESC="$SUMMARY"
+          elif [[ "$OVERRIDE" == "true" ]]; then
+            STATE=success; DESC="overridden by maintainer: $SUMMARY"
+          else
+            STATE=failure; DESC="$SUMMARY"
+          fi
+          gh api "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state="$STATE" -f context="Fork Security Scan" \
+            -f description="${DESC:0:140}" >/dev/null
+          echo "Fork Security Scan=$STATE ($DESC)"
+
+      - name: Escalate on a blocking finding (fork PRs only)
+        # Close + label + comment only for FORK PRs with a real finding and no
+        # maintainer override. Same-repo PRs are never auto-closed.
+        if: >-
+          steps.scan.outputs.clean != 'true'
+          && steps.override.outputs.override != 'true'
+          && github.event.pull_request.head.repo.fork
+          && github.event.pull_request.state == 'open'
+        env:
+          SUMMARY: ${{ steps.scan.outputs.summary }}
+        run: |
+          # Ensure the label exists, then apply it.
+          gh label create security-risk --repo "$REPO" --color B60205 \
+            --description "Automated security scan flagged a possible exfiltration pattern" \
+            >/dev/null 2>&1 || true
+          gh pr edit "$PR" --repo "$REPO" --add-label security-risk >/dev/null 2>&1 || true
+          # Comment (fork-derived text via env + jq -> no shell/markdown injection).
+          BODY="$(printf '@%s — the automated **Fork Security Scan** flagged this PR and it has been closed.\n\n> %s\n\nThis is a heuristic guard for credential-exfiltration patterns in code that runs in CI; it errs toward caution and is **not** a judgment of intent. If you believe this is a false positive, please **tag a maintainer** to review — a maintainer can apply the `security-scan-override` label and reopen the PR.' "$AUTHOR" "$SUMMARY")"
+          jq -n --arg b "$BODY" '{body: $b}' \
+            | gh api -X POST "repos/$REPO/issues/$PR/comments" --input - >/dev/null
+          gh pr close "$PR" --repo "$REPO" >/dev/null
+          echo "Closed PR #$PR and applied security-risk"
