@@ -109,6 +109,10 @@ that works, the full stack is good: key, egress, bridge, harness.
 4. **No Databricks gateway.** Cursor talks only to Cursor's backend, so a
    `databricks-*` model is silently resolved to cursor `auto` — it will *not*
    route through the AI Gateway like claude-sdk/codex/pi.
+5. **Use a model id from the account's catalog.** Bare `gpt-5` is **not** valid;
+   the SDK rejects unknown ids. Valid examples seen live: `default`,
+   `composer-2.5`, `claude-opus-4-8`, `gpt-5.5`. Run with `--model` and read the
+   SDK's `Available models:` list to discover the live set.
 5. **Turns take 30–90s** — always wrap in `timeout 280`.
 6. **Local-runner topology:** `omni run <bundle> --server <url>` runs the
    harness from your **current checkout**; the server only holds state. The
@@ -139,6 +143,29 @@ bundle and runs real turns against the same `$SERVER`, then reports what broke.
 Highest-value targets: the `custom_tools` bridge (hangs / lost tool results /
 errors reported as success), model routing, policy enforcement, streamed-output
 rendering, and orphaned bridge processes after teardown.
+
+## Known sharp edges (found via live bug-bash — "as of this writing")
+
+Live-observed cursor-harness behaviors to watch for while testing (some may be
+fixed by the time you read this — verify):
+
+- **Start failures are swallowed.** An invalid/unavailable `--model` (or any
+  bridge start error) makes `omni run -p` exit **0 with empty output**, while
+  the server records a `failed` session + a `RuntimeError` item the user never
+  sees. If a turn returns nothing, check the session status / items
+  (`GET /v1/sessions/{id}/items`) — don't assume success. (claude-sdk surfaces
+  such errors; cursor doesn't yet.)
+- **Built-in coding tools bypass `on:[tool_call]` policies.** Cursor's native
+  shell/file tools (`--tools coding`) don't emit `tool_call` events, so
+  `on:[tool_call]` guardrails (e.g. `blast_radius`) never see them — a built-in
+  shell can run `git push --force` even under a DENY policy. **Bridged `sys_*`
+  tools *are* gated correctly.** Don't rely on `on:[tool_call]` guardrails for
+  cursor built-in tools.
+- **Run-on assistant text.** Adjacent assistant text blocks are concatenated
+  with no separator, so pre-tool narration can glue onto the post-tool answer.
+- **Non-graceful exit orphans the bridge.** Graceful teardown reaps it (the
+  #221 `aclose` fix works), but a `SIGKILL`/hard-exit leaves an orphaned
+  `cursor-sdk-bridge`. After hard kills, sweep `pgrep -af cursor-sdk-bridge`.
 
 ## Cleanup
 
