@@ -79,10 +79,10 @@ _CASES = [
             "Call the calculate tool to compute 6 * 9, then reply "
             "with exactly 'answer=54' and nothing else."
         ),
-        (),
+        ("claude",),
         ("answer=54", "answer = 54", "answer:54"),
         (),
-        ("--model", "databricks-gpt-5-mini", "--harness", "openai-agents"),
+        (),
         id="agent_with_tools_calculate",
     ),
     pytest.param(

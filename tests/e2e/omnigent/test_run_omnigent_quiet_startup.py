@@ -162,12 +162,13 @@ def test_run_prompt_mode_is_headless_for_local_agent(
     ``omnigent run <agent> -p`` sends one Omnigent turn, prints the
     assistant text, and exits without starting the Rich REPL UI.
 
-    This is the e2e regression for the headless prompt-mode bug. It uses a
-    real local YAML path with Databricks routing coming from the global
-    config's ``auth:`` block (the ``--profile`` CLI flag was removed from the
-    omnigent CLI).
+    This is the e2e regression for the headless prompt-mode bug. It deliberately
+    matches the reported local command shape,
+    ``examples/databricks_coding_agent.yaml -p`` — with Databricks
+    routing coming from the global config's ``auth:`` block (the
+    ``--profile`` CLI flag was removed from the omnigent CLI).
     """
-    yaml_path = omnigent_repo_root / "tests" / "resources" / "examples" / "hello_world.yaml"
+    yaml_path = omnigent_repo_root / "examples" / "databricks_coding_agent.yaml"
     profile, _ = databricks_workspace
     prompt = "hi"
     argv = [
@@ -206,9 +207,9 @@ def test_run_prompt_mode_is_headless_for_local_agent(
     assert result.returncode == 0, (
         f"headless prompt command failed; stdout/stderr:\n{stripped[-4000:]}"
     )
-    assert any(greeting in stripped.lower() for greeting in ("hello", "hi")), (
-        "headless prompt command did not print greeting assistant output; "
-        f"stdout/stderr:\n{stripped[-4000:]}"
+    assert "What can I help you with" in stripped, (
+        "headless prompt command did not print assistant output; stdout/stderr:\n"
+        f"{stripped[-4000:]}"
     )
     forbidden = [
         "Traceback (most recent call last)",
