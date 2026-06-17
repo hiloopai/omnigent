@@ -542,10 +542,10 @@ export function WorkspacePicker({
       </div>
       {newFolderName !== null && (
         <div
-          className="flex shrink-0 flex-col gap-1 border-b px-2 py-1.5"
+          className="flex shrink-0 flex-col gap-1 border-b px-3 py-1.5"
           data-testid="workspace-picker-new-folder-form"
         >
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             <FolderPlusIcon className="size-4 shrink-0 text-muted-foreground" />
             <input
               type="text"
@@ -573,17 +573,17 @@ export function WorkspacePicker({
               className="min-w-0 flex-1 bg-transparent text-xs text-foreground focus:outline-none"
               data-testid="workspace-picker-new-folder-input"
             />
-            <Button
+            <button
               type="button"
-              size="sm"
               disabled={newFolderName.trim() === "" || createDir.isPending}
               onClick={() => void commitNewFolder()}
-              className="shrink-0"
+              aria-label="Create folder"
+              title="Create folder"
+              className="shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground disabled:opacity-30"
               data-testid="workspace-picker-new-folder-create"
             >
-              <CheckIcon className="size-3.5" />
-              Create
-            </Button>
+              <CheckIcon className="size-4" />
+            </button>
             <button
               type="button"
               onClick={cancelNewFolder}
