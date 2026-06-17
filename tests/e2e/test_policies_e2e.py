@@ -141,11 +141,14 @@ def test_policy_gate_allows_clean_message(
     http_client: httpx.Client,
     policy_gate_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """A normal message (no sentinel) passes through the
     policy → reaches the LLM → gets a real response. If
     this regresses, the policy is over-firing and blocking
     legitimate traffic."""
+    if using_mock_llm:
+        pytest.skip("requires real LLM (policy ALLOW pass-through)")
     session_id = create_runner_bound_session(
         http_client, agent_name=policy_gate_agent, runner_id=live_runner_id
     )
@@ -264,6 +267,7 @@ def test_label_gate_taint_persists_across_turns(
     http_client: httpx.Client,
     label_gate_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """Turn 1: user triggers FunctionPolicy that writes
     ``tainted: "1"``. Turn 2: clean input, but
@@ -275,6 +279,8 @@ def test_label_gate_taint_persists_across_turns(
     condition gates on the next turn — the core IFC-through-
     labels pattern. Both turns run on the same runner-bound
     session so turn 2 sees turn 1's persisted label."""
+    if using_mock_llm:
+        pytest.skip("requires real LLM (label taint + multi-turn)")
     session_id = create_runner_bound_session(
         http_client, agent_name=label_gate_agent, runner_id=live_runner_id
     )
@@ -313,11 +319,14 @@ def test_label_gate_untainted_conversation_passes(
     http_client: httpx.Client,
     label_gate_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """A conversation that never triggers taint_on_banana
     should pass every turn — the condition
     ``tainted: "1"`` never matches against the default
     ``tainted: "0"`` seed."""
+    if using_mock_llm:
+        pytest.skip("requires real LLM (label gate pass-through)")
     session_id = create_runner_bound_session(
         http_client, agent_name=label_gate_agent, runner_id=live_runner_id
     )
@@ -339,6 +348,7 @@ def test_label_gate_persisted_labels_in_store(
     http_client: httpx.Client,
     label_gate_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """After the taint turn, the ``tainted`` label is
     persisted to ``conversation_labels`` — verifiable via
@@ -348,6 +358,8 @@ def test_label_gate_persisted_labels_in_store(
     Not just an in-memory snapshot — the labels survive
     workflow restarts, which is what Phase 1's store API
     guarantees."""
+    if using_mock_llm:
+        pytest.skip("requires real LLM (label persistence across turns)")
     session_id = create_runner_bound_session(
         http_client, agent_name=label_gate_agent, runner_id=live_runner_id
     )
@@ -374,6 +386,7 @@ def test_no_guardrails_agent_unaffected(
     http_client: httpx.Client,
     archer_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """Archer has no guardrails block — the engine is a
     no-op, every INPUT ALLOWs, workflow runs normally.
@@ -385,6 +398,8 @@ def test_no_guardrails_agent_unaffected(
     Detecting this at the e2e level catches bugs the unit
     tests' `noop_engine` doesn't cover (real workflow,
     real message flow, real LLM round-trip)."""
+    if using_mock_llm:
+        pytest.skip("requires real LLM (no-guardrails pass-through)")
     session_id = create_runner_bound_session(
         http_client, agent_name=archer_agent, runner_id=live_runner_id
     )
@@ -421,6 +436,7 @@ def test_prompt_policy_allow_path_reaches_llm(
     http_client: httpx.Client,
     prompt_policy_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """
     Non-Canadian input → classifier ALLOWs → agent LLM runs →
@@ -428,6 +444,8 @@ def test_prompt_policy_allow_path_reaches_llm(
     works end-to-end through the real LLM, the policy engine
     composes ALLOW, and the full turn completes normally.
     """
+    if using_mock_llm:
+        pytest.skip("requires real LLM (prompt policy classifier)")
     session_id = create_runner_bound_session(
         http_client, agent_name=prompt_policy_agent, runner_id=live_runner_id
     )
@@ -459,6 +477,7 @@ def test_prompt_policy_deny_path_short_circuits(
     http_client: httpx.Client,
     prompt_policy_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """
     Canadian-topic input → classifier DENYs → the events endpoint
@@ -474,6 +493,8 @@ def test_prompt_policy_deny_path_short_circuits(
     classifier-wiring proof and a gateway-routing regression
     guard.
     """
+    if using_mock_llm:
+        pytest.skip("requires real LLM (prompt policy classifier)")
     session_id = create_runner_bound_session(
         http_client, agent_name=prompt_policy_agent, runner_id=live_runner_id
     )

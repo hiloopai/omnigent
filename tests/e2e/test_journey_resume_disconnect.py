@@ -51,6 +51,7 @@ def test_resume_session_after_disconnect(
     http_client: httpx.Client,
     coder_agent: str,
     live_runner_id: str,
+    using_mock_llm: bool,
 ) -> None:
     """Closing the browser and reopening preserves full session context.
 
@@ -68,6 +69,8 @@ def test_resume_session_after_disconnect(
     8. Verify the agent reproduces the codeword, proving history
        survived the disconnect.
     """
+    if using_mock_llm:
+        pytest.skip("requires real LLM (multi-turn codeword recall)")
     # ── Setup: two turns with a codeword ─────────────────
     session_id = create_runner_bound_session(
         http_client, agent_name=coder_agent, runner_id=live_runner_id
