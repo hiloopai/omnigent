@@ -43,6 +43,7 @@ from omnigent.host.local_server import (
     stop_local_omnigent_server,
     stop_untracked_local_server,
 )
+from omnigent.inner import ui
 from omnigent.onboarding.sandboxes import available_providers as _sandbox_providers
 from omnigent.onboarding.ucode_setup import (
     build_ucode_configure_command,
@@ -507,7 +508,7 @@ def _resolve_first_run_plan() -> _FirstRunPlan | None:
 
     plan = _pick_first_run_harness()
     if plan is None:
-        click.secho("Found no harnesses configured.", fg="yellow", err=True)
+        ui.warn("Found no harnesses configured.")
         _run_configure_harnesses_interactive()
         plan = _pick_first_run_harness()
     return plan
@@ -1107,7 +1108,34 @@ def _print_version_callback(ctx: click.Context, _param: click.Parameter, value: 
     ctx.exit()
 
 
-@click.group()
+class _OmnigentCLI(click.Group):
+    """Top-level group that prints the brand lockup above its help.
+
+    The Otto + wordmark lockup is drawn on stderr (decoration) and is
+    TTY-gated by :func:`omnigent.inner.ui.show_banner`, so ``omnigent
+    --help`` shows the banner interactively while piped/CI help stays
+    clean. Only the top-level group overrides help; subcommand help
+    (``omnigent run --help``) is untouched.
+    """
+
+    def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
+        from omnigent.inner import ui
+
+        if ui.show_banner():
+            import importlib.metadata
+
+            try:
+                version = importlib.metadata.version("omnigent")
+            except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+                version = ""
+            epilogue = [("Get started", "omnigent setup")]
+            if version:
+                epilogue.insert(0, ("Version", version))
+            ui.print_landing(tagline="all your agents, one cli", epilogue=epilogue)
+        super().format_help(ctx, formatter)
+
+
+@click.group(cls=_OmnigentCLI)
 @click.option(
     "--version",
     is_flag=True,
@@ -3227,6 +3255,8 @@ def server_status(json_output: bool) -> None:
     :param json_output: Emit machine-readable JSON instead of text.
     :returns: None.
     """
+    if not json_output:
+        ui.print_brandmark()
     info = local_server_status()
     daemon_attached = _find_daemon_record(_LOCAL_DAEMON_MARKER) is not None
     sessions: int | None = None
@@ -3416,6 +3446,8 @@ def upgrade(check_only: bool, force: bool, pre: bool) -> None:
     :param pre: Consider pre-releases and allow the installer to fetch them.
     :returns: None.
     """
+    ui.print_brandmark()
+
     import importlib.metadata
 
     from packaging.version import InvalidVersion, parse
@@ -6086,6 +6118,8 @@ def host_status(
     :param all_targets: Whether to inspect every known daemon target.
     :param json_output: Whether to emit machine-readable JSON.
     """
+    if not json_output:
+        ui.print_brandmark()
     if server is None:
         server = _host_group_option(ctx, "server")
     records = _selected_daemon_records(server=server, all_targets=all_targets, default_all=True)
@@ -6487,9 +6521,10 @@ def config_list() -> None:
 
     :returns: None.
     """
-    click.echo("Defaults")
+    ui.print_brandmark()
+    ui.header("Defaults")
     _print_config_defaults()
-    click.echo()
+    ui.console.print()
     _print_credentials_by_harness()
 
 
@@ -6801,7 +6836,8 @@ def _warn_missing_harness_dependencies() -> None:
     ``codex`` do need both, hence the prominent notice.
 
     :returns: None. Side effect: writes a yellow warning block to stderr
-        via :func:`click.secho` when one or more dependencies are missing.
+        via :mod:`omnigent.inner.ui` when one or more dependencies are
+        missing.
     """
     problems: list[str] = []
     node_problem = _node_dependency_problem()
@@ -6815,20 +6851,16 @@ def _warn_missing_harness_dependencies() -> None:
         )
     if not problems:
         return
-    click.secho(
-        "\n⚠ External tooling needed for some harnesses is missing or outdated:",
-        fg="yellow",
-        bold=True,
-        err=True,
-    )
+    ui.err_console.print()
+    ui.warn("External tooling needed for some harnesses is missing or outdated:")
     for problem in problems:
-        click.secho(f"  • {problem}", fg="yellow", err=True)
-    click.secho(
+        ui.err_console.print(f"  • {problem}", style="omni.warning", markup=False)
+    ui.err_console.print(
         "You can still configure credentials — the pure-Python openai-agents harness "
         "runs without these — but install them before `omnigent claude` / "
         "`omnigent codex` or the Pi harness.\n",
-        fg="yellow",
-        err=True,
+        style="omni.warning",
+        markup=False,
     )
 
 
@@ -8652,6 +8684,11 @@ def setup(internal_beta: bool) -> None:
     ``omnigent config list``.) Pass ``--internal-beta`` to configure
     Databricks internal-beta defaults and authentication instead.
     """
+    from omnigent.inner import ui
+
+    # Brand lockup at the top of the first-run experience (TTY-gated).
+    ui.print_landing(tagline="all your agents, one cli")
+
     if internal_beta:
         # The internal-beta workspace defaults are excluded from the public OSS
         # build. Fail loud with a clear message instead of an ImportError deep
