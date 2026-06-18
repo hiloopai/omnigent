@@ -81,6 +81,17 @@ _ENV_PASSTHROUGH_KEYS = (
     "http_proxy",
     "https_proxy",
 )
+# OpenCode env vars that point the server at the user's GLOBAL config — they
+# would defeat the per-session XDG isolation by re-introducing whatever
+# config/model/permission settings the parent shell has set. Dropped from
+# the passthrough even though they match the ``OPENCODE_`` prefix, so an
+# isolated session never inherits unrelated global OpenCode config.
+_ENV_OPENCODE_CONFIG_DENYLIST = frozenset(
+    {
+        "OPENCODE_CONFIG",
+        "OPENCODE_CONFIG_CONTENT",
+    }
+)
 
 _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z]+)*)")
 
@@ -260,6 +271,10 @@ def filtered_server_env(
     """
     env: dict[str, str] = {}
     for key, value in os.environ.items():
+        if key in _ENV_OPENCODE_CONFIG_DENYLIST:
+            # Never inherit the parent's global OpenCode config — the
+            # per-session XDG dirs are the only config source.
+            continue
         if key in _ENV_PASSTHROUGH_KEYS or key.startswith(_ENV_PASSTHROUGH_PREFIXES):
             env[key] = value
     env.update(extra_env or {})

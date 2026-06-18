@@ -12,6 +12,7 @@ codex-native.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from collections.abc import Mapping
@@ -44,8 +45,36 @@ class OpenCodeNativeExecutor(NativeServerHarness):
             descriptor=HARNESS_DESCRIPTORS["opencode-native"],
             transport=OpenCodeHttpTransport(bridge_dir=self._bridge_dir),
             resolve_session_id=self._resolve_session_id,
-            build_prompt=_content_to_native_prompt,
+            build_prompt=self._build_prompt,
         )
+
+    def _build_prompt(self, content: Any) -> NativePrompt | None:
+        """
+        Build a prompt, pinning the resolved model so it governs from turn one.
+
+        OpenCode's ``POST /session`` create body does NOT accept a model
+        (verified against the OpenCode SDK ``SessionCreateData``); the model
+        is a per-prompt field (``{"providerID", "modelID"}``). So the
+        session's ``model_override`` is applied to EVERY injected prompt
+        here. Because OpenCode persists the last-used model as the session
+        default, pinning the first injected turn also governs subsequent
+        TUI-typed turns — the override controls the run from the start, not
+        just a later web turn. A per-turn ``config.model`` (if any) still
+        wins: the base ``run_turn`` only fills the model when the prompt
+        leaves it unset, so it skips a prompt this method already pinned.
+
+        :param content: Executor message content (string or content blocks).
+        :returns: The prompt with the resolved model applied, or ``None``
+            when there is nothing to send.
+        """
+        prompt = _content_to_native_prompt(content)
+        if prompt is None or prompt.model:
+            return prompt
+        state = read_bridge_state(self._bridge_dir)
+        model = state.model_override if state is not None else None
+        if not model:
+            return prompt
+        return dataclasses.replace(prompt, model=model)
 
     async def _resolve_session_id(self) -> str | None:
         """

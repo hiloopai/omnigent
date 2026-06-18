@@ -101,6 +101,29 @@ def test_filtered_server_env_sets_xdg_and_password(
     assert "RANDOM_UNRELATED" not in env  # unrelated env filtered out
 
 
+def test_filtered_server_env_drops_global_opencode_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Global OpenCode config env never leaks into the isolated session.
+
+    ``OPENCODE_CONFIG`` / ``OPENCODE_CONFIG_CONTENT`` would re-introduce the
+    parent shell's config/model/permission settings, defeating the
+    per-session XDG isolation — so they are dropped even though they match
+    the ``OPENCODE_`` passthrough prefix. Other ``OPENCODE_`` vars (and the
+    server password we set) are unaffected.
+    """
+    monkeypatch.setenv("OPENCODE_CONFIG", "/home/user/.config/opencode/opencode.json")
+    monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"model": "evil/model"}')
+    monkeypatch.setenv("OPENCODE_DISABLE_AUTOUPDATE", "1")
+    env = filtered_server_env(bridge_dir=tmp_path, auth_secret="pw")
+    assert "OPENCODE_CONFIG" not in env
+    assert "OPENCODE_CONFIG_CONTENT" not in env
+    # An unrelated OPENCODE_ var is still passed through (not config leakage).
+    assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    # The per-session XDG dirs remain the only config source.
+    assert env["XDG_CONFIG_HOME"] == str(tmp_path / "xdg-config")
+
+
 def _server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> OpenCodeNativeServer:
     monkeypatch.setattr(appsrv.shutil, "which", lambda name: f"/usr/bin/{name}")
     return OpenCodeNativeServer(

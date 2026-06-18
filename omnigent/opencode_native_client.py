@@ -204,9 +204,11 @@ class OpenCodeClient:
         """
         Create an OpenCode session (``POST /session``).
 
-        :param payload: Optional create body, e.g.
-            ``{"title": "...", "model": {"providerID": "anthropic",
-            "id": "claude-opus-4"}}``.
+        :param payload: Optional create body, e.g. ``{"title": "..."}``.
+            Note: OpenCode's create body only accepts ``title`` / ``parentID``
+            — it does NOT accept a model (the model is a per-prompt field on
+            ``POST /session/{id}/message``). Pin the model per prompt via
+            :func:`omnigent.opencode_http_transport.build_prompt_payload`.
         :returns: The created session.
         """
         data = await self._request_json("POST", "/session", json=dict(payload or {}))

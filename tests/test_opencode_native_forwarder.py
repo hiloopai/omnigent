@@ -149,13 +149,19 @@ async def test_interrupt_requested_emits_cancelling() -> None:
     assert "cancelling" in statuses
 
 
-async def test_permission_asked_replies_once_by_default() -> None:
+async def test_permission_asked_rejects_when_no_policy_wired() -> None:
+    """Absent a policy evaluator the forwarder FAILS CLOSED (no auto-approve).
+
+    The security contract: a headless OpenCode turn must never silently
+    auto-approve a sensitive op just because no policy gate is wired. The
+    previous ``allow_once`` default did exactly that.
+    """
     server, opencode = _RecordingServerClient(), _FakeOpenCodeClient()
-    fwd = _forwarder(server, opencode)  # default_decision allow_once
+    fwd = _forwarder(server, opencode)  # no policy_evaluator → fail closed
     await fwd.handle_event(
         _event("permission.v2.asked", id="per_1", action="bash", resources=[{"command": "ls"}])
     )
-    assert opencode.replies == [("per_1", {"reply": "once", "message": "omnigent-policy"})]
+    assert opencode.replies == [("per_1", {"reply": "reject", "message": "omnigent-policy"})]
 
 
 async def test_permission_asked_rejects_when_policy_denies() -> None:
@@ -167,6 +173,73 @@ async def test_permission_asked_rejects_when_policy_denies() -> None:
     fwd = _forwarder(server, opencode, policy_evaluator=deny)
     await fwd.handle_event(_event("permission.v2.asked", id="per_2", action="bash"))
     assert opencode.replies[0][1]["reply"] == "reject"
+
+
+async def test_permission_asked_allows_only_on_explicit_policy_allow() -> None:
+    """An explicit policy ``allow`` is the only path to ``once``."""
+    server, opencode = _RecordingServerClient(), _FakeOpenCodeClient()
+
+    async def allow(_normalized: Any) -> dict[str, Any]:
+        return {"decision": "allow"}
+
+    fwd = _forwarder(server, opencode, policy_evaluator=allow)
+    await fwd.handle_event(_event("permission.v2.asked", id="per_a", action="bash"))
+    assert opencode.replies[0][1]["reply"] == "once"
+
+
+async def test_permission_asked_allow_always_maps_to_always() -> None:
+    server, opencode = _RecordingServerClient(), _FakeOpenCodeClient()
+
+    async def allow_always(_normalized: Any) -> dict[str, Any]:
+        return {"decision": "allow_always"}
+
+    fwd = _forwarder(server, opencode, policy_evaluator=allow_always)
+    await fwd.handle_event(_event("permission.v2.asked", id="per_aa", action="bash"))
+    assert opencode.replies[0][1]["reply"] == "always"
+
+
+async def test_permission_asked_rejects_when_policy_returns_ask() -> None:
+    """An unresolved ``ask`` reaching the forwarder FAILS CLOSED, not auto-approve.
+
+    The genuine human approval for an ``ask`` is resolved UPSTREAM by the
+    policy evaluator (the server parks an approval card on
+    ``/policies/evaluate`` and returns a hard allow/deny). An ``ask`` that
+    still reaches the forwarder means no human resolution was obtained, so
+    it must DENY — never silently approve.
+    """
+    server, opencode = _RecordingServerClient(), _FakeOpenCodeClient()
+
+    async def ask(_normalized: Any) -> dict[str, Any]:
+        return {"decision": "ask"}
+
+    fwd = _forwarder(server, opencode, policy_evaluator=ask)
+    await fwd.handle_event(_event("permission.v2.asked", id="per_ask", action="bash"))
+    assert opencode.replies[0][1]["reply"] == "reject"
+
+
+async def test_permission_asked_passes_normalized_input_to_evaluator() -> None:
+    """The forwarder routes through the policy gate with a normalized input.
+
+    Proves the request is genuinely evaluated (harness + action + the
+    concrete command), not decided by a hardcoded default.
+    """
+    server, opencode = _RecordingServerClient(), _FakeOpenCodeClient()
+    seen: list[Any] = []
+
+    async def capture(normalized: Any) -> dict[str, Any]:
+        seen.append(normalized)
+        return {"decision": "deny"}
+
+    fwd = _forwarder(server, opencode, policy_evaluator=capture, workspace="/work/repo")
+    await fwd.handle_event(
+        _event("permission.v2.asked", id="per_n", action="bash", resources=[{"command": "ls"}])
+    )
+    assert len(seen) == 1
+    assert seen[0]["harness"] == "opencode-native"
+    assert seen[0]["action"] == "bash"
+    assert seen[0]["command"] == "ls"
+    assert seen[0]["working_directory"] == "/work/repo"
+    assert seen[0]["omnigent_session_id"] == "conv_1"
 
 
 async def test_permission_asked_dedupes() -> None:

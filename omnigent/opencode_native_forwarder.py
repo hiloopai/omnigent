@@ -116,12 +116,19 @@ class OpenCodeNativeForwarder:
     :param bridge_dir: Native OpenCode bridge directory (status/active-id
         persistence). ``None`` disables bridge writes (tests).
     :param workspace: Session workspace, used for permission normalization.
-    :param policy_evaluator: Optional async policy resolver. ``None`` uses
-        *default_decision* for every permission request.
+    :param policy_evaluator: Optional async policy resolver. Production
+        wires one that POSTs each request to
+        ``/v1/sessions/{id}/policies/evaluate`` (see
+        ``omnigent.runner.app._build_opencode_policy_evaluator``) — the SAME
+        server gate codex-native's policy hook uses, where an ``ask`` verdict
+        is parked as a human approval card and blocks until a human resolves
+        it. ``None`` uses *default_decision* for every request.
     :param default_decision: Decision used when no evaluator is provided or
-        it returns ``None``. Defaults to ``allow_once`` (codex-native
-        parity: an unconfigured policy lets the native agent run its own
-        tools); set ``reject`` to fail closed.
+        it returns ``None`` (evaluator unreachable / no verdict). Defaults to
+        ``reject`` so an unconfigured or unreachable policy FAILS CLOSED — a
+        headless OpenCode turn must NEVER silently auto-approve a sensitive
+        operation. Only an explicit policy ``allow`` reaches
+        ``once``/``always``.
     """
 
     def __init__(
@@ -134,7 +141,7 @@ class OpenCodeNativeForwarder:
         bridge_dir: Path | None = None,
         workspace: str | None = None,
         policy_evaluator: PolicyEvaluator | None = None,
-        default_decision: PolicyDecision = "allow_once",
+        default_decision: PolicyDecision = "reject",
     ) -> None:
         self._session_id = session_id
         self._opencode_session_id = opencode_session_id
@@ -459,8 +466,12 @@ class OpenCodeNativeForwarder:
         decision = await self._resolve_permission(request_dict=request)
         reply = decision_to_reply(decision)
         if reply is None:
-            # Fail closed: an unmapped/ask verdict gets a reject so a
-            # headless turn never silently auto-approves a sensitive op.
+            # Fail closed. ``decision_to_reply`` returns ``None`` only for
+            # ``ask``. The genuine human approval for an ``ask`` happens
+            # UPSTREAM inside the policy evaluator (the server parks an
+            # approval card on ``/policies/evaluate`` and returns a hard
+            # allow/deny). So an ``ask`` still reaching here means no human
+            # resolution was obtained — which must DENY, never auto-approve.
             reply = "reject"
         try:
             await self._opencode.reply_permission(
@@ -481,6 +492,8 @@ class OpenCodeNativeForwarder:
         :returns: The normalized policy decision.
         """
         if self._policy_evaluator is None:
+            # No policy gate wired → fail closed (default ``reject``). A
+            # forwarder with no evaluator must never auto-approve.
             return self._default_decision
         normalized = normalize_for_policy(
             request_dict,

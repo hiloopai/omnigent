@@ -20,7 +20,7 @@ import tempfile
 import time
 import urllib.parse
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -864,6 +864,15 @@ async def _auto_create_opencode_terminal(
             server_client=server_client,
             bridge_dir=bridge_dir,
             workspace=workspace,
+            # Route OpenCode permission requests through the SAME server-side
+            # policy/approval gate codex-native uses. Without this the
+            # forwarder would fall back to its fail-closed ``reject`` default
+            # and deny every tool; with it, policy decides and an ``ask``
+            # parks a human approval card server-side.
+            policy_evaluator=_build_opencode_policy_evaluator(
+                server_client=server_client,
+                conversation_id=session_id,
+            ),
         )
         forwarder_task = asyncio.create_task(
             _supervise_opencode_forwarder(session_id, server, forwarder),
@@ -943,6 +952,101 @@ async def _supervise_opencode_forwarder(
         elif server is not None:
             with contextlib.suppress(Exception):
                 await server.close()
+
+
+# Permission decisions can park a human approval card server-side
+# (``POLICY_ACTION_ASK``), so the evaluate POST may block until a human
+# resolves it. Match the codex-native policy hook's day-long budget; the
+# server caps the real wait via the deciding policy's ``ask_timeout``.
+_OPENCODE_POLICY_EVALUATE_TIMEOUT_S = 86400.0
+# Map the server's proto verdict onto the forwarder's verdict vocabulary
+# (``map_verdict_to_decision`` reads ``decision``). Anything unknown is
+# treated as ``ask`` → the forwarder fails it closed to ``reject``.
+_OPENCODE_POLICY_ACTION_TO_DECISION = {
+    "POLICY_ACTION_ALLOW": "allow",
+    "POLICY_ACTION_DENY": "deny",
+    "POLICY_ACTION_ASK": "ask",
+}
+
+
+def _build_opencode_policy_evaluator(
+    *,
+    server_client: httpx.AsyncClient,
+    conversation_id: str,
+) -> Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any] | None]]:
+    """
+    Build the policy evaluator the OpenCode permission forwarder consults.
+
+    Mirrors codex-native's policy hook exactly: every OpenCode
+    ``permission.v2.asked`` request is POSTed to this session's
+    ``/v1/sessions/{id}/policies/evaluate`` endpoint as a
+    ``PHASE_TOOL_CALL`` event. The server evaluates configured policies and
+    — for an ``ASK`` verdict — parks a human approval card and blocks until
+    it is resolved, returning a hard ``ALLOW``/``DENY``. The forwarder turns
+    that into an OpenCode ``once``/``always``/``reject`` reply.
+
+    Fails CLOSED: an unreachable server, a non-200, a malformed body, or an
+    unresolved ``ASK`` all yield a ``deny``/``ask`` verdict the forwarder
+    rejects — never a silent approve. Only an explicit ``ALLOW`` permits the
+    operation.
+
+    :param server_client: Runner's Omnigent server HTTP client.
+    :param conversation_id: Owning Omnigent session id, e.g. ``"conv_abc"``.
+    :returns: An async evaluator returning a verdict mapping, or a deny
+        verdict on failure.
+    """
+    from omnigent.opencode_native_permissions import OPENCODE_NATIVE_HARNESS
+
+    session_component = urllib.parse.quote(conversation_id, safe="")
+    url = f"/v1/sessions/{session_component}/policies/evaluate"
+
+    async def _evaluate(normalized: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        arguments: dict[str, Any] = {
+            key: normalized[key]
+            for key in ("command", "path", "url")
+            if normalized.get(key) is not None
+        }
+        metadata = normalized.get("metadata")
+        if isinstance(metadata, Mapping) and metadata:
+            arguments.setdefault("metadata", dict(metadata))
+        body = {
+            "event": {
+                "type": "PHASE_TOOL_CALL",
+                "target": "",
+                "data": {
+                    "name": normalized.get("action") or "permission",
+                    "arguments": arguments,
+                },
+                "context": {"harness": OPENCODE_NATIVE_HARNESS},
+            },
+        }
+        try:
+            resp = await server_client.post(
+                url, json=body, timeout=_OPENCODE_POLICY_EVALUATE_TIMEOUT_S
+            )
+        except httpx.HTTPError:
+            _logger.warning(
+                "OpenCode policy evaluate POST failed for %s; failing closed",
+                conversation_id,
+                exc_info=True,
+            )
+            return {"decision": "deny"}
+        if resp.status_code != 200 or not resp.content:
+            _logger.warning(
+                "OpenCode policy evaluate returned %s for %s; failing closed",
+                resp.status_code,
+                conversation_id,
+            )
+            return {"decision": "deny"}
+        try:
+            result = resp.json()
+        except ValueError:
+            _logger.warning("OpenCode policy evaluate returned non-JSON; failing closed")
+            return {"decision": "deny"}
+        action = result.get("result") if isinstance(result, Mapping) else None
+        return {"decision": _OPENCODE_POLICY_ACTION_TO_DECISION.get(str(action), "ask")}
+
+    return _evaluate
 
 
 def _opencode_native_model_from_spec(agent_spec: Any | None) -> str | None:

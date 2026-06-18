@@ -61,7 +61,11 @@ def fake_server(monkeypatch: pytest.MonkeyPatch) -> _FakeServer:
 
 
 def _seed_state(
-    bridge_dir: Path, *, session_id: str = "conv_1", opencode_session_id: str = "ses_1"
+    bridge_dir: Path,
+    *,
+    session_id: str = "conv_1",
+    opencode_session_id: str = "ses_1",
+    model_override: str | None = None,
 ) -> None:
     write_bridge_state(
         bridge_dir,
@@ -70,6 +74,7 @@ def _seed_state(
             server_base_url="http://127.0.0.1:49231",
             opencode_session_id=opencode_session_id,
             auth_secret="pw",
+            model_override=model_override,
         ),
     )
 
@@ -126,6 +131,38 @@ async def test_run_turn_with_blocks(
     assert file_parts[0]["mime"] == "image/png"
     # No inline base64 in any text part.
     assert all(_PNG_B64 not in p.get("text", "") for p in parts)
+
+
+async def test_run_turn_pins_resolved_model_on_prompt(
+    fake_server: _FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The session's resolved model reaches the prompt body from turn one.
+
+    OpenCode's session-create body cannot carry a model, so the override is
+    applied per prompt as ``model: {providerID, modelID}``. This pins the
+    first injected turn (which OpenCode then persists as the session
+    default), so the override governs the run from the start — not only a
+    later web turn.
+    """
+    _seed_state(tmp_path, model_override="anthropic/claude-opus-4")
+    executor = _executor(tmp_path, monkeypatch)
+    events = await _run(executor, "hello")
+    assert [type(e) for e in events] == [TurnComplete]
+    prompt_reqs = [r for r in fake_server.requests if r[1].endswith("/prompt_async")]
+    assert len(prompt_reqs) == 1
+    body = prompt_reqs[0][2]
+    assert body["model"] == {"providerID": "anthropic", "modelID": "claude-opus-4"}
+
+
+async def test_run_turn_omits_model_when_no_override(
+    fake_server: _FakeServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no model_override the prompt carries no model (OpenCode default)."""
+    _seed_state(tmp_path)
+    executor = _executor(tmp_path, monkeypatch)
+    await _run(executor, "hello")
+    prompt_reqs = [r for r in fake_server.requests if r[1].endswith("/prompt_async")]
+    assert "model" not in prompt_reqs[0][2]
 
 
 async def test_run_turn_no_user_content_errors(
