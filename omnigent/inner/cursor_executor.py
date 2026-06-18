@@ -67,6 +67,7 @@ from .executor import (
     ToolCallRequest,
     ToolCallStatus,
     ToolSpec,
+    TurnCancelled,
     TurnComplete,
     classify_tool_result,
 )
@@ -333,16 +334,28 @@ def _tool_error_payload(text: str) -> dict[str, Any]:  # type: ignore[explicit-a
 def _encode_tool_result(result: Any) -> Any:  # type: ignore[explicit-any]
     """Encode a bridged-tool result for the SDK custom-tool return.
 
-    A dict carrying a truthy ``error`` or ``blocked`` is a dispatch failure or a
-    policy block (the shapes ``_bridge_one_dispatch`` / the policy layer return):
-    surface it as an ``isError`` payload so the model sees a failure — parity with
-    the claude-sdk handler, which the cursor harness otherwise diverged from by
-    delivering errors as ordinary, apparently-successful results. Everything else
-    returns its text: a ``str`` passthrough (the SDK wraps it as success), else
-    JSON.
+    A result that :func:`classify_tool_result` flags as anything other than
+    SUCCESS — a dispatch failure (``error``), a policy block (``blocked``), a
+    cancellation (``cancelled``), or any of those nested inside a
+    ``content`` / ``result`` / ``output`` / ``text`` envelope (or under a list
+    element) — is surfaced as an ``isError`` payload so the model sees a
+    failure. This pins the encoded result to the same ``classify_tool_result``
+    verdict the executor already reports for the observed ``ToolCallComplete``
+    event (see ``_sdk_message_to_events``), rather than the top-level-only
+    ``error`` / ``blocked`` check this used to share with the claude-sdk
+    handler. (The claude-sdk handler still uses that narrower top-level check,
+    so this is *not* parity with it.) Everything else returns its text: a
+    ``str`` passthrough (the SDK wraps it as success), else JSON.
+
+    Trade-off: because ``classify_tool_result`` maps ``{"cancelled": True}`` to
+    CANCELLED (not SUCCESS), a benign cancellation result — e.g. a successful
+    ``sys_cancel_async`` returning ``{"cancelled": True, ...}`` — is encoded as
+    ``isError``. This is intentional: a non-SUCCESS verdict is treated as a
+    failure here regardless of how benign the cancellation is.
     """
-    if isinstance(result, dict) and (result.get("error") or result.get("blocked")):
-        return _tool_error_payload(json.dumps(result, default=str))
+    if classify_tool_result(result).status != ToolCallStatus.SUCCESS:
+        encoded = result if isinstance(result, str) else json.dumps(result, default=str)
+        return _tool_error_payload(encoded)
     if isinstance(result, str):
         return result
     try:
@@ -788,11 +801,32 @@ class CursorExecutor(Executor):
             yield ExecutorError(message=f"cursor-sdk turn failed: {exc}", retryable=True)
             return
 
+        # RunResult.status is Literal["finished", "error", "cancelled",
+        # "expired"]. Only "finished" should commit a TurnComplete; the other
+        # terminal statuses are surfaced as errors/cancellation and tear the
+        # session down (the agent/bridge may be in an inconsistent state).
         status = getattr(result, "status", "")
         if status == "error":
             await self.close_session(session_key)
             detail = getattr(result, "result", "") or "cursor-sdk run reported an error"
             yield ExecutorError(message=f"cursor-sdk run error: {detail}", retryable=True)
+            return
+        if status == "expired":
+            await self.close_session(session_key)
+            detail = getattr(result, "result", "") or "cursor-sdk run expired"
+            yield ExecutorError(message=f"cursor-sdk run expired: {detail}", retryable=True)
+            return
+        if status == "cancelled":
+            await self.close_session(session_key)
+            yield TurnCancelled(reason="cursor-sdk run cancelled")
+            return
+        if status != "finished":
+            await self.close_session(session_key)
+            detail = getattr(result, "result", "") or "cursor-sdk run finished with unknown status"
+            yield ExecutorError(
+                message=f"cursor-sdk run returned non-finished status {status!r}: {detail}",
+                retryable=True,
+            )
             return
 
         # Prefer the streamed text we accumulated (which carries the paragraph
