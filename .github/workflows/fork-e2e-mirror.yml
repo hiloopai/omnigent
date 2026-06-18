@@ -30,7 +30,9 @@ name: Fork e2e mirror
 # leak-scan-allow: pull_request_target
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, closed]
+    # labeled/unlabeled so applying or removing `e2e-approved` opens or tears
+    # down the mirror immediately, not only on the PR's next push.
+    types: [opened, synchronize, reopened, closed, labeled, unlabeled]
 
   workflow_dispatch:
     inputs:
@@ -47,14 +49,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Delete the trusted mirror branch when the PR closes. Ungated -- cleanup
-  # must always run so a closed PR never leaves a stale fork-e2e/pr-N branch.
+  # Delete the trusted mirror branch when the PR closes or the gate label is
+  # removed. Ungated -- cleanup must always run so a closed PR (or one whose
+  # label was removed) never leaves a stale fork-e2e/pr-N branch behind.
+  # Note: approval revocation cleanup is handled by the mirror job's
+  # "Delete stale mirror branch on revocation" step (workflow_dispatch path).
   cleanup:
     name: cleanup
     if: >-
       github.event_name == 'pull_request_target'
       && github.event.pull_request.head.repo.fork
-      && github.event.action == 'closed'
+      && (
+        github.event.action == 'closed'
+        || (github.event.action == 'unlabeled' && github.event.label.name == 'e2e-approved')
+      )
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -92,6 +100,8 @@ jobs:
         github.event_name == 'pull_request_target'
         && github.event.pull_request.head.repo.fork
         && github.event.action != 'closed'
+        && github.event.action != 'unlabeled'
+        && (github.event.action != 'labeled' || github.event.label.name == 'e2e-approved')
       )
     uses: ./.github/workflows/security-gate.yml
 
@@ -108,6 +118,8 @@ jobs:
         github.event_name == 'pull_request_target'
         && github.event.pull_request.head.repo.fork
         && github.event.action != 'closed'
+        && github.event.action != 'unlabeled'
+        && (github.event.action != 'labeled' || github.event.label.name == 'e2e-approved')
       )
     permissions:
       contents: read

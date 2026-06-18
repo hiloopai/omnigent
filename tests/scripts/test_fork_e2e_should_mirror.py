@@ -12,33 +12,40 @@ def _run(
     tmp_path: Path,
     *,
     approvers: str = "",
+    labels: str = "",
+    labeler: str = "",
     maintainers: str = "alice bob",
 ) -> dict[str, str]:
     """
     Run should-mirror.sh against a mocked ``gh`` and return its outputs.
 
-    The approval-based gate makes exactly one ``gh`` call, which the mock answers:
+    The gate checks two paths (approval OR label), making up to three
+    ``gh`` calls which the mock answers:
 
-    - ``api repos/{repo}/pulls/{pr}/reviews ...`` -> *approvers*, the login(s) of
-      accounts whose latest non-COMMENTED review state is APPROVED (empty if none).
+    - ``api repos/{repo}/pulls/{pr}/reviews ...`` -> *approvers*
+    - ``pr view {pr} ... --json labels --jq '.labels[].name'`` -> *labels*
+    - ``api repos/{repo}/issues/{pr}/events ...`` -> *labeler*
 
-    :param tmp_path: Pytest tmp dir for the mock + output file.
     :param approvers: Space-separated logins the reviews mock returns as
         approvers; empty means no approving reviews.
-    :param maintainers: Space-separated maintainer logins (as
-        load-maintainers.sh would emit); empty means none.
-    :returns: Parsed ``key=value`` GITHUB_OUTPUT lines, e.g.
-        ``{"mirror": "true", "reason": "..."}``.
+    :param labels: Space-separated labels currently on the PR; empty means none.
+    :param labeler: Login the issue-events mock attributes the gate label to.
+    :param maintainers: Space-separated maintainer logins.
+    :returns: Parsed ``key=value`` GITHUB_OUTPUT lines.
     """
     gh = tmp_path / "gh"
     gh.write_text(
         "#!/usr/bin/env bash\n"
         "set -uo pipefail\n"
-        # gh api repos/{repo}/pulls/{pr}/reviews --paginate --jq '...'
+        # gh pr view <pr> --repo <repo> --json labels --jq '.labels[].name'
+        'if [[ "$1" == "pr" ]]; then [[ -n "$MOCK_LABELS" ]]'
+        ' && printf "%s\\n" $MOCK_LABELS; exit 0; fi\n'
         'if [[ "$1" == "api" ]]; then\n'
         '  case "$2" in\n'
         '    *pulls/*reviews*) [[ -n "$MOCK_APPROVERS" ]]'
         ' && printf "%s\\n" $MOCK_APPROVERS; exit 0 ;;\n'
+        '    *issues/*events*) [[ -n "$MOCK_LABELER" ]]'
+        ' && printf "%s\\n" "$MOCK_LABELER"; exit 0 ;;\n'
         "  esac\n"
         "fi\n"
         'echo "unexpected gh invocation: $*" >&2\n'
@@ -59,6 +66,8 @@ def _run(
             "MAINTAINERS": maintainers,
             "GITHUB_OUTPUT": str(out_file),
             "MOCK_APPROVERS": approvers,
+            "MOCK_LABELS": labels,
+            "MOCK_LABELER": labeler,
         }
     )
     proc = subprocess.run(
@@ -77,59 +86,26 @@ def _run(
     return outputs
 
 
-def test_approved_by_maintainer_mirrors(tmp_path: Path) -> None:
-    """A maintainer's approving review opens the gate.
+# --- Path 1: maintainer approval ---
 
-    The whole contract: secret-bearing e2e runs only after a maintainer approves.
-    Asserts ``mirror=true`` and that the reason names the approving maintainer.
-    """
+
+def test_approved_by_maintainer_mirrors(tmp_path: Path) -> None:
+    """A maintainer's approving review opens the gate."""
     out = _run(tmp_path, approvers="bob")
     assert out["mirror"] == "true"
     assert "approved by maintainer" in out["reason"]
 
 
 def test_maintainer_match_is_case_insensitive(tmp_path: Path) -> None:
-    """Approver vs MAINTAINER comparison is case-insensitive.
-
-    GitHub logins are compared lowercased, so an approver ``Bob`` still
-    opens the gate against a ``bob`` MAINTAINER entry.
-    """
+    """Approver vs MAINTAINER comparison is case-insensitive."""
     out = _run(tmp_path, approvers="Bob", maintainers="alice bob")
     assert out["mirror"] == "true"
 
 
-def test_no_approvals_does_not_mirror(tmp_path: Path) -> None:
-    """Without any approving reviews the gate stays shut.
-
-    No approval means no secret-bearing e2e on a fork PR. Asserts
-    ``mirror=false`` and an awaiting-approval reason.
-    """
-    out = _run(tmp_path, approvers="")
-    assert out["mirror"] == "false"
-    assert "awaiting approval" in out["reason"]
-
-
-def test_approved_by_non_maintainer_does_not_mirror(tmp_path: Path) -> None:
-    """An approval from a NON-maintainer must not open the gate.
-
-    Write access lets non-maintainers submit approving reviews, so approval
-    alone is insufficient: the approver must be in MAINTAINER. ``eve`` approves
-    but isn't a maintainer, so ``mirror=false``.
-    """
+def test_approved_by_non_maintainer_no_label_does_not_mirror(tmp_path: Path) -> None:
+    """An approval from a non-maintainer (and no label) doesn't open the gate."""
     out = _run(tmp_path, approvers="eve", maintainers="alice bob")
     assert out["mirror"] == "false"
-    assert "no approving review from a maintainer" in out["reason"]
-
-
-def test_no_maintainers_loaded_does_not_mirror(tmp_path: Path) -> None:
-    """An empty MAINTAINER list fails closed.
-
-    With no maintainers to verify against, even a valid approval can't be
-    trusted, so the gate stays shut regardless of the approver.
-    """
-    out = _run(tmp_path, approvers="bob", maintainers="")
-    assert out["mirror"] == "false"
-    assert "no maintainers" in out["reason"]
 
 
 def test_multiple_approvers_first_maintainer_wins(tmp_path: Path) -> None:
@@ -137,3 +113,53 @@ def test_multiple_approvers_first_maintainer_wins(tmp_path: Path) -> None:
     out = _run(tmp_path, approvers="eve alice", maintainers="alice bob")
     assert out["mirror"] == "true"
     assert "@alice" in out["reason"]
+
+
+# --- Path 2: e2e-approved label ---
+
+
+def test_label_applied_by_maintainer_mirrors(tmp_path: Path) -> None:
+    """The e2e-approved label applied by a maintainer opens the gate."""
+    out = _run(tmp_path, labels="e2e-approved", labeler="bob")
+    assert out["mirror"] == "true"
+    assert "e2e-approved" in out["reason"]
+    assert "maintainer" in out["reason"]
+
+
+def test_label_applied_by_non_maintainer_does_not_mirror(tmp_path: Path) -> None:
+    """The e2e-approved label applied by a non-maintainer doesn't open the gate."""
+    out = _run(tmp_path, labels="e2e-approved", labeler="eve", maintainers="alice bob")
+    assert out["mirror"] == "false"
+
+
+def test_label_without_labeler_does_not_mirror(tmp_path: Path) -> None:
+    """A label with no attributable labeler doesn't open the gate."""
+    out = _run(tmp_path, labels="e2e-approved", labeler="")
+    assert out["mirror"] == "false"
+
+
+# --- Either path ---
+
+
+def test_approval_takes_precedence_over_label(tmp_path: Path) -> None:
+    """When both approval and label are present, approval wins (checked first)."""
+    out = _run(tmp_path, approvers="alice", labels="e2e-approved", labeler="bob")
+    assert out["mirror"] == "true"
+    assert "approved by maintainer" in out["reason"]
+
+
+# --- Neither path ---
+
+
+def test_no_approval_no_label_does_not_mirror(tmp_path: Path) -> None:
+    """Without approval or label, the gate stays shut."""
+    out = _run(tmp_path, approvers="", labels="")
+    assert out["mirror"] == "false"
+    assert "awaiting" in out["reason"]
+
+
+def test_no_maintainers_loaded_does_not_mirror(tmp_path: Path) -> None:
+    """An empty MAINTAINER list fails closed."""
+    out = _run(tmp_path, approvers="bob", maintainers="")
+    assert out["mirror"] == "false"
+    assert "no maintainers" in out["reason"]

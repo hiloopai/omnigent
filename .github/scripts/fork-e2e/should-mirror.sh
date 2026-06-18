@@ -3,20 +3,20 @@
 # fork-e2e/pr-N branch (which lets e2e run as a `push` with the test-gateway
 # secrets). Called by .github/workflows/fork-e2e-mirror.yml.
 #
-# Gate: the PR has an approving review from a maintainer (in
-# .github/MAINTAINER@main). We read the latest non-COMMENTED review state per
-# reviewer and check if any approver is a maintainer -- the same semantics as
-# maintainer-approval.yml. GitHub only lets Triage+ users apply labels, but
-# reviews are even more constrained: only users with write access can submit
-# approving reviews on a fork PR, so the maintainer check here is defence in
-# depth.
+# Gate (either condition opens it):
+#   1. The PR has an approving review from a maintainer (in
+#      .github/MAINTAINER@main), OR
+#   2. The PR carries the `e2e-approved` label applied by a maintainer.
 #
-# New commits while the approval is present re-mirror automatically (this
-# script re-runs on `synchronize`); the security scan plus the maintainer's
-# review are the safety net for post-approval pushes. Requesting changes or
-# dismissing the review stops future mirrors (this script re-runs and finds no
-# approving maintainer review). Closing the PR deletes the mirror branch --
-# see the workflow.
+# Path 1 (approval) is the primary flow: approving the PR both satisfies the
+# merge gate and triggers e2e. Path 2 (label) is a manual escape hatch for
+# running e2e without approving for merge (e.g. early CI validation).
+#
+# New commits while the gate is open re-mirror automatically (this script
+# re-runs on `synchronize`); the security scan plus the maintainer's review
+# are the safety net for post-approval pushes. Revoking approval AND removing
+# the label (or closing the PR) stops future mirrors and cleans up the mirror
+# branch -- see the workflow.
 #
 # Fail closed: any error or unexpected state leaves the gate shut, so secrets
 # never run on an unverified PR.
@@ -40,16 +40,10 @@ if [[ -z "${MAINTAINERS_LC// /}" ]]; then
   exit 0
 fi
 
-# Find approvers: latest non-COMMENTED review per user, keep those with
-# APPROVED state. Matches maintainer-approval.yml semantics: COMMENTED does
-# not supersede APPROVED; CHANGES_REQUESTED and DISMISSED do.
+# --- Path 1: maintainer approval via PR review ---
+
 APPROVERS=$(gh api "repos/$REPO/pulls/$PR/reviews" --paginate \
   --jq '[.[] | select(.state != "COMMENTED")] | group_by(.user.login) | map(max_by(.submitted_at)) | .[] | select(.state == "APPROVED") | .user.login')
-
-if [[ -z "$APPROVERS" ]]; then
-  emit false "awaiting approval from a maintainer"
-  exit 0
-fi
 
 for u in $APPROVERS; do
   u_lc=$(echo "$u" | tr '[:upper:]' '[:lower:]')
@@ -61,4 +55,24 @@ for u in $APPROVERS; do
   done
 done
 
-emit false "no approving review from a maintainer"
+# --- Path 2: e2e-approved label applied by a maintainer ---
+
+LABEL="e2e-approved"
+LABELS=$(gh pr view "$PR" --repo "$REPO" --json labels --jq '.labels[].name')
+if grep -qxF "$LABEL" <<<"$LABELS"; then
+  LABELER=$(gh api "repos/$REPO/issues/$PR/events" --paginate \
+    --jq "[.[] | select(.event == \"labeled\" and .label.name == \"$LABEL\")] | last | .actor.login // empty")
+
+  if [[ -n "$LABELER" ]]; then
+    LABELER_LC=$(echo "$LABELER" | tr '[:upper:]' '[:lower:]')
+    for m in $MAINTAINERS_LC; do
+      if [[ "$m" == "$LABELER_LC" ]]; then
+        emit true "'$LABEL' applied by maintainer @$LABELER"
+        exit 0
+      fi
+    done
+  fi
+fi
+
+# Neither path opened the gate.
+emit false "awaiting approval from a maintainer or '$LABEL' label"

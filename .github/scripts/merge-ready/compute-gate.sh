@@ -37,7 +37,7 @@ fi
 if [[ "${FORK_NEEDS_E2E_APPROVAL:-false}" == "true" ]]; then
   STATE=failure
   SHORT="Awaiting maintainer approval for e2e"
-  LONG="$LONG"$'\n\n:no_entry: **E2e tests are required for fork PRs.** A maintainer must approve this PR to trigger the e2e suite. The merge gate will stay red until e2e passes after approval.'
+  LONG="$LONG"$'\n\n:no_entry: **E2e tests are required for fork PRs.** A maintainer must approve this PR or apply the `e2e-approved` label to trigger the e2e suite. The merge gate will stay red until e2e passes.'
 fi
 
 # GitHub commit-status descriptions max out at 140 chars.
