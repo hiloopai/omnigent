@@ -30,6 +30,7 @@ from tests.e2e.conftest import (
     reset_mock_llm,
     send_user_message_to_session,
 )
+from tests.e2e.helpers import final_assistant_text
 
 # Nonsense codewords the LLM could not guess -- must come through
 # copied history for the fork's agent to produce them.
@@ -166,13 +167,15 @@ def test_fork_explore_alternatives_journey(
     )
     assert fork_body["status"] == "completed", f"fork turn failed: {fork_body.get('error')}"
 
-    # Verify recall -- the mock response includes both codewords.
-    fork_items_text = _session_item_texts(http_client, fork_id)
-    assert _CODEWORD_1 in fork_items_text, (
-        f"fork agent should recall codeword 1, got: {fork_items_text!r}"
+    # Verify recall -- assert against the fork turn's *agent output*,
+    # not the full session history (which already contains the codewords
+    # from the pre-fork turns and would pass even if the agent crashed).
+    fork_reply = final_assistant_text(fork_body)
+    assert _CODEWORD_1 in fork_reply, (
+        f"fork agent should recall codeword 1 in its reply, got: {fork_reply!r}"
     )
-    assert _CODEWORD_2 in fork_items_text, (
-        f"fork agent should recall codeword 2, got: {fork_items_text!r}"
+    assert _CODEWORD_2 in fork_reply, (
+        f"fork agent should recall codeword 2 in its reply, got: {fork_reply!r}"
     )
 
     # -- Step 8: Verify original is unchanged --
@@ -201,4 +204,8 @@ def test_fork_explore_alternatives_journey(
     )
     assert final_body["status"] == "completed", (
         f"original session broken after fork deletion: {final_body.get('error')}"
+    )
+    final_reply = final_assistant_text(final_body)
+    assert "PONG" in final_reply.upper(), (
+        f"original session did not respond after fork deletion: {final_reply!r}"
     )
