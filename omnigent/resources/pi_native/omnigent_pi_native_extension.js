@@ -242,6 +242,12 @@ module.exports = function (pi) {
   let sequence = 0;
   let turnOrdinal = 0;
   let activeResponseId = null;
+  // Dedicated loop-state flag, set on agent_start / cleared on agent_end. Used
+  // as the no-isIdle() fallback for requestInterrupt instead of
+  // !activeResponseId: agent_start resets activeResponseId to null and only
+  // turn_start assigns it, so an interrupt landing in that gap (after
+  // agent_start, before turn_start) would look idle by activeResponseId yet the
+  // loop is genuinely running — agentRunning arms it correctly. See F18.
   let agentRunning = false;
   let latestContext = null;
   let pendingInterruptUntil = 0;
@@ -276,6 +282,8 @@ module.exports = function (pi) {
   function safeIsIdle(ctx) {
     // Returns true/false from the SDK's isIdle(), or null when the signal is
     // unavailable (older SDK) or throws, so the caller can fall back.
+    // Deliberately returns null (not true) on throw so callers fall back to loop
+    // state (!agentRunning) rather than blindly treating the agent as idle.
     if (!ctx || typeof ctx.isIdle !== "function") return null;
     try {
       return ctx.isIdle();
