@@ -1977,3 +1977,69 @@ def test_format_version_omits_sha_when_build_info_has_empty_sha(
     # Critical: no orphan comma or empty parens from the missing SHA.
     assert "(, " not in out
     assert "()" not in out
+
+
+# --- VCS (git) install handling: passive notice + URL parsing -----------------
+
+
+def test_split_vcs_url_strips_prefix_and_separates_revision() -> None:
+    """``git+<url>@<rev>`` splits into the bare repo URL and the revision."""
+    from omnigent.update_check import _split_vcs_url
+
+    assert _split_vcs_url("git+https://github.com/o/omnigent.git") == (
+        "https://github.com/o/omnigent.git",
+        None,
+    )
+    assert _split_vcs_url("git+https://github.com/o/omnigent.git@main") == (
+        "https://github.com/o/omnigent.git",
+        "main",
+    )
+
+
+def test_split_vcs_url_ssh_userinfo_is_not_a_revision() -> None:
+    """An ``@`` in SSH userinfo (``git@host``) must not be read as a revision."""
+    from omnigent.update_check import _split_vcs_url
+
+    assert _split_vcs_url("git+ssh://git@github.com/o/omnigent.git") == (
+        "ssh://git@github.com/o/omnigent.git",
+        None,
+    )
+    # …but a real trailing revision still parses, even with SSH userinfo.
+    assert _split_vcs_url("git+ssh://git@github.com/o/omnigent.git@v1") == (
+        "ssh://git@github.com/o/omnigent.git",
+        "v1",
+    )
+
+
+def test_wheel_check_skips_vcs_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A git/VCS install is never nagged about a PyPI version.
+
+    Its version string is frozen at the source branch's (e.g. an unbumped
+    ``main`` still saying ``0.1.0``), so a PyPI-version comparison would
+    fire forever — even on a build that is *ahead* of the latest release.
+    The passive notice must bail for vcs installs just like editable ones.
+    """
+    monkeypatch.delenv("OMNIGENT_NO_UPDATE_CHECK", raising=False)
+    _point_cache_at(tmp_path, monkeypatch)
+    _write_cache(
+        _CacheEntry(
+            last_check_epoch=time.time(),
+            commits_behind=0,
+            kind="wheel",
+            latest_version="0.2.0",  # strictly newer than the dist's 0.1.0
+        )
+    )
+    dist = _write_fake_dist_info(
+        tmp_path,
+        installer="uv",
+        direct_url={"url": _FAKE_GIT_URL, "vcs_info": {"vcs": "git", "commit_id": _FAKE_COMMIT}},
+    )
+    monkeypatch.setattr("omnigent.update_check._get_distribution", lambda: dist)
+
+    _run_installed_wheel_check()
+
+    assert capsys.readouterr().err == ""
