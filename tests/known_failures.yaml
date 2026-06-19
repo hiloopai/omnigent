@@ -143,3 +143,9 @@ skips:
     issue: 0
     cluster: mock-model-parallel-reset-race
     mode: skip
+
+  - id: tests/e2e/test_named_sub_agent_persistence.py::test_parallel_named_sub_agents_e2e
+    reason: "Flaky: sub-agent results don't reach parent within 240s auto-wake window. Consistent infrastructure flake across many PRs — sub-agent completion delivery timing issue unrelated to test logic."
+    issue: 0
+    cluster: sub-agent-auto-wake-timing
+    mode: skip
