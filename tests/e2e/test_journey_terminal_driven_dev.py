@@ -196,14 +196,8 @@ def test_terminal_multi_command_workflow(
     # because tmux may not have flushed the output before the read call.
     sends_1 = _get_function_call_outputs(http_client, session_id, "sys_terminal_send")
     reads_1 = _get_function_call_outputs(http_client, session_id, "sys_terminal_read")
-    assert sends_1, (
-        f"sys_terminal_send was never called in turn 1; "
-        f"session_id={session_id}."
-    )
-    assert reads_1, (
-        f"sys_terminal_read was never called in turn 1; "
-        f"session_id={session_id}."
-    )
+    assert sends_1, f"sys_terminal_send was never called in turn 1; session_id={session_id}."
+    assert reads_1, f"sys_terminal_read was never called in turn 1; session_id={session_id}."
 
     # ── Turn 2: echo goodbye_world ────────────────────────────
     # Mock: reuse existing terminal, send goodbye_world, read, reply.
