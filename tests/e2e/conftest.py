@@ -303,37 +303,13 @@ def configure_mock_llm(
 
 def reset_mock_llm(mock_llm_server_url: str | None) -> None:
     """
-    Clear all non-pinned keyed queues, captured requests, and gates.
-
-    Pinned queues (registered via :func:`pin_mock_llm`) survive the
-    reset so session-level queues shared across parallel workers are not
-    disrupted by per-test resets.
+    Clear all keyed queues, captured requests, and gates.
 
     :param mock_llm_server_url: Mock server URL or ``None``.
     """
     if mock_llm_server_url is None:
         return
     resp = httpx.post(f"{mock_llm_server_url}/mock/reset", timeout=5.0)
-    resp.raise_for_status()
-
-
-def pin_mock_llm(mock_llm_server_url: str | None, key: str) -> None:
-    """
-    Pin a queue key so it survives :func:`reset_mock_llm`.
-
-    Use for session-level queues that must persist across parallel
-    worker resets (e.g. the server's policy-classifier LLM queue).
-
-    :param mock_llm_server_url: Mock server URL or ``None``.
-    :param key: Queue key to pin.
-    """
-    if mock_llm_server_url is None:
-        return
-    resp = httpx.post(
-        f"{mock_llm_server_url}/mock/pin",
-        json={"key": key},
-        timeout=5.0,
-    )
     resp.raise_for_status()
 
 
@@ -656,12 +632,6 @@ def live_server(
             f"Server log at {server_log}:\n{log_contents[-3000:]}\n"
             f"Runner log at {runner_log}:\n{runner_log_contents[-3000:]}"
         )
-
-    # Pin the server-level LLM queue key ("mock-model") so per-test
-    # reset_mock_llm calls from parallel xdist workers don't clear the
-    # policy-classifier's response queue between configure and fire.
-    if using_mock_llm and mock_llm_server_url is not None:
-        pin_mock_llm(mock_llm_server_url, "mock-model")
 
     try:
         yield base_url

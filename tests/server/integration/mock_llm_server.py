@@ -567,7 +567,6 @@ class MockState:
         self.captured_requests: list[dict] = []
         self.request_count: int = 0
         self.pending_gates: list[QueuedResponse] = []
-        self._pinned_keys: set[str] = set()
         self._lock = asyncio.Lock()
 
     def get_queue(self, key: str) -> _ResponseQueue:
@@ -597,12 +596,6 @@ class MockState:
     def reset(self) -> None:
         """Clear all state (queues, captured requests, gates).
 
-        Pinned queues (registered via ``POST /mock/pin``) survive the
-        reset — their responses are preserved so concurrent tests
-        sharing the session-scoped mock server (e.g. the server-level
-        LLM policy classifier queue) are not disrupted by per-test
-        ``reset_mock_llm`` calls running in parallel workers.
-
         Atomically swaps the pending-gates list before releasing
         so a handler that appends between the loop and the clear
         doesn't lose its gate.
@@ -611,10 +604,7 @@ class MockState:
         self.pending_gates = []
         for qr in old_gates:
             qr._gate.set()
-        # Preserve pinned queues; clear only unpinned ones.
-        for key in list(self.queues):
-            if key not in self._pinned_keys:
-                del self.queues[key]
+        self.queues.clear()
         self.captured_requests.clear()
         self.request_count = 0
 
@@ -859,31 +849,9 @@ async def configure(request: Request) -> dict[str, object]:
     return {"configured": True, "key": key, "count": count}
 
 
-@app.post("/mock/pin")
-async def pin_queue(request: Request) -> dict[str, object]:
-    """Pin a queue key so it survives ``POST /mock/reset``.
-
-    Use this for session-level queues that must not be cleared by
-    per-test resets running in parallel workers (e.g. the server-level
-    policy-classifier LLM queue keyed by the server's ``llm.model``).
-
-    Body: ``{"key": "<queue-key>"}``
-    """
-    body = await request.json()
-    key = body.get("key", _DEFAULT_KEY)
-    async with _state._lock:
-        _state._pinned_keys.add(key)
-        # Ensure the queue exists so it is never lazily created later.
-        _state.get_queue(key)
-    return {"pinned": True, "key": key}
-
-
 @app.post("/mock/reset")
 async def reset() -> dict[str, bool]:
-    """Clear all non-pinned state (queues, captured requests, gates).
-
-    Pinned queues (registered via ``POST /mock/pin``) are preserved.
-    """
+    """Clear all state (all keyed queues, captured requests, gates)."""
     async with _state._lock:
         _state.reset()
     return {"reset": True}
