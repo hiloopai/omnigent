@@ -134,22 +134,6 @@ jobs:
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('uv.lock') }}
-      - name: Write gateway profile (~/.databrickscfg)
-        # Some fixtures (databricks_workspace, omnigent_credentials_env) read
-        # ~/.databrickscfg at setup time and raise UsageError if the [default]
-        # profile is missing. Write a stub so fixture collection succeeds even
-        # without real credentials. Tests that need real LLM calls skip via
-        # their own guards (skipif(not DATABRICKS_TOKEN, ...)).
-        env:
-          GATEWAY_BASE_URL: ${{ secrets.GATEWAY_BASE_URL || 'https://placeholder.example.com/serving-endpoints' }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY || 'mock-key' }}
-        run: |
-          host="${GATEWAY_BASE_URL%/serving-endpoints}"
-          cat > "$HOME/.databrickscfg" <<EOF
-          [default]
-          host  = $host
-          token = $LLM_API_KEY
-          EOF
       - name: Install project and dev dependencies
         run: |
           uv sync --extra all --extra dev

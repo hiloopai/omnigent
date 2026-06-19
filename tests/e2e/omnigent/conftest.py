@@ -171,11 +171,10 @@ def databricks_workspace(request: pytest.FixtureRequest) -> tuple[str, str]:
     profile = request.config.getoption("--profile") or _DEFAULT_PROFILE
     host = lookup_databricks_host(profile)
     if host is None:
-        raise pytest.UsageError(
+        pytest.skip(
             f"Databricks profile {profile!r} is missing from "
-            f"~/.databrickscfg or has no ``host`` entry. "
-            f"Either pass ``--profile`` for a profile that exists, "
-            f"or add the section to your databrickscfg."
+            f"~/.databrickscfg or has no ``host`` entry — "
+            f"skipping tests that require real Databricks credentials."
         )
     return profile, host
 
