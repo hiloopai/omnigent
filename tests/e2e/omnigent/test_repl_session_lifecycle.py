@@ -334,16 +334,26 @@ def _descendant_processes(root_pid: int) -> dict[int, tuple[int, str]]:
     return descendants
 
 
-def _find_runner_pid(root_pid: int) -> int:
-    """Find the runner subprocess below a REPL process."""
+def _find_runner_pid(root_pid: int, *, timeout: float = 15.0) -> int:
+    """Find the runner subprocess below a REPL process, polling until found.
+
+    The runner subprocess is spawned asynchronously after the REPL is ready,
+    so we poll with a timeout rather than failing immediately.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        descendants = _descendant_processes(root_pid)
+        for pid, (_ppid, command) in descendants.items():
+            if _RUNNER_CMD_MARKER in command:
+                return pid
+        time.sleep(0.2)
     descendants = _descendant_processes(root_pid)
-    for pid, (_ppid, command) in descendants.items():
-        if _RUNNER_CMD_MARKER in command:
-            return pid
     formatted = "\n".join(
         f"{pid} <- {ppid}: {command}" for pid, (ppid, command) in sorted(descendants.items())
     )
-    raise AssertionError(f"No runner subprocess found under {root_pid}.\n{formatted}")
+    raise AssertionError(
+        f"No runner subprocess found under {root_pid} within {timeout}s.\n{formatted}"
+    )
 
 
 def _wait_http_ready(base_url: str, proc: subprocess.Popen[bytes], log_path: Path) -> None:
