@@ -678,8 +678,10 @@ class MockState:
         if user_text:
             best: _ResponseQueue | None = None
             for queue in self.queues.values():
-                if queue.match and queue.match in user_text and (
-                    best is None or len(queue.match) > len(best.match or "")
+                if (
+                    queue.match
+                    and queue.match in user_text
+                    and (best is None or len(queue.match) > len(best.match or ""))
                 ):
                     best = queue
             if best is not None:
