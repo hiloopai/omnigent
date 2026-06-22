@@ -833,7 +833,6 @@ def main() -> int:
     finally:
         if backups and not args.keep_version_bump:
             _restore_versions(backups)
-            backups = {}
 
     classified = _classify_wheels(wheels)
     for wheel in wheels:

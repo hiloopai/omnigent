@@ -104,9 +104,16 @@ def _resolve_endpoint_host(wc: WorkspaceClient, endpoint_name: str) -> str | Non
     return endpoint.status.hosts.host
 
 
-def _build_dsn(wc: WorkspaceClient, host: str, database: str, endpoint_name: str) -> str:
+def _build_conn_params(
+    wc: WorkspaceClient, host: str, database: str, endpoint_name: str
+) -> dict[str, str]:
     """
-    Build a psycopg DSN using a short-lived Lakebase OAuth token.
+    Build psycopg connection params using a short-lived Lakebase OAuth token.
+
+    Returned as keyword params (not a hand-built conninfo string) so the
+    token — which we don't control the contents of — is never string-
+    interpolated into a DSN where whitespace or ``key=value`` metacharacters
+    could be mis-parsed.
 
     :param wc: Databricks workspace client.
     :param host: Lakebase endpoint hostname, e.g.
@@ -115,14 +122,18 @@ def _build_dsn(wc: WorkspaceClient, host: str, database: str, endpoint_name: str
         ``"databricks_postgres"``.
     :param endpoint_name: Full Lakebase endpoint resource path, e.g.
         ``"projects/omnigent/branches/production/endpoints/primary"``.
-    :returns: psycopg connection string for the current user.
+    :returns: psycopg connection keyword params for the current user.
     """
     cred = wc.postgres.generate_database_credential(endpoint=endpoint_name)
     pg_user = wc.current_user.me().user_name
-    return (
-        f"host={host} port=5432 dbname={database} "
-        f"user={pg_user} password={cred.token} sslmode=require"
-    )
+    return {
+        "host": host,
+        "port": "5432",
+        "dbname": database,
+        "user": pg_user,
+        "password": cred.token,
+        "sslmode": "require",
+    }
 
 
 def main() -> int:
@@ -156,8 +167,8 @@ def main() -> int:
         return 1
 
     print(f"==> Granting public schema privileges to app SP {sp_uuid}")
-    dsn = _build_dsn(wc, host, args.database, args.lakebase_endpoint)
-    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+    params = _build_conn_params(wc, host, args.database, args.lakebase_endpoint)
+    with psycopg.connect(autocommit=True, **params) as conn, conn.cursor() as cur:
         cur.execute(_grant_sql(sp_uuid))
 
     print("Done. The app can create and migrate Omnigent tables on first boot.")

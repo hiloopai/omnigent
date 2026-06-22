@@ -79,11 +79,19 @@ CREATE VOLUME IF NOT EXISTS main.omnigent.artifacts;
 The `artifacts` volume is referenced declaratively in `databricks.yml`
 (the app resource) via `--var volume_name=…`.
 
-### 3. Grant the app SP Lakebase privileges
+### 3. First deploy — creates the app and its service principal
 
-The first `databricks bundle deploy` creates the app and provisions
-its service principal. After that, grant the SP the public schema
-privileges Alembic needs:
+Run the [Deploy](#deploy) command once. The first
+`databricks bundle deploy` creates the app and provisions its service
+principal (SP). This first pass will **not** pass its `/health` check
+yet: the SP has no Lakebase schema grants, so the migrate-on-boot hook
+fails with `permission denied for schema public`. That's expected —
+the next step grants those privileges.
+
+### 4. Grant the app SP Lakebase privileges
+
+Now that the app (and its SP) exist, grant the SP the public schema
+privileges Alembic needs, then re-run the deploy:
 
 ```bash
 python deploy/databricks/grant_sp_perms.py \
@@ -92,6 +100,18 @@ python deploy/databricks/grant_sp_perms.py \
     --database databricks_postgres \
     --profile <your-profile>
 ```
+
+> [!NOTE]
+> Lakebase uses two spellings for the same database. The **resource
+> path** uses a hyphenated slug — `…/databases/databricks-postgres`
+> (what `deploy.py --lakebase-database` and `databricks.yml` want) —
+> while the underlying **PostgreSQL database name** uses an underscore,
+> `databricks_postgres` (what `grant_sp_perms.py --database` and the
+> app's `PGDATABASE` use). Pass each form where shown.
+
+After this one-time grant, re-running the deploy boots the app cleanly
+and `/health` returns 200. Subsequent redeploys are a single
+`deploy.py` invocation.
 
 ## Deploy
 
@@ -153,6 +173,16 @@ managed automatically:
 The Databricks Apps proxy injects `X-Forwarded-Email` on every
 request, so the app pins `OMNIGENT_AUTH_PROVIDER=header` (see
 `src/app.py`).
+
+> [!IMPORTANT]
+> Header auth trusts the `X-Forwarded-Email` header verbatim. This is
+> safe **only** because the Databricks Apps platform terminates auth at
+> its proxy, strips any client-supplied copy of the header, and the app
+> port is never reachable except through that proxy. Don't expose the
+> app process directly (e.g. a port forward or alternate ingress that
+> bypasses the proxy): a caller who can set the header themselves could
+> then impersonate any user. If you front the app with anything other
+> than the standard Apps proxy, ensure it sanitizes the header too.
 
 ### Token lifecycle
 
