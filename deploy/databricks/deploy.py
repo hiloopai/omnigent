@@ -534,10 +534,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lakebase-branch",
         required=True,
-        help=(
-            "Full Lakebase branch resource path, e.g. "
-            "'projects/omnigent/branches/production'."
-        ),
+        help=("Full Lakebase branch resource path, e.g. 'projects/omnigent/branches/production'."),
     )
     parser.add_argument(
         "--lakebase-database",
