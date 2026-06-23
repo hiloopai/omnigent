@@ -2103,11 +2103,13 @@ def native_claude_mock_session(
     mock_llm_server_url: str,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[tuple[str, str]]:
-    """A runner-bound claude-native session that routes LLM calls to the mock server.
+    """A runner-bound claude-native session whose LLM backend depends on env.
 
-    Writes a mock anthropic provider config to ~/.omnigent/config.yaml just
-    before binding the session (the runner reads it at terminal-creation
-    time), then restores the original config on teardown.
+    When ``LLM_API_KEY`` is set in the environment (local dev / CI with real
+    credentials), the existing ``~/.omnigent/config.yaml`` is left untouched so
+    the runner boots Claude Code against the real gateway. When ``LLM_API_KEY``
+    is absent, a mock anthropic provider config is written to
+    ``~/.omnigent/config.yaml`` and restored on teardown.
 
     :param live_server: Spawned server fixture; its runner is reused.
     :param mock_llm_server_url: Session-scoped mock LLM server base URL.
@@ -2116,7 +2118,12 @@ def native_claude_mock_session(
     """
     respawned = _ensure_runner_online(live_server, tmp_path_factory)
     runner_id = str(_server_state["runner_id"])
-    with _temp_omnigent_mock_config(mock_llm_server_url, "claude"):
+    use_mock = not os.environ.get("LLM_API_KEY")
+    if use_mock:
+        ctx: Any = _temp_omnigent_mock_config(mock_llm_server_url, "claude")
+    else:
+        ctx = contextlib.nullcontext()
+    with ctx:
         session_id = _create_native_claude_session(live_server, runner_id)
     try:
         yield (live_server, session_id)
@@ -2137,9 +2144,10 @@ def native_codex_mock_session(
     mock_llm_server_url: str,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[tuple[str, str]]:
-    """A runner-bound codex-native session that routes LLM calls to the mock server.
+    """A runner-bound codex-native session whose LLM backend depends on env.
 
-    Mirrors native_claude_mock_session for the Codex wrapper.
+    Mirrors :func:`native_claude_mock_session` for the Codex wrapper: uses
+    mock LLM when ``LLM_API_KEY`` is absent, real gateway when it is set.
 
     :param live_server: Spawned server fixture; its runner is reused.
     :param mock_llm_server_url: Session-scoped mock LLM server base URL.
@@ -2148,7 +2156,12 @@ def native_codex_mock_session(
     """
     respawned = _ensure_runner_online(live_server, tmp_path_factory)
     runner_id = str(_server_state["runner_id"])
-    with _temp_omnigent_mock_config(mock_llm_server_url, "codex"):
+    use_mock = not os.environ.get("LLM_API_KEY")
+    if use_mock:
+        ctx: Any = _temp_omnigent_mock_config(mock_llm_server_url, "codex")
+    else:
+        ctx = contextlib.nullcontext()
+    with ctx:
         session_id = _create_native_codex_session(live_server, runner_id)
     try:
         yield (live_server, session_id)
