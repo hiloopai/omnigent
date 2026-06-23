@@ -822,8 +822,7 @@ class CursorExecutor(Executor):
                             # latter alone (no server connection) still
                             # surfaces an approval card natively.
                             if not event.metadata.get("is_bridged") and (
-                                policy_eval is not None
-                                or self._elicitation_handler is not None
+                                policy_eval is not None or self._elicitation_handler is not None
                             ):
                                 gate = await self._evaluate_native_tool_policy(
                                     event.name, event.args if isinstance(event.args, dict) else {}
