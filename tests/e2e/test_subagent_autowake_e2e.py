@@ -48,9 +48,12 @@ _WAKE_NOTICE_SIGNATURE = "waiting in inbox"
 _RESEARCHER_MARKER = "RESEARCHER_MARKER_2025"
 
 # Each test is 3+ serial gateway turns, so 600s absorbs potential backoff.
-# Auto-wake (idle parent re-dispatched when a child completes) is server-side
-# support added after v0.2.0 (see test_named_sub_agent_persistence.py). The
-# backwards-compat matrix skips these against servers < 0.3.0; they run on main.
+# These tests use per-sub-agent mock-LLM routing (each child on its own mock
+# model + auth.base_url), which a server < 0.3.0 does not propagate — the child
+# reaches the real gateway and fails, so its result never surfaces (see
+# test_named_sub_agent_persistence.py for the verified mechanism). A mock-LLM
+# test-infra gap, not a product regression. The backwards-compat matrix skips
+# these against servers < 0.3.0; they run unchanged on main.
 pytestmark = [
     pytest.mark.timeout(600, method="signal"),
     pytest.mark.min_server_version("0.3.0"),

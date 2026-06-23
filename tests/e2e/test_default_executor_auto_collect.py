@@ -28,9 +28,12 @@ from tests.e2e.conftest import (
     send_user_message_to_session,
 )
 
-# Default-executor sub-agent auto-collection requires server-side support added
-# after v0.2.0 (see test_named_sub_agent_persistence.py). The backwards-compat
-# matrix skips these against servers < 0.3.0; they run normally on main.
+# This test uses per-sub-agent mock-LLM routing (the child runs on its own mock
+# model + auth.base_url), which a server < 0.3.0 does not propagate — the child
+# reaches the real gateway and fails, so its result never surfaces (see
+# test_named_sub_agent_persistence.py for the verified mechanism). A mock-LLM
+# test-infra gap, not a product regression. The backwards-compat matrix skips
+# this against servers < 0.3.0; it runs unchanged on main.
 pytestmark = pytest.mark.min_server_version("0.3.0")
 
 
