@@ -29,6 +29,7 @@ import uuid
 from typing import Any
 
 import httpx
+import pytest
 
 from tests.e2e.conftest import (
     configure_mock_llm,
