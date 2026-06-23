@@ -301,7 +301,7 @@ jobs:
           Do NOT comment on code style, formatting, naming conventions, or other cosmetic issues — omit them entirely.
           Be concise. Do not restate the diff. Focus on what matters.
 
-          Before labeling anything **blocking**, double-check: does it actually introduce a correctness bug, break an explicit contract, or create a real security risk? Style preferences, speculative concerns, and minor omissions are non-blocking at most. If in doubt, downgrade.
+          Before labeling anything **blocking**, double-check: does this issue actually exist in the diff? Verify the problem is real and present in the changed code — not inferred, speculative, or already handled elsewhere. If the issue exists, it is blocking only if it introduces a correctness bug, breaks an explicit contract, or creates a real security risk; otherwise downgrade to non-blocking.
 
           **Package extras** — when the diff adds or modifies optional dependency groups (extras):
           - Each harness deserves its own extra.
