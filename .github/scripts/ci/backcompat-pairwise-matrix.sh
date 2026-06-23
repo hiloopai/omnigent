@@ -37,7 +37,11 @@ _valid_version() {
 # pairs are guaranteed-red infrastructure mismatch, not a compat signal.
 # `main` is the dev tip and always sorts above any release, so it is never
 # floored. Override with BACKCOMPAT_MIN_VERSION (e.g. "0.0.0" to disable).
+# Strip a leading "v" so a "v0.2.0"-style override compares cleanly against the
+# v-stripped tags in _below_floor (without this, the floor version itself would
+# be dropped).
 MIN_VERSION="${BACKCOMPAT_MIN_VERSION:-0.2.0}"
+MIN_VERSION="${MIN_VERSION#v}"
 
 # True (0) when release tag $1 is older than MIN_VERSION (by PEP-440-ish release
 # order). "main" is never below the floor. Compares the numeric tuple via
