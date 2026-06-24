@@ -219,3 +219,23 @@ def test_capabilities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert executor.supports_streaming() is False
     assert executor.handles_tools_internally() is True
     assert executor.supports_live_message_queue() is True
+
+
+def test_harness_create_app_builds_fastapi() -> None:
+    """The ``opencode-native`` harness module builds a FastAPI app (lazy executor)."""
+    from fastapi import FastAPI
+
+    from omnigent.inner.opencode_native_harness import create_app
+
+    assert isinstance(create_app(), FastAPI)
+
+
+def test_harness_executor_factory_builds_from_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The harness executor factory constructs an executor from the spawn env."""
+    from omnigent.inner.opencode_native_harness import _build_opencode_native_executor
+    from omnigent.opencode_native_bridge import OPENCODE_NATIVE_BRIDGE_DIR_ENV_VAR
+
+    monkeypatch.setenv(OPENCODE_NATIVE_BRIDGE_DIR_ENV_VAR, str(tmp_path))
+    assert isinstance(_build_opencode_native_executor(), OpenCodeNativeExecutor)
