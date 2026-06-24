@@ -253,7 +253,10 @@ def _populate_hermes_home(
         "pre_tool_call": [
             {
                 "command": str(wrapper),
-                "timeout": 60,
+                # One day: must match the server's ``ask_timeout`` so
+                # the hook stays alive while the human responds to the
+                # web-UI approval card (ASK policy).
+                "timeout": 86400,
             },
         ],
     }
