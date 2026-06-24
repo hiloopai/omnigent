@@ -106,32 +106,43 @@ def strip_ansi(text: str) -> str:
 
 @dataclass
 class Sandbox:
-    """A throwaway config/data home for one verification run.
+    """A throwaway config/data/home for one verification run.
 
-    :param root: Temp directory holding ``config/``, ``data/`` and (when
-        ``isolate_home``) ``home/``. Removed on cleanup unless ``--keep-sandbox``.
+    :param root: Temp directory holding ``config/``, ``data/`` and (unless
+        ``--inherit-home``) ``home/``. Removed on cleanup unless ``--keep-sandbox``.
     :param env: The child-process environment with the isolation knobs set.
-    :param isolate_home: Whether ``HOME`` was redirected into the sandbox.
+    :param home_isolated: Whether ``HOME`` was redirected into the sandbox.
     """
 
     root: Path
     env: dict[str, str]
-    isolate_home: bool
+    home_isolated: bool
 
 
 def build_sandbox(
     *,
     keep_env_creds: bool,
-    isolate_home: bool,
+    inherit_home: bool,
     strip_path: bool,
     omnigent_bin: Path,
 ) -> Sandbox:
     """Create an isolated sandbox env that cannot touch the real ``~/.omnigent``.
 
+    ``HOME`` is redirected into the sandbox **by default**. This is load-bearing,
+    not cosmetic: the CLI's diagnostics logger writes a per-invocation
+    ``cli-*.log`` under ``state_dir()`` which is hardcoded to ``Path.home() /
+    ".omnigent"`` (``omnigent_ui_sdk/terminal/_config.py``) and ignores
+    ``OMNIGENT_CONFIG_HOME`` / ``OMNIGENT_DATA_DIR``. So redirecting ``HOME`` is
+    the *only* thing that keeps non-help commands (``config list``, the setup
+    PTY spawns, ``server stop`` teardown) from writing into the real home.
+
     :param keep_env_creds: Keep ambient model keys (e.g. ``ANTHROPIC_API_KEY``)
         in the child env. Default False → a genuinely cold, credential-free run.
-    :param isolate_home: Redirect ``HOME`` into the sandbox too (maximally
-        fresh; also hides ``~/.claude`` / ``~/.databrickscfg`` ambient auth).
+    :param inherit_home: Opt OUT of home isolation — use the real ``HOME`` (and
+        thus its ambient ``~/.claude`` / ``~/.databrickscfg`` auth). Needed to
+        reach a real credentialed REPL, but **relaxes the safety guarantee**:
+        non-help commands will then write ``cli-*.log`` into the real
+        ``~/.omnigent/logs`` (the broadened fingerprint catches this).
     :param strip_path: Reduce ``PATH`` to just the omnigent binary's dir + an
         empty dir, so node/npm/tmux/claude/codex read as "not installed" — i.e.
         a brand-new machine.
@@ -154,7 +165,7 @@ def build_sandbox(
     env["COLUMNS"] = str(DEFAULT_COLS)
     env["LINES"] = str(DEFAULT_ROWS)
 
-    if isolate_home:
+    if not inherit_home:
         home = root / "home"
         home.mkdir()
         env["HOME"] = str(home)
@@ -164,24 +175,31 @@ def build_sandbox(
         empty.mkdir()
         env["PATH"] = f"{omnigent_bin.parent}:{empty}"
 
-    return Sandbox(root=root, env=env, isolate_home=isolate_home)
+    return Sandbox(root=root, env=env, home_isolated=not inherit_home)
 
 
 def fingerprint_real_config() -> dict[str, str]:
-    """Fingerprint the real ``~/.omnigent`` config files so we can prove we
-    never touched them.
+    """Fingerprint the real ``~/.omnigent`` so we can prove we never wrote to it.
 
-    Stat-only (size + mtime, no content reads) and scoped to the config files
-    at the top level — deliberately **not** the multi-GB ``logs/`` /
-    ``db-backups/`` / native-state dirs. Those can be many gigabytes (reading
-    them would hang) and are written by *other* running omnigent processes
-    (mtime churn there would be a false "mutation" alarm), whereas our
-    redirected ``OMNIGENT_CONFIG_HOME`` / ``OMNIGENT_DATA_DIR`` mean a correct
-    run touches none of these files at all. Onboarding writes exactly these
-    top-level config files, so they are the right thing to guard.
+    Stat-only (size + mtime, no content reads). It captures two things, both
+    cheap:
 
-    :returns: Mapping of filename → ``"<size>:<mtime_ns>"``. Empty if the
-        directory does not exist.
+    * the top-level config files (``*.yaml`` / ``*.json`` / ``*.toml`` plus the
+      known names) — what onboarding writes; and
+    * the set of ``logs/cli-*.log`` diagnostic files — what *any* non-help CLI
+      invocation writes via the hardcoded ``Path.home()/.omnigent`` state dir.
+      A new ``cli-*.log`` basename after the run means we wrote into the real
+      home (the precise violation that slips through ``OMNIGENT_CONFIG_HOME`` /
+      ``OMNIGENT_DATA_DIR``). With home isolation on (the default) none appear;
+      under ``--inherit-home`` they do — and this is what trips the guard.
+
+    It deliberately does **not** read the multi-GB ``logs/*.log`` bodies,
+    ``db-backups/`` or native-state dirs (reading them would hang, and other
+    running omnigent daemons churn them → false alarms). The single ``logs/``
+    glob is bounded by the diagnostics log cap.
+
+    :returns: Mapping of relative path → ``"<size>:<mtime_ns>"`` (config files)
+        or ``"<mtime_ns>"`` (cli logs). Empty if the directory does not exist.
     """
     base = Path.home() / ".omnigent"
     out: dict[str, str] = {}
@@ -196,6 +214,11 @@ def fingerprint_real_config() -> dict[str, str]:
         if p.is_file():
             st = p.stat()
             out[p.name] = f"{st.st_size}:{st.st_mtime_ns}"
+    logs = base / "logs"
+    if logs.is_dir():
+        for p in sorted(logs.glob("cli-*.log")):
+            with contextlib.suppress(OSError):
+                out[f"logs/{p.name}"] = str(p.stat().st_mtime_ns)
     return out
 
 
@@ -303,8 +326,9 @@ def scenario_check_isolation(args, sandbox: Sandbox, result: Result) -> None:
 def scenario_cold_start(args, sandbox: Sandbox, result: Result) -> None:
     """Spawn the first-time setup surface a brand-new user sees and capture it.
 
-    Best run with ``--isolate-home --strip-path`` to truly mimic a fresh
-    machine. Asserts the onboarding surface renders (the credential search
+    Home isolation is on by default (so this is already a fresh machine for
+    credentials); add ``--strip-path`` to also make node/tmux/claude read as
+    not installed. Asserts the onboarding surface renders (the credential search
     banner or the ``Configure harnesses`` menu), saves the frame for UX review,
     then aborts cleanly.
     """
@@ -438,11 +462,16 @@ def scenario_help_snapshot(args, sandbox: Sandbox, result: Result) -> None:
 
 
 def scenario_repl_commands(args, sandbox: Sandbox, result: Result) -> None:
-    """Boot the REPL and verify command discoverability (/help, /quit).
+    """Boot the REPL and check command discoverability.
 
-    Requires a working harness + credential to reach the prompt, so pass
-    ``--keep-env-creds`` and an ``--agent``/``--harness``. If the prompt is not
-    reachable the scenario reports ``skipped`` (never a false pass).
+    Asserts the ``/help`` command list renders; separately records whether
+    ``/quit`` is advertised (the ``quit_advertised`` note — finding U2).
+
+    Requires a working harness + credential to reach the prompt: pass
+    ``--inherit-home`` (for ambient ``~/.claude`` auth) and/or
+    ``--keep-env-creds`` (for an env API key) plus an ``--agent``/``--harness``.
+    If the prompt is not reachable the scenario reports ``skipped`` (never a
+    false pass).
     """
     if not args.agent:
         result.skip("repl-commands needs --agent <dir/yaml> (and a working harness/credential)")
@@ -471,7 +500,10 @@ def scenario_repl_commands(args, sandbox: Sandbox, result: Result) -> None:
     frame = drain(child, seconds=2.5)
     save_frame(result, Path(args.artifacts), "repl_help", frame)
     stripped = strip_ansi(frame)
-    result.add("help_lists_commands", "/help" in stripped or "/quit" in stripped, "/help output")
+    # The /help command list rendered (the `/help` row is always present). Note
+    # `/quit` discoverability separately — finding U2 is that it is NOT
+    # advertised, so a fix flips quit_advertised no→yes.
+    result.add("help_lists_commands", "/help" in stripped, "/help output")
     result.notes.append(
         f"quit_advertised={'yes' if '/quit' in stripped else 'no'}"  # discoverability finding U2
     )
@@ -503,19 +535,42 @@ def _abort_picker(child: pexpect.spawn) -> None:
         time.sleep(0.2)
 
 
+def _descendant_pids(root_pid: int) -> list[int]:
+    """Collect the full descendant tree of ``root_pid`` via repeated ``pgrep -P``.
+
+    Walks children, grandchildren, etc. — a spawned server/runner can re-parent
+    its own children, so a single ``pgrep -P`` only reaches one level.
+    """
+    found: list[int] = []
+    frontier = [root_pid]
+    seen = {root_pid}
+    while frontier:
+        parent = frontier.pop()
+        with contextlib.suppress(Exception):
+            out = subprocess.run(
+                ["pgrep", "-P", str(parent)], capture_output=True, text=True
+            ).stdout
+            for tok in out.split():
+                with contextlib.suppress(ValueError):
+                    pid = int(tok)
+                    if pid not in seen:
+                        seen.add(pid)
+                        found.append(pid)
+                        frontier.append(pid)
+    return found
+
+
 def _kill_tree(child: pexpect.spawn) -> None:
-    """Force-kill the child and any descendants; never raise from teardown."""
+    """Force-kill the child and its whole descendant tree; never raise."""
     pid = child.pid
+    # Snapshot descendants BEFORE close() — closing the PTY can reparent them to
+    # init, after which pgrep -P can no longer find them via the child.
+    descendants = _descendant_pids(pid) if pid else []
     with contextlib.suppress(Exception):
         child.close(force=True)
-    if not pid:
-        return
-    # Reap stragglers (a spawned server/runner reparents and survives close()).
-    with contextlib.suppress(Exception):
-        out = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True).stdout
-        for line in out.split():
-            with contextlib.suppress(ProcessLookupError, ValueError):
-                os.kill(int(line), signal.SIGKILL)
+    for dpid in descendants:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(dpid, signal.SIGKILL)
 
 
 def stop_sandbox_server(args, sandbox: Sandbox) -> None:
@@ -574,9 +629,11 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     p.add_argument("--rows", type=int, default=DEFAULT_ROWS, help="PTY rows (default 24).")
     p.add_argument("--timeout", type=float, default=60.0, help="Per-expect timeout seconds.")
     p.add_argument(
-        "--isolate-home",
+        "--inherit-home",
         action="store_true",
-        help="Redirect HOME into the sandbox (max-fresh).",
+        help="Opt out of HOME isolation (use real HOME + ambient auth). "
+        "Less safe: non-help commands then write cli-*.log into the real "
+        "~/.omnigent/logs. Use only to reach a real credentialed REPL.",
     )
     p.add_argument(
         "--strip-path",
@@ -621,7 +678,7 @@ def main(argv: Sequence[str]) -> int:
     args.omnigent = resolve_omnigent(args.repo, args.omnigent)
     sandbox = build_sandbox(
         keep_env_creds=args.keep_env_creds,
-        isolate_home=args.isolate_home,
+        inherit_home=args.inherit_home,
         strip_path=args.strip_path,
         omnigent_bin=args.omnigent,
     )

@@ -27,24 +27,34 @@ sandbox, captures what renders, runs assertions, and prints one machine-readable
 ## Why this is safe (read first)
 
 The real `~/.omnigent` here can be **many GB** (chat DB, runner logs, native
-harness state). The sandbox isolates every write via the CLI's own
-purpose-built knobs (`omnigent/cli.py` `_CONFIG_HOME_ENV_VAR` /
-`_DATA_DIR_ENV_VAR`):
+harness state). The sandbox isolates every write three ways:
 
-- `OMNIGENT_CONFIG_HOME` → where `config.yaml` / secrets / provider config go.
-- `OMNIGENT_DATA_DIR` → where the sqlite DB / pidfiles go.
-- `--isolate-home` also redirects `HOME` (hides ambient `~/.claude`,
-  `~/.databrickscfg`, `~/.codex` auth → a genuinely *cold* machine).
+- **`HOME` is redirected into the sandbox by default.** This is the load-bearing
+  one. `OMNIGENT_CONFIG_HOME` / `OMNIGENT_DATA_DIR` (`omnigent/cli.py`
+  `_CONFIG_HOME_ENV_VAR` / `_DATA_DIR_ENV_VAR`) redirect config + data — but the
+  CLI's **diagnostics logger ignores them**: it writes a per-invocation
+  `cli-*.log` under `state_dir()`, hardcoded to `Path.home()/.omnigent/logs`
+  (`omnigent_ui_sdk/terminal/_config.py`). So only redirecting `HOME` keeps a
+  non-help command (`config list`, the setup PTY spawns, `server stop`) from
+  writing into the real home. The driver does this for you.
 - `--strip-path` reduces `PATH` so `node`/`tmux`/`claude`/`codex` read as "not
   installed" → the true fresh-machine cold start.
 - Ambient model keys (`ANTHROPIC_API_KEY`, …) are stripped from the child env
   unless you pass `--keep-env-creds`.
 
-Every run **fingerprints the real `~/.omnigent` config files (stat-only) before
-and after** and reports `real_config_untouched`. If that check is ever `false`,
-stop and investigate — the isolation knobs didn't take effect and you should not
-trust the run. Run the `check-isolation` scenario first to confirm the loop is
-safe on your machine.
+**`--inherit-home` opts out** of `HOME` isolation — use it only to reach a real
+credentialed REPL via ambient `~/.claude` / `~/.databrickscfg` auth. It is
+**less safe**: a non-help command then writes `cli-*.log` into the real
+`~/.omnigent/logs`.
+
+Every run **fingerprints the real `~/.omnigent` before and after** (stat-only,
+no content reads): the top-level config files **and** the set of
+`logs/cli-*.log` diagnostic files. A new config file/mtime *or* a new `cli-*.log`
+basename trips `real_config_untouched: false`. With the default isolation that
+never happens; under `--inherit-home` it correctly does — which is exactly the
+violation the guard is meant to catch. If that check is ever `false`, stop and
+investigate. Run `check-isolation` first to confirm the loop is safe on your
+machine.
 
 ## Prerequisites
 
@@ -55,8 +65,10 @@ safe on your machine.
 - An `omnigent` binary: the driver auto-finds `<repo>/.venv/bin/omnigent`, or
   pass `--omnigent <path>`.
 - The setup / picker / help / cold-start scenarios need **no credentials and no
-  harness**. Only `repl-commands` needs a working harness + credential (it
-  reports `skipped`, never a false pass, when the prompt isn't reachable).
+  harness**. Only `repl-commands` needs a working harness + credential: pass
+  `--inherit-home` (ambient `~/.claude` auth) and/or `--keep-env-creds` (env API
+  key) with `--agent`. It reports `skipped`, never a false pass, when the prompt
+  isn't reachable.
 
 ## Quick start
 
@@ -66,10 +78,11 @@ PY=$REPO/.venv/bin/python
 DRV=$REPO/.claude/skills/cli-setup-verify/verify_cli.py
 
 # 0. Prove the sandbox is safe on this machine (do this once).
-$PY $DRV --scenario check-isolation --isolate-home --repo "$REPO"
+#    HOME is isolated by default — no flag needed.
+$PY $DRV --scenario check-isolation --repo "$REPO"
 
 # 1. See exactly what a brand-new user sees on a fresh machine.
-$PY $DRV --scenario cold-start --isolate-home --strip-path --keep-sandbox --repo "$REPO"
+$PY $DRV --scenario cold-start --strip-path --keep-sandbox --repo "$REPO"
 #    → reads the printed `artifacts` path, then `cat <that>/cold_start.txt`
 
 # 2. Lint the top-level help (and any subcommand's).
@@ -163,8 +176,11 @@ sandbox env and the keys the driver exports (`KEY_UP`/`KEY_DOWN`/`KEY_ENTER`/
   sandbox's data dir is yours to kill.
 - The sandbox temp dir is deleted unless `--keep-sandbox`. If you keep one for
   inspection, `rm -rf` it when done.
-- Never run a scenario without the isolation knobs (the driver always sets
-  them) — a bare `omnigent setup` would write to the real `~/.omnigent`.
+- Always drive the CLI through the driver (which redirects `HOME` + the
+  config/data knobs), never a bare `omnigent setup` — that would write to the
+  real `~/.omnigent`. If you pass `--inherit-home`, expect `cli-*.log` writes to
+  the real `~/.omnigent/logs` and a `real_config_untouched: false` — that's the
+  guard working, not a bug.
 
 ## Honesty
 
