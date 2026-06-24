@@ -3383,10 +3383,10 @@ class TestToolCallPolicyGate(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-def test_precompact_hook_does_not_emit_compaction_complete() -> None:
-    """Claude SDK owns its own session persistence, so PreCompact hooks
-    are logged but do NOT emit CompactionComplete — the runner has no
-    useful compacted state to persist."""
+def test_precompact_hook_emits_compaction_complete_with_session_messages() -> None:
+    """When PreCompact fires and a ResultMessage carries a session_id,
+    CompactionComplete is emitted with compacted_messages read from
+    the CLI's session transcript."""
     from omnigent.inner.claude_sdk_executor import ClaudeSDKExecutor
     from omnigent.inner.executor import CompactionComplete
 
@@ -3413,6 +3413,11 @@ def test_precompact_hook_does_not_emit_compaction_complete() -> None:
 
     class _HookEventMessage(_SystemMessage):
         pass
+
+    class _FakeSessionMessage:
+        def __init__(self, type, message):
+            self.type = type
+            self.message = message
 
     class _FakeSDK:
         AssistantMessage = type("AssistantMessage", (), {})
@@ -3441,7 +3446,7 @@ def test_precompact_hook_does_not_emit_compaction_complete() -> None:
                         data={"hook_event": "PreCompact"},
                         hook_event_name="PreCompact",
                     ),
-                    _ResultMessage(session_id, "compacted result"),
+                    _ResultMessage("claude-uuid-123", "compacted result"),
                 ]
 
             async def receive_response(self):
@@ -3451,9 +3456,23 @@ def test_precompact_hook_does_not_emit_compaction_complete() -> None:
             async def disconnect(self):
                 return None
 
+    fake_session_msgs = [
+        _FakeSessionMessage("user", {"content": [{"type": "text", "text": "hi"}]}),
+        _FakeSessionMessage("assistant", {"content": [{"type": "text", "text": "compacted"}]}),
+    ]
+
     async def _t():
         executor = ClaudeSDKExecutor()
-        with patch("omnigent.inner.claude_sdk_executor._ensure_sdk", return_value=_FakeSDK):
+        with (
+            patch(
+                "omnigent.inner.claude_sdk_executor._ensure_sdk",
+                return_value=_FakeSDK,
+            ),
+            patch(
+                "claude_agent_sdk.get_session_messages",
+                return_value=fake_session_msgs,
+            ) as mock_get_msgs,
+        ):
             events = [
                 e
                 async for e in executor.run_turn(
@@ -3464,9 +3483,17 @@ def test_precompact_hook_does_not_emit_compaction_complete() -> None:
             ]
 
         compaction_events = [e for e in events if isinstance(e, CompactionComplete)]
-        assert len(compaction_events) == 0, (
-            "claude-sdk should not emit CompactionComplete — it owns its own session persistence"
-        )
+        assert len(compaction_events) == 1
+        ce = compaction_events[0]
+        assert ce.compacted_messages is not None
+        assert len(ce.compacted_messages) == 2
+        assert ce.compacted_messages[0]["role"] == "user"
+        assert ce.compacted_messages[1]["role"] == "assistant"
+        mock_get_msgs.assert_called_once_with("claude-uuid-123", directory=None)
+        # CompactionComplete before TurnComplete
+        turn_completes = [e for e in events if isinstance(e, TurnComplete)]
+        assert len(turn_completes) == 1
+        assert events.index(compaction_events[0]) < events.index(turn_completes[0])
 
     _run(_t())
 
