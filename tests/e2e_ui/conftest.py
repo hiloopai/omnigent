@@ -84,7 +84,7 @@ def open_right_rail(page: Page) -> None:
 # Populated by ``live_server`` so test-scoped fixtures can access the
 # server PID and runner id without changing ``live_server``'s return
 # type (which other tests depend on).
-_server_state: dict[str, int | str] = {}
+_server_state: dict[str, Any] = {}
 _AP_WEB_DIR = _REPO_ROOT / "ap-web"
 _BUILD_OUTPUT = _REPO_ROOT / "omnigent" / "server" / "static" / "web-ui"
 
@@ -962,7 +962,7 @@ def seeded_session(
     """
     import json as _json
 
-    respawned_runner = _ensure_runner_online(live_server, tmp_path_factory)
+    _ensure_runner_online(live_server, tmp_path_factory)
     runner_id = str(_server_state["runner_id"])
     # Create a session with the hello_world bundle inline. The server
     # pre-registered the agent via --agent, but since /api/agents is
@@ -988,15 +988,13 @@ def seeded_session(
         yield (live_server, session_id)
     finally:
         httpx.delete(f"{live_server}/v1/sessions/{session_id}", timeout=10.0)
-        # Restore the "found" state: if we respawned the runner (a prior
-        # test had killed it), tear our copy down so it doesn't outlive us.
-        if respawned_runner is not None:
-            respawned_runner.terminate()
-            try:
-                respawned_runner.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                respawned_runner.kill()
-                respawned_runner.wait(timeout=5)
+        # Do NOT terminate the respawned runner here — the next test's
+        # seeded_session will reuse it via _ensure_runner_online (which sees
+        # it as "online" and skips respawn). Terminating it created a race:
+        # the WS tunnel deregistered asynchronously, so the next test's
+        # _ensure_runner_online sometimes saw the dying runner as "online",
+        # bound a session to it, and then the runner died — leaving the
+        # session with no runner to dispatch turns.
 
 
 def _create_runner_bound_session(base_url: str, runner_id: str) -> str:
@@ -1069,6 +1067,17 @@ def _ensure_runner_online(
     if _online():
         return None
 
+    # Reuse a previously respawned runner if it is still alive.
+    existing = _server_state.get("_respawned_runner")
+    if isinstance(existing, subprocess.Popen) and existing.poll() is None:
+        # The previous respawn's WS tunnel may be deregistering — wait for
+        # it to come back online rather than spawning a duplicate.
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if _online():
+                return None  # caller must NOT terminate — it's shared
+            time.sleep(_HEALTH_POLL_INTERVAL_S)
+
     binding_token = str(_server_state["binding_token"])
     mock_url = str(_server_state.get("mock_llm_url") or "")
     assert mock_url, "mock_llm_url missing from _server_state — live_server did not set it"
@@ -1095,6 +1104,9 @@ def _ensure_runner_online(
         stderr=subprocess.STDOUT,
     )
     log_handle.close()  # child holds its own dup of the fd
+    # Store so subsequent callers reuse rather than respawn (avoiding the
+    # terminate-then-immediately-check race that created zombie runners).
+    _server_state["_respawned_runner"] = proc
 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -1104,10 +1116,11 @@ def _ensure_runner_online(
                 f"log:\n{log_path.read_text()[-3000:]}"
             )
         if _online():
-            return proc
+            return None  # stored in _server_state; caller must NOT terminate
         time.sleep(_HEALTH_POLL_INTERVAL_S)
 
     proc.terminate()
+    _server_state.pop("_respawned_runner", None)
     raise RuntimeError(f"respawned runner did not register within {timeout_s:.0f}s")
 
 
