@@ -1742,11 +1742,18 @@ async def _auto_create_hermes_terminal(
     # re-creating, so old and new tasks can't both mirror (double-posting), and
     # drop the prior terminal's stale forward cursor.
     await _cancel_auto_forwarder_task(session_id)
-    from omnigent.hermes_native_bridge import bridge_dir_for_session_id, write_tmux_target
+    from omnigent.hermes_native_bridge import (
+        bridge_dir_for_session_id,
+        setup_hermes_native_home,
+        write_tmux_target,
+    )
     from omnigent.hermes_native_forwarder import clear_hermes_bridge_state
 
     bridge_dir = bridge_dir_for_session_id(session_id)
     clear_hermes_bridge_state(bridge_dir)
+    # Resolve the server URL before launch: the per-session policy hook posts tool
+    # calls to it, and the forwarder reuses it below.
+    server_url = _required_runner_env("RUNNER_SERVER_URL")
 
     # ``_pi_native_launch_config`` is a generic session-snapshot reader
     # (workspace + terminal_launch_args); reused here, not Pi-specific.
@@ -1756,6 +1763,13 @@ async def _auto_create_hermes_terminal(
     )
     workspace = os.path.realpath(str(launch_config.workspace))
     hermes_command = resolve_hermes_executable()
+    # Per-session HERMES_HOME = the user's full ~/.hermes config (minus state.db)
+    # plus Omnigent's pre_tool_call policy hook, so native TUI tool calls gate via
+    # the web approval card. Paired with HERMES_YOLO_MODE=1 below so Hermes' own
+    # in-TUI prompt is suppressed and the web card is the sole gate.
+    hermes_home_dir = setup_hermes_native_home(
+        bridge_dir, session_id=session_id, server_url=server_url
+    )
     # Stamp the discovery floor BEFORE launch: the forwarder binds the newest
     # ``sessions`` row whose ``cwd`` matches this workspace and whose
     # ``started_at`` is at/after this instant (minus a small skew). A wiped bridge
@@ -1771,13 +1785,15 @@ async def _auto_create_hermes_terminal(
             os_env=OSEnvSpec(type="caller_process", cwd=workspace),
             command=hermes_command,
             args=hermes_args,
-            # No color-disabling env: Hermes' themed TUI (its gold prompt) is the
-            # point of the native view, and the bridge captures the pane with
-            # ``tmux capture-pane -p`` (ANSI stripped) for readiness detection
-            # while the forwarder reads the SQLite transcript — so colour never
-            # interferes. (An earlier NO_COLOR=1 here rendered the TUI white.)
-            # Hermes' provider/model come from the user's own `hermes setup`.
-            env={},
+            # HERMES_HOME points at the per-session config (full user config +
+            # Omnigent policy hook). HERMES_YOLO_MODE=1 suppresses Hermes' own
+            # in-TUI tool prompt so the web approval card (raised by the hook on an
+            # ASK policy) is the sole gate. No color-disabling env: Hermes' themed
+            # TUI (its gold prompt) is the point of the native view, and the bridge
+            # captures the pane with ``tmux capture-pane -p`` (ANSI stripped) for
+            # readiness detection while the forwarder reads the SQLite transcript —
+            # so colour never interferes. (An earlier NO_COLOR=1 rendered it white.)
+            env={"HERMES_HOME": str(hermes_home_dir), "HERMES_YOLO_MODE": "1"},
             scrollback=100_000,
             tmux_allow_passthrough=True,
             tmux_start_on_attach=False,
@@ -1808,7 +1824,6 @@ async def _auto_create_hermes_terminal(
     # server URL + refresh-capable auth.
     from omnigent.runner._entry import _make_auth_token_factory, _RunnerDatabricksAuth
 
-    server_url = _required_runner_env("RUNNER_SERVER_URL")
     _runner_auth = _RunnerDatabricksAuth(_make_auth_token_factory())
 
     from omnigent.hermes_native_forwarder import supervise_hermes_forwarder
@@ -1829,6 +1844,9 @@ async def _auto_create_hermes_terminal(
             agent_name="hermes-native-ui",
             workspace=workspace,
             launch_epoch_s=launch_epoch_s,
+            # The native TUI writes its transcript into the per-session HERMES_HOME,
+            # so tail that store (not the user's ~/.hermes/state.db).
+            db_path=hermes_home_dir / "state.db",
             auth=_runner_auth,
         ),
         name=f"hermes-forwarder-{session_id}",
