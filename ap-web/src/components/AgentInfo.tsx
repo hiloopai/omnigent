@@ -36,6 +36,8 @@ import { agentRootName } from "@/lib/forkHarness";
 import { nativeCodingAgentForAgentName } from "@/lib/nativeCodingAgents";
 import { copyText } from "@/lib/clipboard";
 import { useChatStore } from "@/store/chatStore";
+import { useServerInfo } from "@/lib/CapabilitiesContext";
+import { useSessionHostVersion } from "@/hooks/RunnerHealthProvider";
 
 /**
  * Display label for an agent name: the wrapper alias when mapped, else
@@ -630,6 +632,19 @@ export function AgentInfoContent({ agent, sessionId }: AgentInfoProps) {
   // popover renders it directly — the frontend derives any aggregate view
   // from this map rather than receiving flat token fields.
   const usageByModel = useChatStore((s) => s.sessionUsageByModel);
+  // Version footer: the server version (global, from the boot capabilities
+  // probe) and the bound host's version (per-session, from the health poll).
+  // Either may be absent — the footer renders whatever is known and hides
+  // entirely when neither is.
+  const serverInfo = useServerInfo();
+  const serverVersion = serverInfo !== "loading" ? serverInfo.server_version : null;
+  const hostVersion = useSessionHostVersion(sessionId ?? undefined);
+  const versionFooter = [
+    serverVersion ? `server ${serverVersion}` : null,
+    hostVersion ? `host ${hostVersion}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   useEffect(() => {
     return () => {
@@ -710,6 +725,16 @@ export function AgentInfoContent({ agent, sessionId }: AgentInfoProps) {
         </div>
       )}
       {sessionId && <SessionPoliciesSection sessionId={sessionId} />}
+      {versionFooter && (
+        <div className="border-t border-border pt-2">
+          <span
+            className="font-mono text-[10px] text-muted-foreground/70"
+            data-testid="agent-info-versions"
+          >
+            {versionFooter}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

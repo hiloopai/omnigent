@@ -53,6 +53,7 @@ const _bootProbe: Promise<ServerInfo> = Promise.race([
           databricks_features: false,
           managed_sandboxes_enabled: false,
           sandbox_provider: null,
+          server_version: null,
         }),
       1500,
     ),

@@ -56,6 +56,13 @@ export interface ServerInfo {
    * ``managed_sandboxes_enabled`` is true.
    */
   sandbox_provider: string | null;
+  /**
+   * Installed omnigent server version (same value as ``/api/version``),
+   * e.g. ``"0.3.0.dev0"``. Shown in the session info popover's version
+   * footer. ``null`` only when the probe failed (the OFF sentinel) — a
+   * live server always reports it.
+   */
+  server_version: string | null;
 }
 
 /** Sentinel used when the probe fails — accounts is off, no login URL. */
@@ -66,6 +73,7 @@ const _OFF: ServerInfo = {
   databricks_features: false,
   managed_sandboxes_enabled: false,
   sandbox_provider: null,
+  server_version: null,
 };
 
 let _cached: ServerInfo | null = null;
@@ -98,6 +106,7 @@ export async function resolveServerInfo(): Promise<ServerInfo> {
           managed_sandboxes_enabled: data.managed_sandboxes_enabled === true,
           sandbox_provider:
             typeof data.sandbox_provider === "string" ? data.sandbox_provider : null,
+          server_version: typeof data.server_version === "string" ? data.server_version : null,
         };
         return _cached;
       }

@@ -33,6 +33,7 @@ const ACCOUNTS_ON: ServerInfo = {
   databricks_features: false,
   managed_sandboxes_enabled: false,
   sandbox_provider: null,
+  server_version: null,
 };
 const ACCOUNTS_OFF: ServerInfo = { ...ACCOUNTS_ON, accounts_enabled: false, login_url: null };
 
