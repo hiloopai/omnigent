@@ -189,6 +189,9 @@ _GLOBAL_CONFIG_KEYS: frozenset[str] = frozenset(
         "default_agent",
         "harness",
         "model",
+        # OpenCode-specific default model (``provider/model``) the native
+        # ``omni opencode`` TUI launches on; set via `omni setup` → OpenCode.
+        "opencode_model",
         "server",
         _AUTO_OPEN_CONVERSATION_CONFIG_KEY,
     }
@@ -1171,6 +1174,7 @@ _CLICK_SUBCOMMANDS: frozenset[str] = frozenset(
         "host",
         "lakebox",
         "login",
+        "opencode",
         "pane-picker",
         "pane-split",
         "pi",
@@ -4374,7 +4378,9 @@ def opencode(
     if server is None:
         server = cfg.get("server")
     if model is None:
-        model = cfg.get("model")
+        # Prefer the OpenCode-specific default (set in `omni setup` → OpenCode →
+        # "Set default model"); fall back to the shared `model` key for back-compat.
+        model = cfg.get("opencode_model") or cfg.get("model")
     auto_open_conversation = _resolve_auto_open_conversation_from_config(cfg)
 
     # Validate option combinations before any side effects (see the codex
@@ -9687,6 +9693,70 @@ def _run_opencode_auth_list() -> None:
         subprocess.run([spec.binary, "auth", "list"], check=False)
 
 
+def _list_opencode_models() -> list[str]:
+    """Return the ``provider/model`` ids OpenCode can launch (``opencode models``).
+
+    Best-effort: an absent CLI or a failed/empty invocation yields ``[]`` (the
+    caller then tells the user to sign a provider in first).
+    """
+    from omnigent.onboarding.harness_install import OPENCODE_KEY, harness_install_spec
+
+    spec = harness_install_spec(OPENCODE_KEY)
+    if spec is None:
+        return []
+    try:
+        result = subprocess.run(
+            [spec.binary, "models"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _set_opencode_default_model(current: str | None) -> str | None:
+    """Pick OpenCode's default model and persist it as ``opencode_model``.
+
+    The choice is what ``omni opencode`` launches on when no ``--model`` is
+    given — written into the per-session ``opencode.json`` at spawn so the TUI
+    starts on it instead of ``opencode/big-pickle``. Returns a status line for
+    the drill-in, or ``None`` when cancelled.
+
+    :param current: The currently-persisted default model, or ``None``.
+    """
+    from omnigent.onboarding.interactive import console, select
+
+    models = _list_opencode_models()
+    if not models:
+        return "✗ no models — sign in to a provider first (opencode auth login)"
+    options = list(models)
+    clear_index = -1
+    if current is not None:
+        clear_index = len(options)
+        options.append("Clear default (use OpenCode's own default)")
+    default = models.index(current) if current in models else 0
+    idx = select(
+        "Pick OpenCode's default model",
+        options,
+        default=default,
+        clear_on_exit=True,
+        status=f"current: {current}" if current else None,
+    )
+    if idx < 0:
+        return None
+    if idx == clear_index:
+        _save_global_config({}, unset_keys=("opencode_model",))
+        console.print("  [green]✓ default model cleared[/green]")
+        return "✓ default model cleared"
+    chosen = models[idx]
+    _save_global_config({"opencode_model": chosen})
+    console.print(f"  [green]✓ default model set to[/green] [bold]{chosen}[/bold]")
+    return f"✓ default model: {chosen}"
+
+
 def _print_opencode_auth_help() -> None:
     """Explain where OpenCode's model credentials come from."""
     from omnigent.onboarding.interactive import console
@@ -9698,7 +9768,9 @@ def _print_opencode_auth_help() -> None:
         "    • Provider env vars (OPENAI_API_KEY / ANTHROPIC_API_KEY / …) are auto-detected.\n"
         "    • Databricks gateway: set an agent ``profile`` (configured under Claude / Codex);\n"
         "      Omnigent synthesizes opencode's per-session provider config from it.\n"
-        "  Omnigent stores no OpenCode credential of its own."
+        "  Omnigent stores no OpenCode credential of its own.\n"
+        "  [dim]Tip:[/dim] 'Set default model' picks which model `omni opencode` launches on\n"
+        "  (otherwise OpenCode uses its built-in default, opencode/big-pickle)."
     )
 
 
@@ -9767,13 +9839,20 @@ def _manage_opencode_harness() -> None:
         from omnigent.onboarding.opencode_auth import opencode_auth_summary
 
         summary = opencode_auth_summary()
+        default_model = _load_effective_config().get("opencode_model")
         header = (
             f"OpenCode — providers: {summary.describe()}"
             if summary.has_provider
             else "OpenCode — no provider configured yet"
         )
+        model_label = (
+            f"Set default model (current: {default_model})"
+            if default_model
+            else "Set default model"
+        )
         rows: list[_HarnessMenuRow] = [
             _HarnessMenuRow("Run opencode auth login", action="login"),
+            _HarnessMenuRow(model_label, action="model"),
             _HarnessMenuRow("List providers & credentials", action="list"),
             _HarnessMenuRow("Show provider options", action="help"),
             _HarnessMenuRow("← Back", action="back"),
@@ -9786,6 +9865,8 @@ def _manage_opencode_harness() -> None:
             return
         if action == "login":
             status = _launch_opencode_auth_login()
+        elif action == "model":
+            status = _set_opencode_default_model(default_model)
         elif action == "list":
             _run_opencode_auth_list()
             status = None

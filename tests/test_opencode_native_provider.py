@@ -14,10 +14,29 @@ from omnigent.opencode_native_provider import (
     DEFAULT_DATABRICKS_GATEWAY_MODEL,
     OpenCodeGatewayResolution,
     _gateway_endpoint_for_model,
+    build_opencode_model_default_config,
     build_opencode_provider_config,
     resolve_databricks_gateway,
     write_opencode_provider_config,
 )
+
+
+def test_build_model_default_config_pins_model_without_provider_block() -> None:
+    cfg = build_opencode_model_default_config("anthropic/claude-sonnet-4-5")
+    assert cfg == {
+        "$schema": "https://opencode.ai/config.json",
+        "model": "anthropic/claude-sonnet-4-5",
+    }
+    # No provider block: opencode resolves the provider from the model prefix.
+    assert "provider" not in cfg
+
+
+def test_model_default_config_round_trips_through_writer(tmp_path: Path) -> None:
+    path = write_opencode_provider_config(
+        tmp_path, build_opencode_model_default_config("openai/gpt-5.5")
+    )
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["model"] == "openai/gpt-5.5"
 
 
 def test_qualified_model_joins_provider_and_endpoint() -> None:

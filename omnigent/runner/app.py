@@ -884,6 +884,7 @@ async def _auto_create_opencode_terminal(
     # provider config the ambient env/global config already gives it.
     from omnigent.opencode_native_bridge import xdg_config_home_for_bridge_dir
     from omnigent.opencode_native_provider import (
+        build_opencode_model_default_config,
         build_opencode_provider_config,
         resolve_databricks_gateway,
         write_opencode_provider_config,
@@ -893,12 +894,22 @@ async def _auto_create_opencode_terminal(
         _opencode_native_profile_from_spec(agent_spec), model_id=model_override
     )
     if gateway is not None:
+        # Pin the per-prompt model to the synthesized provider/endpoint id, and
+        # write it as opencode's default model too so the TUI launches on it.
+        model_override = gateway.qualified_model
+        config = build_opencode_provider_config(gateway)
+        config["model"] = model_override
+        write_opencode_provider_config(xdg_config_home_for_bridge_dir(bridge_dir), config)
+    elif model_override:
+        # No custom provider, but a model is pinned (``omni opencode --model`` or
+        # the ``omni setup`` OpenCode default): write opencode's default model so
+        # the native TUI and the first turn use it instead of ``opencode/big-pickle``.
+        # OpenCode resolves the provider from the model-id prefix against its own
+        # auth.json, so no provider block is needed.
         write_opencode_provider_config(
             xdg_config_home_for_bridge_dir(bridge_dir),
-            build_opencode_provider_config(gateway),
+            build_opencode_model_default_config(model_override),
         )
-        # Pin the per-prompt model to the synthesized provider/endpoint id.
-        model_override = gateway.qualified_model
 
     server = OpenCodeNativeServer(bridge_dir=bridge_dir, workspace=launch_config.workspace)
     await server.start()

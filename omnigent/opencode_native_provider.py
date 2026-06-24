@@ -63,6 +63,24 @@ class OpenCodeGatewayResolution:
         return f"{self.provider_id}/{self.model_id}"
 
 
+def build_opencode_model_default_config(model: str) -> dict[str, object]:
+    """
+    Build a minimal ``opencode.json`` that only pins the default model.
+
+    Used when the user's own provider auth (``opencode auth login`` /
+    provider env keys) already supplies credentials, but a default model has
+    been chosen — via ``omni opencode --model`` or the ``omni setup`` OpenCode
+    default — so the per-session TUI (and the first turn) launch on that model
+    instead of OpenCode's built-in default (``opencode/big-pickle``). No
+    provider block: OpenCode resolves the provider from the model id's prefix
+    against its own ``auth.json``.
+
+    :param model: A ``provider/model`` id, e.g. ``"anthropic/claude-sonnet-4-5"``.
+    :returns: A config dict ready to serialize to ``opencode.json``.
+    """
+    return {"$schema": "https://opencode.ai/config.json", "model": model}
+
+
 def build_opencode_provider_config(resolution: OpenCodeGatewayResolution) -> dict[str, object]:
     """
     Build the ``opencode.json`` declaring a custom OpenAI-compatible provider.
