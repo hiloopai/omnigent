@@ -209,11 +209,14 @@ global.fetch = async (url, request) => {
       throw new Error("ECONNREFUSED simulated transport error");
     }
     if (responder === "THROW_ABORT") {
-      // Simulate our own AbortController firing mid-park: flip the request's
-      // signal to aborted (this is the SAME signal object the extension's
-      // controller exposes), then throw the AbortError fetch would raise. The
-      // extension's catch checks controller.signal.aborted to distinguish a
-      // re-park from a transient transport error.
+      // Simulate our own AbortController firing after holding the connection
+      // for the FULL per-attempt park timeout — i.e. a legitimate long-poll
+      // re-attach. The extension disambiguates a real park from a genuine
+      // transport error by the attempt's elapsed wall-time (a real connect
+      // error throws fast; a real park only aborts at the per-attempt
+      // timeout), so advance the fake clock by the per-attempt budget before
+      // flipping the signal and throwing the AbortError fetch would raise.
+      fakeNow += PARK_ATTEMPT_TIMEOUT_MS;
       if (request && request.signal && typeof request.signal._abort === "function") {
         request.signal._abort();
       }
@@ -235,6 +238,11 @@ global.fetch = async (url, request) => {
 // never fired so a scripted fetch always resolves first; but scheduling it
 // still advances nothing (it is cleared in the finally).
 let fakeNow = 1_000_000;
+// Mirrors _PARK_ATTEMPT_TIMEOUT_MS in the extension. A real long-poll abort
+// only fires after the connection is held this long; the THROW_ABORT responder
+// advances the fake clock by this amount so the extension classifies it as a
+// legitimate re-attach (vs. a fast-failing genuine transport error).
+const PARK_ATTEMPT_TIMEOUT_MS = 240000;
 const realDateNow = Date.now.bind(Date);
 Date.now = () => fakeNow;
 global.setTimeout = (fn, ms) => {
@@ -443,23 +451,152 @@ def test_policy_park_abort_reattaches_same_id(tmp_path: Path) -> None:
     _run_policy_node_script(_extension_path(), tmp_path, body)
 
 
-def test_policy_transport_error_fails_open(tmp_path: Path) -> None:
-    """A persistent transport error fails OPEN so a server outage never wedges Pi.
+def test_policy_transport_error_fails_closed(tmp_path: Path) -> None:
+    """A persistent transport error fails CLOSED (finding #1).
 
-    Every evaluate POST throws a non-abort transport error; after the transient
-    retry budget elapses the extension returns null (fail open) and the tool
-    call proceeds without a block.
+    PHASE_TOOL_CALL is the sole enforcement point for a native connector tool,
+    so an unevaluable policy must BLOCK, not proceed. Every evaluate POST
+    throws a non-abort transport error; after the transient retry budget
+    elapses the extension returns a deny verdict (fail closed) rather than
+    null, matching omnigent.policies.types.FAIL_CLOSED_PHASES and the Python
+    native hook's fail_closed_hook_output(PreToolUse) → deny.
     """
     body = r"""
 (async () => {
   // Always throw a transport error; with fake timers collapsing the backoff
-  // the transient budget elapses quickly and the loop fails open.
+  // the transient budget elapses quickly and the loop must fail CLOSED.
   responders = new Array(64).fill("THROW");
   const verdict = await runToolCall();
-  // Fail open → undefined / non-blocking.
-  assert.ok(!verdict || verdict.block !== true, JSON.stringify(verdict));
+  // Fail closed → a block verdict with the unreachable-server reason.
+  assert.equal(verdict && verdict.block, true, JSON.stringify(verdict));
+  assert.match(verdict.reason, /unreachable/);
+  assert.match(verdict.reason, /failing closed/);
   // It must have actually retried a few times before giving up (not one-shot).
   assert.ok(evalBodies.length >= 2, "expected retries, got " + evalBodies.length);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    _run_policy_node_script(_extension_path(), tmp_path, body)
+
+
+def test_policy_server_5xx_fails_closed(tmp_path: Path) -> None:
+    """A persistent 5xx response fails CLOSED once the transient budget is spent.
+
+    A 5xx is transient (retried, re-attaching), but if it never clears the
+    gate cannot produce a verdict, so PHASE_TOOL_CALL fails closed rather than
+    proceeding.
+    """
+    body = r"""
+(async () => {
+  responders = new Array(64).fill((_b) => makeJsonResponse({}, 503));
+  const verdict = await runToolCall();
+  assert.equal(verdict && verdict.block, true, JSON.stringify(verdict));
+  assert.match(verdict.reason, /failing closed/);
+  assert.ok(evalBodies.length >= 2, "expected retries, got " + evalBodies.length);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    _run_policy_node_script(_extension_path(), tmp_path, body)
+
+
+def test_policy_raw_ask_never_collapses_fails_closed(tmp_path: Path) -> None:
+    """A raw ASK that never collapses fails CLOSED after the round cap (finding #2).
+
+    A read-only caller's gate can return ASK without parking server-side. The
+    extension re-evaluates (re-attaching the same id), but a raw ASK that NEVER
+    collapses to a hard verdict must not ride the 24h park ceiling and then
+    proceed — after _MAX_RAW_ASK_ROUNDS it denies, mirroring the Python native
+    hook's stray-ASK-closed behavior.
+    """
+    body = r"""
+(async () => {
+  // Always ASK — it never collapses to ALLOW/DENY.
+  const askForever = (_b) =>
+    makeJsonResponse({ result: "POLICY_ACTION_ASK", reason: "approve?" });
+  responders = new Array(256).fill(askForever);
+  const verdict = await runToolCall();
+  // Fail closed → a block verdict, NOT a proceed (the old 24h-hang-then-allow).
+  assert.equal(verdict && verdict.block, true, JSON.stringify(verdict));
+  assert.match(verdict.reason, /failing closed/);
+  // It re-attached several rounds before giving up, but is bounded (not 24h /
+  // unbounded). All POSTs reuse the SAME elicitation id.
+  assert.ok(evalBodies.length >= 2, "expected re-evaluation, got " + evalBodies.length);
+  assert.ok(evalBodies.length <= 50, "raw ASK rounds must be capped, got " + evalBodies.length);
+  const ids = new Set(evalBodies.map((b) => b._omnigent_elicitation_id));
+  assert.equal(ids.size, 1, "all raw-ASK rounds must reuse one elicitation id");
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    _run_policy_node_script(_extension_path(), tmp_path, body)
+
+
+def test_policy_fast_error_racing_abort_is_bounded_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A genuine error racing the abort timer is bounded, not infinite (finding #3).
+
+    Once the per-attempt abort timer has fired, controller.signal.aborted reads
+    true even for a real connect reset that raced it. The old code re-attached
+    on ``aborted`` alone, so such an error retried unboundedly toward the 24h
+    ceiling. The fix disambiguates by elapsed wall-time: a fast-failing error
+    (well under the per-attempt timeout) is a genuine transport error charged
+    against the short transient budget — so a persistent one fails CLOSED
+    instead of looping forever.
+
+    THROW_FAST_ABORT flips ``aborted`` true (as if the timer had fired) but
+    throws IMMEDIATELY (no clock advance), modelling the race.
+    """
+    body = r"""
+(async () => {
+  // Fake AbortController whose signal can be flipped aborted=true.
+  global.AbortController = class {
+    constructor() {
+      let aborted = false;
+      const signal = {};
+      Object.defineProperty(signal, "aborted", { get() { return aborted; } });
+      signal._abort = () => { aborted = true; };
+      this.signal = signal;
+    }
+    abort() { this.signal._abort(); }
+  };
+  // Every attempt: flip aborted=true (timer "fired") but throw immediately with
+  // NO clock advance — a genuine reset racing the abort timer. The extension
+  // must charge these against the transient budget (elapsed ~= 0 << per-attempt
+  // timeout) and ultimately fail CLOSED, not re-attach forever.
+  let calls = 0;
+  responders = new Array(512).fill(null).map(() => (_b) => {
+    throw new Error("__USE_FAST_ABORT__");
+  });
+  // Override fetch's THROW path is awkward; instead simulate via a responder
+  // that flips the (current) controller's signal then throws. The controller is
+  // recreated each attempt, so reach it through the request signal.
+  global.fetch = async (url, request) => {
+    const parsed = JSON.parse(request.body);
+    if (typeof url === "string" && url.includes("/policies/evaluate")) {
+      evalBodies.push(parsed);
+      calls += 1;
+      if (request && request.signal && typeof request.signal._abort === "function") {
+        request.signal._abort(); // timer "fired" — aborted=true
+      }
+      const err = new Error("ECONNRESET racing abort");
+      err.name = "AbortError";
+      throw err; // immediate: elapsed ~= 0, NOT a real long-poll
+    }
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const verdict = await runToolCall();
+  // Bounded by the transient budget → fail CLOSED, not an infinite re-attach.
+  assert.equal(verdict && verdict.block, true, JSON.stringify(verdict));
+  assert.match(verdict.reason, /failing closed/);
+  // Retried a few times (transient budget) but nowhere near unbounded.
+  assert.ok(evalBodies.length >= 2, "expected transient retries, got " + evalBodies.length);
+  assert.ok(evalBodies.length < 200, "must be bounded, got " + evalBodies.length);
 })().catch((error) => {
   console.error(error && error.stack ? error.stack : error);
   process.exit(1);

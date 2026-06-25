@@ -29,12 +29,41 @@ const crypto = require("crypto");
 const _PARK_ATTEMPT_TIMEOUT_MS = 240_000;
 const _PARK_TOTAL_BUDGET_MS = 86_400_000;
 // Budget for retrying genuinely transient transport errors (connect
-// refused / reset / 5xx) before failing OPEN. Distinct from the long park
-// budget: a server that is actually down should let Pi proceed quickly
-// rather than hang, so the transient-error budget is short.
+// refused / reset / 5xx) before failing CLOSED. Distinct from the long park
+// budget: a server that is actually down should resolve quickly (fail
+// closed) rather than hang, so the transient-error budget is short.
 const _TRANSIENT_RETRY_BUDGET_MS = 30_000;
 const _TRANSIENT_RETRY_INITIAL_BACKOFF_MS = 1_000;
 const _TRANSIENT_RETRY_MAX_BACKOFF_MS = 10_000;
+// A genuine connect error (refused / reset) throws fast — well under the
+// per-attempt park timeout. A legitimate long-poll abort only throws once
+// our own _PARK_ATTEMPT_TIMEOUT_MS timer fires (the server held the
+// connection open the whole time). We use the attempt's elapsed wall-time
+// to disambiguate the two even when controller.signal.aborted has already
+// flipped true (the abort-timer-race in finding #3): only an attempt that
+// survived to ~the per-attempt timeout is treated as a re-attachable park;
+// anything that failed materially sooner is a genuine transport error and
+// is charged against the transient budget (→ eventually fail CLOSED).
+const _PARK_REATTACH_MIN_ELAPSED_MS = _PARK_ATTEMPT_TIMEOUT_MS - 5_000;
+// Cap on consecutive raw POLICY_ACTION_ASK rounds that never collapse to a
+// hard verdict. A writable session's ASK is resolved server-side (the gate
+// parks and returns ALLOW/DENY); a *raw* ASK that keeps coming back means the
+// gate cannot be satisfied here (e.g. a read-only caller). Mirror the Python
+// native hook, which fails a stray ASK CLOSED rather than deferring — we cap
+// the rounds and then deny, instead of riding the 24h park ceiling to a
+// fail-open. The brief inter-round sleep means this bounds wall-time too.
+const _MAX_RAW_ASK_ROUNDS = 50;
+// Reason surfaced when the tool-call gate cannot obtain a usable verdict and
+// fails CLOSED. PHASE_TOOL_CALL is the sole enforcement point for a native
+// connector tool, so an unevaluable policy must block, not proceed — matching
+// omnigent.policies.types.FAIL_CLOSED_PHASES and the Python native hook's
+// fail_closed_hook_output(PreToolUse) → deny.
+const _FAIL_CLOSED_REASON =
+  "blocked: Omnigent policy server unreachable — failing closed (PHASE_TOOL_CALL)";
+
+function failClosedVerdict() {
+  return { block: true, reason: _FAIL_CLOSED_REASON };
+}
 
 function mintEvaluateElicitationId() {
   // Namespaced + 32 lowercase hex chars to satisfy the server's
@@ -74,20 +103,33 @@ function readConfig() {
  *       hard ALLOW/DENY — so a writable session never observes a raw ASK here.
  *       The park is realized by a generous client read budget plus re-attach
  *       retries (see the _PARK_* tuning above): if undici severs a long park
- *       (headersTimeout) or a transient 5xx / connect error drops it, we
- *       re-POST the SAME _omnigent_elicitation_id so the server re-attaches to
- *       the existing elicitation instead of opening a second approval card. If
- *       a raw ASK ever does come back (e.g. a read-only caller, which cannot
- *       park), we keep re-evaluating until it collapses to ALLOW/DENY.
+ *       (headersTimeout) we re-POST the SAME _omnigent_elicitation_id so the
+ *       server re-attaches to the existing elicitation instead of opening a
+ *       second approval card. A LEGITIMATE long-poll re-attach (the server is
+ *       reachable and still holding the connection) is the only case that may
+ *       loop toward the long park ceiling. If a raw ASK ever does come back
+ *       (e.g. a read-only caller that cannot park), we re-evaluate up to
+ *       _MAX_RAW_ASK_ROUNDS and then fail CLOSED.
  *
- * Fail-open (null) on transport/parse errors once the transient-retry budget
- * is exhausted, so a genuine server outage never wedges Pi mid-turn. This
- * matches the Cursor native hook's fail-open posture (the Claude/Codex hooks
- * fail closed because they are the sole tool gate; pi-native deliberately
- * favors keeping the TUI responsive).
+ * Fail CLOSED (a block verdict) whenever a usable verdict cannot be obtained:
+ * the transient-retry budget for a genuine transport/5xx error is exhausted,
+ * a raw ASK never collapses within _MAX_RAW_ASK_ROUNDS, or the long park
+ * ceiling is reached. PHASE_TOOL_CALL is the SOLE enforcement point for a
+ * native connector tool — the call is never re-checked server-side — so an
+ * unevaluable policy MUST block, not proceed. This matches
+ * omnigent.policies.types.FAIL_CLOSED_PHASES and the Python native hook's
+ * fail_closed_hook_output(PreToolUse) → deny. (pi-native is itself a sole
+ * gate, exactly like the Claude / Codex native hooks; an eventually-allowing
+ * human-approval gate would defeat its own purpose, so the earlier fail-open
+ * posture was wrong here.) A reachable server long-polling a parked ASK is
+ * the deliberate exception: that is the human approval window, not an outage,
+ * and we keep waiting (re-attaching) rather than blocking.
  *
- * @returns {Promise<{block: boolean, reason: string} | null>} A verdict, or
- *   null to fail open (proceed) when no usable verdict could be obtained.
+ * @returns {Promise<{block: boolean, reason: string} | null>} A verdict.
+ *   ``{block: true}`` either from a DENY or from failing closed; ``{block:
+ *   false}`` on ALLOW; ``null`` only when the gate is structurally disabled
+ *   (no server/session configured or no global fetch) so there is nothing to
+ *   enforce against.
  */
 async function evalNativePolicyHttp(config, toolName, args) {
   if (
@@ -119,15 +161,18 @@ async function evalNativePolicyHttp(config, toolName, args) {
 
   const parkDeadline = Date.now() + _PARK_TOTAL_BUDGET_MS;
   // Independent transient-error budget so a server that is actually down
-  // fails open quickly instead of riding the long park ceiling.
+  // resolves quickly (fail CLOSED) instead of riding the long park ceiling.
   let transientDeadline = Date.now() + _TRANSIENT_RETRY_BUDGET_MS;
   let transientBackoff = _TRANSIENT_RETRY_INITIAL_BACKOFF_MS;
+  // Bound on consecutive raw ASK rounds (see _MAX_RAW_ASK_ROUNDS / finding #2).
+  let rawAskRounds = 0;
 
   while (true) {
     if (Date.now() >= parkDeadline) {
-      // Park budget exhausted (well past any sane ask_timeout). Fail open so
-      // a wedged gate cannot block the TUI forever.
-      return null;
+      // Park ceiling reached (well past any sane ask_timeout): the gate is
+      // wedged, not resolving. Fail CLOSED — PHASE_TOOL_CALL is the sole
+      // enforcement point, so a never-resolving gate must block, not proceed.
+      return failClosedVerdict();
     }
     // AbortController bounds each attempt under undici's headersTimeout so a
     // long park is retried (re-attach) rather than thrown as a header
@@ -138,6 +183,7 @@ async function evalNativePolicyHttp(config, toolName, args) {
     const timer = controller
       ? setTimeout(() => controller.abort(), _PARK_ATTEMPT_TIMEOUT_MS)
       : null;
+    const attemptStart = Date.now();
     let resp;
     try {
       resp = await fetch(url, {
@@ -147,20 +193,30 @@ async function evalNativePolicyHttp(config, toolName, args) {
         ...(controller ? { signal: controller.signal } : {}),
       });
     } catch (_err) {
-      // Aborted park (our own timeout) → re-attach immediately; the server
-      // is still holding the elicitation. A genuine transport error (connect
-      // refused / reset) → retry within the short transient budget, then fail
-      // open. We cannot reliably tell an abort from a connect error across
-      // Node versions, so treat an in-park abort as a re-attach (no backoff)
-      // and any other error against the transient budget.
       if (timer) clearTimeout(timer);
-      const aborted = controller && controller.signal.aborted;
-      if (aborted) {
-        // Re-park: loop again immediately with the same elicitation id.
+      // Distinguish a LEGITIMATE long-poll re-attach from a GENUINE transport
+      // error. controller.signal.aborted alone is unreliable: once our
+      // per-attempt timer has fired it reads true even if a real connect
+      // reset raced the timer (finding #3). A genuine connect error throws
+      // fast — well under _PARK_ATTEMPT_TIMEOUT_MS — whereas a real long-poll
+      // only aborts once the timer fires after holding the connection open
+      // the whole attempt. So require BOTH aborted AND that the attempt
+      // survived ~to the per-attempt timeout before treating it as a re-park.
+      const aborted = !!(controller && controller.signal.aborted);
+      const elapsed = Date.now() - attemptStart;
+      const isLongPollReattach =
+        aborted && elapsed >= _PARK_REATTACH_MIN_ELAPSED_MS;
+      if (isLongPollReattach) {
+        // Re-park: the server held the connection the whole time, so re-POST
+        // the SAME elicitation id immediately (no backoff). This is the human
+        // approval window — keep waiting (bounded only by parkDeadline).
         continue;
       }
+      // Genuine transport error (connect refused / reset, or an abort that
+      // fired too early to be a real park) → charge it against the short
+      // transient budget. When that budget is exhausted, fail CLOSED.
       if (Date.now() + transientBackoff >= transientDeadline) {
-        return null; // Fail open: server unreachable.
+        return failClosedVerdict();
       }
       await sleep(transientBackoff);
       transientBackoff = Math.min(
@@ -174,9 +230,12 @@ async function evalNativePolicyHttp(config, toolName, args) {
 
     if (!resp.ok) {
       // 5xx is transient (retry within budget, re-attaching); 4xx is final
-      // (a bad request won't succeed on retry) → fail open.
+      // (a bad request won't succeed on retry). Either way, an unevaluable
+      // PHASE_TOOL_CALL fails CLOSED.
       if (resp.status >= 500) {
-        if (Date.now() + transientBackoff >= transientDeadline) return null;
+        if (Date.now() + transientBackoff >= transientDeadline) {
+          return failClosedVerdict();
+        }
         await sleep(transientBackoff);
         transientBackoff = Math.min(
           transientBackoff * 2,
@@ -184,15 +243,15 @@ async function evalNativePolicyHttp(config, toolName, args) {
         );
         continue;
       }
-      return null;
+      return failClosedVerdict();
     }
 
     let json;
     try {
       json = await resp.json();
     } catch (_err) {
-      // Malformed body — not retryable. Fail open.
-      return null;
+      // Malformed body — not retryable, and we have no verdict. Fail CLOSED.
+      return failClosedVerdict();
     }
 
     const result = json && json.result;
@@ -203,11 +262,21 @@ async function evalNativePolicyHttp(config, toolName, args) {
       };
     }
     if (result === "POLICY_ACTION_ASK") {
-      // The gate did not park server-side (e.g. read-only access) yet still
-      // wants approval. Re-evaluate (re-attaching) until the server collapses
-      // it to a hard verdict; reset the transient budget since this is a
-      // healthy round-trip, not a failure, and give it a brief beat so we do
-      // not hot-loop a server that keeps returning ASK.
+      // The gate did not park server-side (e.g. a read-only caller that cannot
+      // open an elicitation) yet still wants approval. Re-evaluate
+      // (re-attaching) so a gate that is about to collapse to a hard verdict
+      // gets the chance — but bound it: a raw ASK that NEVER collapses must
+      // not ride the 24h park ceiling and then proceed. After
+      // _MAX_RAW_ASK_ROUNDS we fail CLOSED, mirroring the Python native hook
+      // which denies a stray ASK rather than deferring (an unresolvable
+      // approval gate that eventually allows would defeat its purpose).
+      rawAskRounds += 1;
+      if (rawAskRounds >= _MAX_RAW_ASK_ROUNDS) {
+        return failClosedVerdict();
+      }
+      // Reset the transient budget since this is a healthy round-trip, not a
+      // failure, and give it a brief beat so we do not hot-loop a server that
+      // keeps returning ASK.
       transientDeadline = Date.now() + _TRANSIENT_RETRY_BUDGET_MS;
       transientBackoff = _TRANSIENT_RETRY_INITIAL_BACKOFF_MS;
       await sleep(_TRANSIENT_RETRY_INITIAL_BACKOFF_MS);
