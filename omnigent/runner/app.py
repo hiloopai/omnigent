@@ -286,15 +286,6 @@ def _publish_tmux_target_for_bridge(
 # forwarder on terminal re-create (else both mirror, double-posting items).
 _AUTO_FORWARDER_TASKS: dict[str, asyncio.Task[Any]] = {}
 
-# Bridge dir each registered forwarder mirrors, keyed by the SAME session id as
-# ``_AUTO_FORWARDER_TASKS``. A claude-native ``/clear`` (or ``/fork``) rotates
-# the live terminal's bridge onto a NEW session while its forwarder keeps
-# running under the OLD session id; this map lets the new session's auto-create
-# detect that already-running forwarder by bridge and adopt it instead of
-# starting a second one (the duplicate-items bug). Only populated for forwarders
-# whose registration passes ``bridge_dir`` (claude-native today).
-_AUTO_FORWARDER_BRIDGE_DIRS: dict[str, str] = {}
-
 # Bound how long terminal (re)creation waits for a cancelled forwarder.
 _AUTO_FORWARDER_CANCEL_TIMEOUT_S = 10.0
 
@@ -318,7 +309,6 @@ async def _cancel_auto_forwarder_task(session_id: str) -> None:
     :returns: None.
     """
     task = _AUTO_FORWARDER_TASKS.pop(session_id, None)
-    _AUTO_FORWARDER_BRIDGE_DIRS.pop(session_id, None)
     if task is None or task.done():
         return
     task.cancel()
@@ -332,12 +322,7 @@ async def _cancel_auto_forwarder_task(session_id: str) -> None:
         )
 
 
-def _register_auto_forwarder_task(
-    session_id: str,
-    task: asyncio.Task[Any],
-    *,
-    bridge_dir: Path | str | None = None,
-) -> None:
+def _register_auto_forwarder_task(session_id: str, task: asyncio.Task[Any]) -> None:
     """
     Register a session's transcript-forwarder task in the keyed registry.
 
@@ -348,73 +333,19 @@ def _register_auto_forwarder_task(
 
     :param session_id: Session/conversation id, e.g. ``"conv_abc123"``.
     :param task: Freshly created forwarder task for this session.
-    :param bridge_dir: Bridge directory this forwarder mirrors, recorded so a
-        post-``/clear`` rotation's new session can find this forwarder by bridge
-        and adopt it (see :func:`_adopt_forwarder_on_shared_bridge`). ``None``
-        for harnesses without a shared-bridge rotation (no bridge tracking).
     :returns: None.
     """
     incumbent = _AUTO_FORWARDER_TASKS.get(session_id)
     if incumbent is not None and incumbent is not task:
         incumbent.cancel()
     _AUTO_FORWARDER_TASKS[session_id] = task
-    if bridge_dir is not None:
-        _AUTO_FORWARDER_BRIDGE_DIRS[session_id] = str(bridge_dir)
-    else:
-        _AUTO_FORWARDER_BRIDGE_DIRS.pop(session_id, None)
 
     def _evict(done_task: asyncio.Task[Any]) -> None:
         """Drop the registry entry unless a successor already replaced it."""
         if _AUTO_FORWARDER_TASKS.get(session_id) is done_task:
             del _AUTO_FORWARDER_TASKS[session_id]
-            _AUTO_FORWARDER_BRIDGE_DIRS.pop(session_id, None)
 
     task.add_done_callback(_evict)
-
-
-def _adopt_forwarder_on_shared_bridge(new_session_id: str, bridge_dir: Path | str) -> bool:
-    """
-    Re-key a live forwarder already mirroring ``bridge_dir`` onto ``new_session_id``.
-
-    A claude-native ``/clear`` (or ``/fork``) rotates the live terminal's
-    bridge onto a freshly created session, but the forwarder mirroring that
-    bridge keeps running registered under the PRIOR session id. Without
-    intervention the new session's auto-create starts a SECOND forwarder on
-    the same transcript and every item is persisted twice (no server-side
-    dedup for external conversation items).
-
-    When such a forwarder is found, move its registry + bridge entry onto
-    ``new_session_id`` (so later teardown/cancel by the new id finds it) and
-    return ``True`` so the caller skips auto-create. The adopted forwarder
-    rotates its own target session to ``new_session_id`` on its next poll.
-
-    :param new_session_id: The rotated-to session id, e.g. ``"conv_new"``.
-    :param bridge_dir: ``new_session_id``'s resolved bridge directory.
-    :returns: ``True`` if a live forwarder was adopted; ``False`` otherwise.
-    """
-    target = str(bridge_dir)
-    for sid, bdir in list(_AUTO_FORWARDER_BRIDGE_DIRS.items()):
-        if sid == new_session_id or bdir != target:
-            continue
-        task = _AUTO_FORWARDER_TASKS.get(sid)
-        if task is None or task.done():
-            continue
-        # Detach from the prior id and re-register under the new one. Pop the
-        # prior entries directly (not via _cancel_auto_forwarder_task — we are
-        # ADOPTING the live task, not killing it).
-        _AUTO_FORWARDER_TASKS.pop(sid, None)
-        _AUTO_FORWARDER_BRIDGE_DIRS.pop(sid, None)
-        _register_auto_forwarder_task(new_session_id, task, bridge_dir=bridge_dir)
-        _logger.info(
-            "Adopted live transcript forwarder %r from %s onto %s (shared bridge %s); "
-            "skipping a duplicate auto-create",
-            task.get_name(),
-            sid,
-            new_session_id,
-            target,
-        )
-        return True
-    return False
 
 
 # Background tasks that re-pop a still-pending cost-budget approval on a
@@ -4792,9 +4723,7 @@ async def _auto_create_claude_terminal(
         ),
         name=f"claude-forwarder-{session_id}",
     )
-    # Record the bridge dir so a later /clear or /fork rotation can find this
-    # forwarder by bridge and adopt it instead of starting a second one.
-    _register_auto_forwarder_task(session_id, _forwarder_task, bridge_dir=bridge_dir)
+    _register_auto_forwarder_task(session_id, _forwarder_task)
     _logger.info(
         "Auto-created claude terminal + forwarder for session %s; "
         "forwarder_task=%s elapsed_ms=%.0f",
@@ -7829,25 +7758,7 @@ def create_runner_app(
                         session_id,
                         _terminal_inbound,
                     )
-                # Even when the transfer-inbound check misses — the rotation
-                # already rewrote the bridge's active_session_id to this new
-                # session, so the live terminal reads as already "ours" — a
-                # forwarder from the PRE-rotation session may still be mirroring
-                # this bridge under its old id. Adopt it rather than spawning a
-                # second forwarder on the same transcript (which double-posts
-                # every item: external conversation items have no server dedup).
-                _adopted_forwarder = False
                 if not _has_terminal and not _terminal_inbound:
-                    from omnigent.claude_native_bridge import bridge_dir_for_bridge_id
-
-                    _rotated_bridge_id = await _claude_native_bridge_id_for_session(
-                        server_client=server_client,
-                        session_id=session_id,
-                    )
-                    _adopted_forwarder = _adopt_forwarder_on_shared_bridge(
-                        session_id, bridge_dir_for_bridge_id(_rotated_bridge_id)
-                    )
-                if not _has_terminal and not _terminal_inbound and not _adopted_forwarder:
                     # Resolve the session's agent spec so a bundle that ships a
                     # ``skills/`` directory is exposed to Claude Code via
                     # ``--plugin-dir`` (the CLI mirror of the SDK plugin
