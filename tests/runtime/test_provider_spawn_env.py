@@ -337,6 +337,70 @@ def test_codex_falls_back_to_first_available_openai_credential(
     assert _resolve_provider_for_build(spec, harness_type="codex") is None
 
 
+def test_claude_sdk_falls_back_to_first_available_anthropic_credential(
+    config_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A configured-but-not-default anthropic credential routes the BRAIN head at spawn.
+
+    The brain-head counterpart to the codex fallback — Debby's Claude head /
+    Polly's claude-sdk brain, the most-used surface. With an anthropic
+    credential configured but never marked default, the spawn-env builder falls
+    back to it via the same `first_available_provider`, so the brain launches
+    instead of hitting api.anthropic.com with no key. Resolved per spawn; the
+    config is not mutated; the readout resolver (`for_launch=False`) still
+    returns `None`. HOME is isolated so a real CLI login can't shadow the test.
+    """
+    monkeypatch.setenv("HOME", str(config_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config = {
+        "providers": {
+            "vendor-anthropic": {  # configured, but NOT marked default
+                "kind": "key",
+                "anthropic": _key_family(
+                    "https://anthropic.example.com/v1",
+                    "sk-ant-secret",
+                    "claude-default-model",
+                ),
+            }
+        }
+    }
+    _write_config(config_home, config)
+    before = (config_home / "config.yaml").read_text()
+    spec = _make_spec(harness="claude-sdk")  # unpinned, no auth — like Debby's Claude head
+
+    env = _build_claude_sdk_spawn_env(spec, workdir=None)
+
+    assert env["HARNESS_CLAUDE_SDK_GATEWAY"] == "true"
+    assert env["HARNESS_CLAUDE_SDK_GATEWAY_BASE_URL"] == "https://anthropic.example.com/v1"
+    assert env["HARNESS_CLAUDE_SDK_GATEWAY_AUTH_COMMAND"] == "printf %s sk-ant-secret"
+    assert (config_home / "config.yaml").read_text() == before
+    assert _resolve_provider_for_build(spec, harness_type="claude-sdk") is None
+
+
+def test_for_launch_gates_legacy_databricks_synthesis(config_home: Path) -> None:
+    """
+    A legacy Databricks credential is folded into a synthesized provider only
+    for a launch.
+
+    A legacy ``executor.profile`` resolves to a synthesized ``databricks``
+    provider when ``for_launch=True`` (the spawn-env builders), but the readout
+    resolver (``for_launch=False``, the default — used by ``/model`` / cost)
+    returns ``None``. This locks the new gating so the readout never presents a
+    synthesized provider for a legacy profile the way a launch routes one.
+    """
+    _write_config(config_home, {})
+    spec = _make_spec(harness="codex", model="some-model", profile="legacy-profile")
+
+    # Readout: strict — the legacy profile is NOT synthesized into a provider.
+    assert _resolve_provider_for_build(spec, harness_type="codex") is None
+    # Launch: the legacy profile resolves to a synthesized databricks provider.
+    launch = _resolve_provider_for_build(spec, harness_type="codex", for_launch=True)
+    assert launch is not None
+    assert launch.kind == "databricks"
+    assert launch.profile == "legacy-profile"
+
+
 def test_openai_agents_uses_openai_global_default(config_home: Path) -> None:
     """
     A ``default: true`` openai provider routes the openai-agents-sdk harness.
@@ -903,6 +967,28 @@ def test_legacy_profile_suppresses_global_default_provider(config_home: Path) ->
 
     # The legacy profile wins; the global-default provider is not consulted.
     assert env["HARNESS_CODEX_DATABRICKS_PROFILE"] == "legacy-profile"
+    assert "HARNESS_CODEX_GATEWAY_BASE_URL" not in env
+
+
+def test_codex_spec_databricks_auth_routes_via_synthesized_provider(config_home: Path) -> None:
+    """
+    A spec ``executor.auth: {type: databricks}`` on codex routes via the
+    synthesized-provider path.
+
+    The codex / pi / qwen builders' legacy ``else``-branch was removed; a spec
+    ``DatabricksAuth`` now resolves (for a launch) to a synthesized
+    ``databricks`` provider that the one databricks apply branch wires. A
+    nonexistent profile keeps ucode a no-op, so this deterministically asserts
+    the gateway + profile wiring the fold owns (no ``~/.databrickscfg`` needed).
+    """
+    _write_config(config_home, {})
+    spec = _make_spec(harness="codex", auth=DatabricksAuth(profile="test-dbx-ws"))
+
+    env = _build_codex_spawn_env(spec, workdir=None)
+
+    assert env["HARNESS_CODEX_GATEWAY"] == "true"
+    assert env["HARNESS_CODEX_DATABRICKS_PROFILE"] == "test-dbx-ws"
+    # A databricks-kind provider delegates to ucode and never emits a raw base_url.
     assert "HARNESS_CODEX_GATEWAY_BASE_URL" not in env
 
 
