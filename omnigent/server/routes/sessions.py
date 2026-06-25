@@ -193,6 +193,7 @@ from omnigent.server.routes._host_worktree import CreatedWorktree
 from omnigent.server.routes._origin import require_trusted_origin
 from omnigent.server.schemas import (
     AgentObject,
+    ChildSessionList,
     ChildSessionSummary,
     CompletedEvent,
     ConversationDeleted,
@@ -228,6 +229,7 @@ from omnigent.server.schemas import (
     SessionInterruptedEvent,
     SessionInterruptedPayload,
     SessionLabelsResponse,
+    SessionList,
     SessionListItem,
     SessionModelEvent,
     SessionModelOptionsEvent,
@@ -13176,7 +13178,7 @@ def create_sessions_router(
     @router.get(
         "/sessions",
         response_model=None,
-        responses={200: {"model": PaginatedList}},
+        responses={200: {"model": SessionList}},
     )
     async def list_sessions(
         request: Request,
@@ -15469,7 +15471,7 @@ def create_sessions_router(
     @router.get(
         "/sessions/{session_id}/child_sessions",
         response_model=None,
-        responses={200: {"model": PaginatedList}},
+        responses={200: {"model": ChildSessionList}},
     )
     async def list_child_sessions(
         request: Request,
