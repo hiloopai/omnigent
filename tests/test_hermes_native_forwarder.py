@@ -53,7 +53,8 @@ def _seed_db(path: Path, *, cwd: str, started_at: float, session_id: str = "2026
         (session_id, "user", "soft-deleted", None, None, None, 0),  # inactive -> skipped
     ]
     con.executemany(
-        "INSERT INTO messages(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+        "INSERT INTO messages"
+        "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
         " VALUES (?,?,?,?,?,?,?)",
         rows,
     )
@@ -137,7 +138,8 @@ def test_read_new_items_mirrors_tool_calls(tmp_path: Path) -> None:
         ("s1", "tool", "found 3 files", "call_abc", None, "search_files", 1),
     ]
     con.executemany(
-        "INSERT INTO messages(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
+        "INSERT INTO messages"
+        "(session_id, role, content, tool_call_id, tool_calls, tool_name, active)"
         " VALUES (?,?,?,?,?,?,?)",
         rows,
     )
