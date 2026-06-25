@@ -238,11 +238,26 @@ def _start_parent_watchdog(parent_pid: int) -> threading.Thread:
             if not IS_WINDOWS and os.getppid() != parent_pid:
                 _request_shutdown_with_hard_exit("parent process exit")
                 return
-            # Not ``os.kill(parent_pid, 0)``: on Windows that maps to
-            # TerminateProcess and would kill the parent. ``process_alive``
-            # treats a not-introspectable process as alive (same semantics
-            # as the old PermissionError branch).
-            if not _proc.process_alive(parent_pid):
+            # Secondary probe for the window before POSIX reparenting is
+            # visible. POSIX uses ``os.kill(parent_pid, 0)``: race-free and a
+            # not-yet-reaped parent still counts as alive (matches
+            # ``_pid_alive``). The psutil probe can transiently raise
+            # ``NoSuchProcess`` for a live process and spuriously trip this
+            # shutdown — a hard exit that skips graceful terminal teardown and
+            # leaks the runner's detached tmux servers. Windows can't use
+            # signal 0 (maps to TerminateProcess and would kill the parent), so
+            # it keeps ``process_alive`` there.
+            if IS_WINDOWS:
+                parent_gone = not _proc.process_alive(parent_pid)
+            else:
+                try:
+                    os.kill(parent_pid, 0)
+                    parent_gone = False
+                except ProcessLookupError:
+                    parent_gone = True
+                except PermissionError:
+                    parent_gone = False
+            if parent_gone:
                 _request_shutdown_with_hard_exit("parent process exit")
                 return
 

@@ -1845,3 +1845,50 @@ def resume_test_server(
                 proc.kill()
                 proc.wait(timeout=5)
         log_handle.close()
+
+
+# ---------------------------------------------------------------------------
+# TEMPORARY leak instrumentation (PR #1236).
+#
+# The native-Windows-support branch leaked detached tmux servers on POSIX:
+# every terminal-creating e2e test left its tmux server alive, they
+# accumulated over the ~10-min suite, and the CI runner was resource-exhausted
+# and cancelled at ~96% ("runner received shutdown signal"). Baseline leaks 0;
+# the branch leaked up to 13 per shard.
+#
+# This autouse finalizer logs the live tmux-server count after each test so any
+# residual leak is attributable to the test that bumps it. Capture is suspended
+# so the line lands in the CI log even when the run is later cancelled. With the
+# liveness-probe fix in place this should stay silent (count 0). Remove once the
+# leak is confirmed fixed.
+# ---------------------------------------------------------------------------
+def _live_tmux_server_count() -> int:
+    try:
+        import psutil
+    except Exception:
+        return -1
+    count = 0
+    for proc in psutil.process_iter(["name"]):
+        try:
+            if (proc.info["name"] or "").startswith("tmux"):
+                count += 1
+        except Exception:
+            continue
+    return count
+
+
+@pytest.fixture(autouse=True)
+def _leakcheck_tmux_servers(request: Any) -> Iterator[None]:
+    yield
+    count = _live_tmux_server_count()
+    if count <= 0:
+        return
+    capman = request.config.pluginmanager.getplugin("capturemanager")
+    line = f"[LEAKCHECK] live tmux servers={count} after {request.node.nodeid}"
+    if capman is not None:
+        capman.suspend_global_capture(in_=False)
+    try:
+        print(line, file=sys.stderr, flush=True)
+    finally:
+        if capman is not None:
+            capman.resume_global_capture()
