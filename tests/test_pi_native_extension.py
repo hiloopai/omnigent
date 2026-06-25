@@ -365,3 +365,123 @@ def test_no_usage_message_posts_nothing(tmp_path: Path) -> None:
 """
     )
     _run_extension_script(node, extension_path, script)
+
+
+def test_distinct_messages_with_identical_usage_are_not_collapsed(
+    tmp_path: Path,
+) -> None:
+    """Two DISTINCT Pi messages with identical token counts each count once.
+
+    Pi's ``AssistantMessage`` (``@earendil-works/pi-ai``) carries NO ``id`` —
+    only an optional ``responseId`` and a required numeric ``timestamp``. Two
+    genuinely distinct LLM calls can report identical ``usage`` (e.g. two
+    identical short acks under prompt caching); keying dedup on the usage
+    counts alone would collapse the second call and UNDERCOUNT the session.
+    The dedup must key on the message identity (``timestamp`` here), so both
+    calls accumulate; re-emitting the SAME message (same ``timestamp``) on
+    ``turn_end`` must still dedupe.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+    extension_path = (
+        Path(__file__).resolve().parents[1]
+        / "omnigent"
+        / "resources"
+        / "pi_native"
+        / "omnigent_pi_native_extension.js"
+    )
+
+    script = (
+        _usage_test_preamble()
+        + r"""
+(async () => {
+  // Real Pi shape: no `id`, distinct required `timestamp`, IDENTICAL usage.
+  const usage = { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, totalTokens: 140 };
+  const msg1 = {
+    role: "assistant",
+    model: "databricks-claude-sonnet-4-6",
+    timestamp: 1000,
+    usage: { ...usage },
+  };
+  const msg2 = {
+    role: "assistant",
+    model: "databricks-claude-sonnet-4-6",
+    timestamp: 2000,
+    usage: { ...usage },
+  };
+
+  await handlers.message_end({ message: msg1 }, ctx);
+  await handlers.message_end({ message: msg2 }, ctx);
+  // Re-emit msg2 (same timestamp) on turn_end — must NOT double-count.
+  await handlers.turn_end({ message: msg2 }, ctx);
+
+  const events = usageEvents();
+  // Two distinct flushes (after msg1, after msg2); the re-emit is deduped.
+  assert.equal(events.length, 2, JSON.stringify(postedEvents));
+  const last = events[events.length - 1].data;
+  // BOTH distinct calls counted despite identical usage: input 100+100=200,
+  // output 40+40=80. (A counts-only fingerprint would wrongly stay at 100/40.)
+  assert.equal(last.cumulative_input_tokens, 200);
+  assert.equal(last.cumulative_output_tokens, 80);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    )
+    _run_extension_script(node, extension_path, script)
+
+
+def test_agent_end_dedupes_real_shaped_messages_by_timestamp(
+    tmp_path: Path,
+) -> None:
+    """The ``agent_end`` whole-conversation re-scan dedupes real Pi messages.
+
+    ``agent_end`` carries the full ``messages`` array and re-scans it as a
+    last-chance capture. Real Pi messages have no ``id``, so the dedup keys on
+    ``timestamp``; a message already counted on ``message_end`` must be a no-op
+    when it reappears in the ``agent_end`` array (no overcount).
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+    extension_path = (
+        Path(__file__).resolve().parents[1]
+        / "omnigent"
+        / "resources"
+        / "pi_native"
+        / "omnigent_pi_native_extension.js"
+    )
+
+    script = (
+        _usage_test_preamble()
+        + r"""
+(async () => {
+  const msg = {
+    role: "assistant",
+    model: "databricks-claude-sonnet-4-6",
+    timestamp: 4242,
+    usage: { input: 300, output: 50, cacheRead: 20, cacheWrite: 10, totalTokens: 380 },
+  };
+
+  // Counted on message_end.
+  await handlers.message_end({ message: msg }, ctx);
+  // agent_end re-scans the whole conversation including the same message —
+  // must NOT re-count it (same timestamp).
+  await handlers.agent_end({ messages: [msg] }, ctx);
+
+  const events = usageEvents();
+  assert.equal(events.length, 1, JSON.stringify(postedEvents));
+  const last = events[events.length - 1].data;
+  // input INCLUSIVE of cacheRead + cacheWrite: 300 + 20 + 10 = 330, counted once.
+  assert.equal(last.cumulative_input_tokens, 330);
+  assert.equal(last.cumulative_output_tokens, 50);
+  assert.equal(last.cumulative_cache_read_input_tokens, 20);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+    )
+    _run_extension_script(node, extension_path, script)

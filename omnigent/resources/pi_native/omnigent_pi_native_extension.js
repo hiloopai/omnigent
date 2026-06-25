@@ -389,14 +389,25 @@ module.exports = function (pi) {
   let lastPostedUsageKey = "";
 
   // Build a stable fingerprint for one assistant message so the same message
-  // arriving on multiple lifecycle events is only counted once. Prefer Pi's
-  // own message id; fall back to hashing the usage counts + model.
+  // arriving on multiple lifecycle events is only counted once. Pi's
+  // ``AssistantMessage`` (``@earendil-works/pi-ai``) carries NO ``id`` field
+  // but DOES carry an optional provider ``responseId`` and a required numeric
+  // ``timestamp`` — both stable across the same message's re-emission on
+  // ``message_end`` / ``turn_end`` / ``agent_end``. Prefer those identity
+  // fields (plus a forward-compat ``id``) over the usage-count fingerprint:
+  // hashing counts alone collides two DISTINCT LLM calls that happen to report
+  // identical token counts (e.g. two identical short acks under prompt
+  // caching), which would silently drop the second call's tokens (undercount).
+  // The usage-count fingerprint stays only as a last resort for a message that
+  // carries no identity field at all.
   function usageMessageKey(message, usage) {
-    const id =
-      message && typeof message === "object" && typeof message.id === "string"
-        ? message.id
-        : "";
-    if (id) return `id:${id}`;
+    if (message && typeof message === "object") {
+      if (typeof message.id === "string" && message.id) return `id:${message.id}`;
+      if (typeof message.responseId === "string" && message.responseId)
+        return `rid:${message.responseId}`;
+      if (typeof message.timestamp === "number")
+        return `ts:${message.timestamp}`;
+    }
     return `u:${usage.input}-${usage.output}-${usage.cacheRead}-${usage.cacheWrite}-${usage.total}-${usage.model || ""}`;
   }
 
