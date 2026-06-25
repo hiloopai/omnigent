@@ -17471,12 +17471,9 @@ def create_sessions_router(
                     "external_session_status data.response_id must be a string",
                     code=ErrorCode.INVALID_INPUT,
                 )
-            # #1108: surface the terminal failure reason a native forwarder
-            # carries (``data.output``, ``data.reauth_required``) so a
+            # Surface the failure reason a native forwarder carries so a
             # top-level session sees it on its own status edge and persisted
-            # ``last_task_error`` — not only the sub-agent parent-inbox path
-            # the runner forward handles. ``reauth_required`` selects a
-            # distinct error code so the UI can prompt a re-auth.
+            # last_task_error, not only the sub-agent parent-inbox path.
             output = body.data.get("output")
             status_error: ErrorDetail | None = None
             if status == "failed" and isinstance(output, str) and output.strip():

@@ -8860,9 +8860,9 @@ def create_runner_app(
                     }
                 )
             elif item_type == "error":
-                # #1108: error items were silently dropped here, so a failed
-                # turn replayed as if it had never erred. Preserve it as a
-                # typed ``error`` item (the source/code/message shape
+                # Error items were silently dropped here, so a failed turn
+                # replayed as if it had never erred. Preserve it as a typed
+                # error item (the source/code/message shape
                 # ``ErrorData.to_api_dict`` produces) so the failure survives
                 # reload and stays attributed as an error, not user input.
                 message = item.get("message")

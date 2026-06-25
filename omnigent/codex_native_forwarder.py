@@ -115,7 +115,7 @@ _CODEX_ELICITATION_REQUEST_METHODS = frozenset(
     }
 )
 
-# Turn-error surfacing (#1108). A failed Codex turn arrives as ``turn/completed``
+# Turn-error surfacing. A failed Codex turn arrives as ``turn/completed``
 # (or ``turn/failed``) with ``turn.status == "failed"`` and a ``turn.error``
 # object ``{message, codexErrorInfo?, additionalDetails?}``; keying status off
 # the method alone mapped such turns to ``idle`` — a "silent success". The
@@ -676,7 +676,7 @@ class _CodexForwarderState:
 @dataclass(frozen=True)
 class _CodexTerminalError:
     """
-    A turn-level failure surfaced from a Codex turn (#1108).
+    A turn-level failure surfaced from a Codex turn.
 
     Produced by :func:`_terminal_error_from_turn` from ``turn.error``. Forces
     the turn's Omnigent status to ``failed`` and lets
@@ -742,7 +742,7 @@ def _error_message_from_turn_error(error: dict[str, Any]) -> str:
 
 def _terminal_error_from_turn(params: dict[str, Any]) -> _CodexTerminalError | None:
     """
-    Return the turn-level failure carried by a Codex turn, if any (#1108).
+    Return the turn-level failure carried by a Codex turn, if any.
 
     A failed turn carries ``turn.status == "failed"`` and a ``turn.error``
     object (per the app-server protocol). This reads and classifies that
@@ -774,7 +774,7 @@ class _CodexTurnStatusEdge:
         ``"turn_abc123"``.
     :param source: Lifecycle source that produced the edge, e.g.
         ``"turn/started"``.
-    :param error: Turn-level error forcing this edge to ``failed`` (#1108),
+    :param error: Turn-level error forcing this edge to ``failed``,
         or ``None`` for ordinary lifecycle edges. Surfaced as the status
         output by :func:`_post_turn_status_edge`.
     """
@@ -2043,8 +2043,8 @@ def _resume_terminal_status_edge_for_latest_turn(
         if status is None:
             return None
         update_active_turn_id(bridge_dir, None)
-        # #1108: parity with the live path — surface ``turn.error`` (if any)
-        # that forced this resume turn to ``failed``.
+        # Parity with the live path — surface ``turn.error`` (if any) that
+        # forced this resume turn to ``failed``.
         error = _terminal_error_from_turn({"turn": turn})
         return _CodexTurnStatusEdge(
             status=status,
@@ -2062,7 +2062,7 @@ def _omnigent_status_from_resume_turn(turn: dict[str, Any]) -> str | None:
     Applies the same ``turn.error`` check as the live terminal path
     (:func:`_terminal_turn_status_edge`) so a resumed turn that carried an
     error maps to ``failed`` even if its recorded status is not — the
-    resume-path side of the #1108 "silent success" fix.
+    resume-path side of the "silent success" fix.
 
     :param turn: Codex resume turn object, e.g.
         ``{"id": "turn_123", "status": "completed"}``.
@@ -3342,9 +3342,9 @@ def _terminal_turn_status_edge(
         source = f"{method}:recovered"
     else:
         source = method
-    # #1108: a failed turn carries ``turn.status == "failed"`` + ``turn.error``
-    # even when Codex reports it via ``turn/completed`` ("silent success").
-    # Force ``failed`` and attach the error so the reason is surfaced downstream.
+    # A failed turn carries ``turn.status == "failed"`` + ``turn.error`` even
+    # when Codex reports it via ``turn/completed`` ("silent success"). Force
+    # ``failed`` and attach the error so the reason is surfaced downstream.
     error = _terminal_error_from_turn(params)
     if error is not None:
         _logger.info(
@@ -3386,7 +3386,7 @@ def _terminal_turn_status_edge(
 
 def _turn_status_is_failed(params: dict[str, Any]) -> bool:
     """
-    Report whether a Codex turn recorded a ``failed`` status (#1108).
+    Report whether a Codex turn recorded a ``failed`` status.
 
     Catches a failure that lacks a populated ``turn.error`` object, so a
     ``turn/completed`` whose ``turn.status`` is ``failed`` still maps to
@@ -3406,7 +3406,7 @@ def _turn_status_is_failed(params: dict[str, Any]) -> bool:
 
 def _turn_items_are_empty(params: dict[str, Any]) -> bool:
     """
-    Report whether a Codex turn explicitly carried zero items (#1108).
+    Report whether a Codex turn explicitly carried zero items.
 
     Only an explicitly present but empty ``items`` list counts as "empty":
     a missing ``items`` key (e.g. a legacy ``turnId``-only terminal
@@ -4743,10 +4743,10 @@ async def _post_status(
     :param response_id: Optional response id for this status edge,
         e.g. ``"codex_turn_abc123"``.
     :param output: Optional human-readable reason carried with a terminal
-        edge, e.g. a Codex error message (#1108). The server forwards this as
+        edge, e.g. a Codex error message. The server forwards this as
         the authoritative terminal output for a ``failed`` / ``idle`` edge.
     :param reauth_required: When ``True``, mark a ``failed`` edge as caused by
-        an authentication error so the surface can prompt a re-auth (#1108).
+        an authentication error so the surface can prompt a re-auth.
         Surface-only: no automatic ``codex login`` is triggered.
     :returns: None.
     """
@@ -4774,7 +4774,7 @@ async def _post_turn_status_edge(
     """
     Publish one Codex turn lifecycle edge if a valid edge was derived.
 
-    When the edge carries a turn-level error (#1108), the error message is
+    When the edge carries a turn-level error, the error message is
     surfaced as the terminal ``output`` so the failure reason is visible
     rather than silently swallowed; an auth-classified error additionally
     flags ``reauth_required`` and appends a re-auth hint to the output.
