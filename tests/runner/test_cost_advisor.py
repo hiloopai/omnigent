@@ -11,9 +11,8 @@ Covers:
   brain with no user pin applies the verdict model + injects the note;
   advise mode shadows (records, no apply, no note); a user model pin
   beats the advisor; a non-claude-sdk brain records but never applies.
-- None verdict (conversational): still announces a decision (cheap
-  fallback, or the sticky selection carried forward).
-- A failed label persist is telemetry-only (the verdict survives).
+- None verdict (conversational): skips label and apply.
+- A failed label persist applies nothing.
 - Config-parsing fail-loud paths.
 
 Real types throughout: real ``AgentSpec`` / ``ExecutorSpec``, real
@@ -155,8 +154,7 @@ async def _run(
     transport: httpx.BaseTransport,
     harness: str | None = "claude-sdk",
     user_model_override: str | None = None,
-    cost_control_mode_override: str | None = "on",
-    sticky_model: str | None = None,
+    cost_control_mode_override: str | None = None,
 ) -> Any:  # type: ignore[explicit-any]  # AdvisorTurnResult | None
     """Drive :func:`maybe_run_advisor` with the test wiring.
 
@@ -173,7 +171,6 @@ async def _run(
             user_model_override=user_model_override,
             cost_control_mode_override=cost_control_mode_override,
             judge=judge,
-            sticky_model=sticky_model,
         )
 
 
@@ -220,40 +217,17 @@ async def test_override_off_disables_advisor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_conversational_null_announces_cheap_fallback() -> None:
-    """A None (conversational) verdict with nothing to carry still announces
-    a decision — the cheap tier — so the UI never goes silent after a send."""
-    capture = _PatchCapture()
+async def test_conversational_verdict_skips_label_and_apply() -> None:
+    """A None (conversational) verdict skips label persist and apply."""
     judge = _ScriptedJudge(None)
     result = await _run(
         spec=_orchestrator_spec(cost_optimize=_TIERS_YAML),
         judge=judge,
-        transport=httpx.MockTransport(capture.handler),
+        transport=_raising_transport(),
     )
+    assert result is None
     assert judge.call_count == 1
-    assert result is not None
-    assert result.verdict.tier == "cheap"
-    assert result.verdict.model == "databricks-claude-haiku-4-5"
-    assert "conversational" in (result.verdict.rationale or "").lower()
-    assert len(capture.requests) == 1  # the label still persists
 
-
-@pytest.mark.asyncio
-async def test_conversational_null_carries_sticky_selection() -> None:
-    """A None verdict with a sticky selection announces the carried model,
-    tier-resolved from the configured lists."""
-    capture = _PatchCapture()
-    judge = _ScriptedJudge(None)
-    result = await _run(
-        spec=_orchestrator_spec(cost_optimize=_TIERS_YAML),
-        judge=judge,
-        transport=httpx.MockTransport(capture.handler),
-        sticky_model="databricks-claude-opus-4-8",
-    )
-    assert result is not None
-    assert result.verdict.model == "databricks-claude-opus-4-8"
-    assert result.verdict.tier == "expensive"
-    assert "carried forward" in (result.verdict.rationale or "").lower()
 
 
 # ── Optimize mode: apply + persist + note ──────────────────────────────────────
@@ -340,9 +314,8 @@ async def test_optimize_non_claude_sdk_records_but_does_not_apply() -> None:
 
 
 @pytest.mark.asyncio
-async def test_advise_spec_escalates_to_apply_when_toggle_on() -> None:
-    """The toggle is the source of truth: ON applies the verdict even on an
-    advise-default spec (shadow mode is unreachable — off means silent)."""
+async def test_advise_mode_shadows_no_apply_no_note() -> None:
+    """advise mode shadows, records but never applies."""
     capture = _PatchCapture()
     advise_yaml = {**_TIERS_YAML, "mode": "advise"}
     judge = _ScriptedJudge(_verdict())
@@ -352,9 +325,10 @@ async def test_advise_spec_escalates_to_apply_when_toggle_on() -> None:
         transport=httpx.MockTransport(capture.handler),
     )
     assert result is not None
-    assert result.apply_model == "databricks-claude-opus-4-8"
+    assert result.apply_model is None
+    assert result.note_item is None
     parsed = parse_verdict(capture.requests[0]["labels"])
-    assert parsed is not None and parsed.applied is True
+    assert parsed is not None and parsed.applied is False
 
 
 @pytest.mark.asyncio
@@ -383,10 +357,8 @@ async def test_override_on_escalates_advise_to_optimize() -> None:
 
 
 @pytest.mark.asyncio
-async def test_failed_persist_still_returns_verdict() -> None:
-    """A failed label PATCH must NOT kill the turn's verdict: the label is
-    telemetry, while the application + transcript chip carry the decision
-    (one oversized rationale once silently disabled the whole feature)."""
+async def test_failed_persist_applies_nothing() -> None:
+    """A failed label PATCH must NOT kill the turn — assert result is None."""
     capture = _PatchCapture(status_code=403)  # multi-user reject
     judge = _ScriptedJudge(_verdict())
     result = await _run(
@@ -394,10 +366,9 @@ async def test_failed_persist_still_returns_verdict() -> None:
         judge=judge,
         transport=httpx.MockTransport(capture.handler),
     )
-    # The PATCH was attempted (and failed), but the verdict survives.
+    # The PATCH was attempted (and failed).
     assert len(capture.requests) == 1
-    assert result is not None
-    assert result.verdict.model == _verdict().model
+    assert result is None
 
 
 # ── Reserved-label authority header ─────────────────────────────────────────────
@@ -517,8 +488,7 @@ async def test_default_judge_build_threads_brain_databricks_profile(
         "omnigent.runner.cost_advisor._databricks_profile_for_spec",
         lambda spec: "brain-profile",
     )
-    capture = _PatchCapture()
-    async with _client(httpx.MockTransport(capture.handler)) as client:
+    async with _client(_raising_transport()) as client:
         result = await maybe_run_advisor(
             spec=_orchestrator_spec(cost_optimize=_TIERS_YAML),
             conversation_id="conv_x",
@@ -526,11 +496,8 @@ async def test_default_judge_build_threads_brain_databricks_profile(
             server_client=client,
             turn_anchor=_ANCHOR,
             harness="claude-sdk",
-            cost_control_mode_override="on",
         )
-    # Null judge => conversational turn => the cheap fallback is announced
-    # (every advised turn surfaces a decision).
-    assert result is not None and result.verdict.tier == "cheap"
+    assert result is None
     # The brain's profile reached the judge builder — a missing key means
     # the advisor stopped threading it and the judge falls back to ambient
     # credential resolution (the misroute regression).

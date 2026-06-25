@@ -333,54 +333,6 @@ def routing_decision_event(verdict: AdvisorVerdict) -> dict[str, Any]:  # type: 
     }
 
 
-def _fallback_verdict(
-    *,
-    sticky_model: str | None,
-    tiers: Mapping[str, Sequence[str]],
-    turn_anchor: str,
-) -> AdvisorVerdict | None:
-    """
-    Build the announced verdict for a judge-null (conversational) turn.
-
-    A null verdict used to vanish silently, which reads as breakage in the
-    UI — every advised turn must surface a decision. Carrying the sticky
-    selection keeps the announcement truthful; with nothing to carry the
-    cheap tier is the honest answer for a conversational turn.
-
-    :param sticky_model: The advisor's currently applied model for this
-        session, or ``None`` (first turn, advise mode, or after a user pin).
-    :param tiers: The configured tier lists from the spec marker.
-    :param turn_anchor: ISO timestamp anchoring this turn's verdict.
-    :returns: The verdict to announce, or ``None`` when the cheap tier is
-        unconfigured and there is nothing to carry (stay silent).
-    """
-    if sticky_model is not None:
-        from omnigent.model_override import canonical_model_spelling
-
-        want = canonical_model_spelling(sticky_model)
-        tier = next(
-            (t for t, ms in tiers.items() if any(canonical_model_spelling(m) == want for m in ms)),
-            "cheap",
-        )
-        return AdvisorVerdict(
-            tier=tier,
-            model=sticky_model,
-            applied=False,  # _finalize_advised_turn recomputes per mode
-            rationale="Carried forward — conversational follow-up.",
-            turn_anchor=turn_anchor,
-        )
-    cheap = list(tiers.get("cheap") or ())
-    if not cheap:
-        return None
-    return AdvisorVerdict(
-        tier="cheap",
-        model=cheap[0],
-        applied=False,
-        rationale="Conversational or trivial turn — the cheap tier suffices.",
-        turn_anchor=turn_anchor,
-    )
-
-
 async def maybe_run_advisor(
     *,
     spec: Any,  # type: ignore[explicit-any]  # structural spec stubs in tests
@@ -392,7 +344,6 @@ async def maybe_run_advisor(
     user_model_override: str | None = None,
     cost_control_mode_override: str | None = None,
     judge: Judge | None = None,
-    sticky_model: str | None = None,
 ) -> AdvisorTurnResult | None:
     """
     Run the cost advisor for one turn when the spec opts in.
@@ -471,19 +422,7 @@ async def maybe_run_advisor(
         turn_anchor=turn_anchor,
     )
     if verdict is None:
-        # Null verdicts must still produce a VISIBLE decision: silence after
-        # a send reads as breakage. Carry the sticky selection forward, or —
-        # with nothing to carry (first turn / advise mode) — fall back cheap.
-        verdict = _fallback_verdict(
-            sticky_model=sticky_model, tiers=config.tiers, turn_anchor=turn_anchor
-        )
-        if verdict is None:
-            return None
-        _logger.info(
-            "cost_advisor: session %s conversational this turn; announcing %s",
-            conversation_id,
-            verdict.model,
-        )
+        return None
     return await _finalize_advised_turn(
         verdict=verdict,
         mode=effective_mode,
@@ -534,10 +473,9 @@ async def _finalize_advised_turn(
         rationale=verdict.rationale,
         turn_anchor=verdict.turn_anchor,
     )
-    # Best-effort: the label is telemetry; a failed persist must not kill
-    # the application, the transcript chip, or the note (it did once — one
-    # oversized rationale silently disabled the whole feature for the turn).
-    await _persist_verdict_label(applied_verdict, conversation_id, server_client)
+    persisted = await _persist_verdict_label(applied_verdict, conversation_id, server_client)
+    if not persisted:
+        return None
     _logger.info(
         "cost_advisor: session %s verdict %s applied=%s",
         conversation_id,

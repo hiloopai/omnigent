@@ -14780,8 +14780,13 @@ class _LabelPatchRecordingServerClient(_FakeServerClient):
     :param items: History items served by the inherited GET handler.
     """
 
-    def __init__(self, items: list[dict[str, Any]]) -> None:
-        super().__init__(items, session_snapshot={"cost_control_mode_override": "on"})
+    def __init__(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        session_snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(items, session_snapshot=session_snapshot)
         self.label_patches: list[dict[str, Any]] = []  # type: ignore[explicit-any]  # JSON bodies
 
     async def patch(
@@ -14944,14 +14949,11 @@ async def test_optimize_turn_applies_model_and_injects_note(
 
 
 @pytest.mark.asyncio
-async def test_advise_spec_escalates_to_apply_when_toggle_on(
+async def test_advise_turn_records_but_does_not_apply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An advise-spec turn with the toggle ON escalates to optimize: the
-    verdict is applied (model_override set, note injected, applied=True).
-
-    The toggle is the source of truth — "on" means apply regardless of
-    the spec mode, so advise escalates to optimize.
+    """An advise-mode turn shadows: the verdict is recorded (applied=False)
+    but the brain model is untouched and no note is injected.
 
     :param monkeypatch: Replaces the production judge with the stub.
     """
@@ -14996,21 +14998,19 @@ async def test_advise_spec_escalates_to_apply_when_toggle_on(
         assert resp2.status_code == 200
         assert "response.completed" in resp2.text
 
-    # Toggle ON + advise spec → escalated to optimize → applied=True.
+    # Advise mode: recorded but not applied.
     label_bodies = [body for body in server_client.label_patches if "labels" in body]
     assert len(label_bodies) == 1
     verdict = parse_verdict(label_bodies[0]["labels"])
     assert verdict is not None
     assert verdict.model == "model-pricey"
-    assert verdict.applied is True
+    assert verdict.applied is False
 
-    # Escalated application: the harness body carries model_override and a note.
+    # Shadow: no model_override, no note.
     assert len(hc.posted_bodies) == 1
     body = hc.posted_bodies[0]
-    assert body.get("model_override") == "model-pricey"
-    assert _advisor_note_items(body.get("content") or []) == [
-        "[Cost advisor: this turn runs on model-pricey (expensive)]"
-    ]
+    assert body.get("model_override") is None
+    assert _advisor_note_items(body.get("content") or []) == []
 
 
 @pytest.mark.asyncio
