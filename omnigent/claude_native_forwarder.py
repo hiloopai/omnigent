@@ -688,6 +688,18 @@ async def forward_claude_transcript_to_session(
                     state=hook_state,
                 )
                 if rotation is not None:
+                    # Tell the superseded (old) conversation it was cleared:
+                    # persist a notice linking to the rotated-to session and
+                    # emit a live redirect event. ``current_session_id`` is
+                    # still the old id here; ``rotation`` is the new one. The
+                    # call is fully best-effort (swallows its own errors) so
+                    # the state reset below always runs.
+                    await _post_clear_supersession(
+                        client,
+                        old_session_id=current_session_id,
+                        new_session_id=rotation,
+                        agent_name=agent_name,
+                    )
                     session_id = rotation
                     state = None
                     hook_state = None
@@ -1950,7 +1962,18 @@ async def _create_clear_replacement_session(
     write_active_session_id(bridge_dir, new_session_id)
     clear_resp = await client.patch(
         f"/v1/sessions/{url_component(old_session_id)}",
-        json={"runner_id": ""},
+        json={
+            "runner_id": "",
+            # Re-key the superseded session onto its OWN bridge id. The new
+            # session keeps the original bridge id (set above) and owns the
+            # live terminal/pane; without re-keying, the old session shares
+            # that bridge id, so resuming it (host wake-on-message or
+            # ``omnigent claude --resume``) would cold-start a Claude
+            # terminal into the SAME bridge dir as the live session — two
+            # forwarders mirroring one transcript, i.e. duplicated items.
+            # Pointing it at its own conversation id isolates that resume.
+            "labels": {BRIDGE_ID_LABEL_KEY: old_session_id},
+        },
     )
     if clear_resp.status_code >= 400:
         _logger.warning(
@@ -3018,6 +3041,83 @@ def _validated_transcript_state(
         cursor_fingerprint=_jsonl_cursor_fingerprint(state.transcript_path, end_offset),
         seen_source_ids=state.seen_source_ids,
     )
+
+
+async def _post_clear_supersession(
+    client: httpx.AsyncClient,
+    *,
+    old_session_id: str,
+    new_session_id: str,
+    agent_name: str,
+) -> None:
+    """
+    Notify the superseded session that a ``/clear`` rotated it away.
+
+    Posts two best-effort events to the OLD conversation, in order:
+
+    1. A persisted assistant ``message`` item linking to the new
+       conversation, so a later reload of the cleared conversation
+       explains what happened and offers the continuation link. This is
+       the durable record — it survives reconnects.
+    2. A transient ``external_session_superseded`` event the server
+       republishes as ``session.superseded``, so a client *actively*
+       viewing the old conversation auto-redirects to the new one.
+
+    Both failures are logged and swallowed: the rotation has already
+    completed and reset forwarder state, and a notification error must
+    not disrupt the poll loop or stop the new session from forwarding.
+
+    :param client: Omnigent HTTP client (``base_url`` = AP server).
+    :param old_session_id: Superseded conversation id, e.g. ``"conv_old"``.
+    :param new_session_id: Rotated-to conversation id, e.g. ``"conv_new"``.
+    :param agent_name: Agent name to stamp on the notice message — an
+        assistant ``message`` item requires one.
+    :returns: None.
+    """
+    notice = (
+        "This conversation was ended by `/clear`. "
+        f"Continue in [the new chat](/c/{new_session_id}). "
+        "You can also send a message here to resume this conversation."
+    )
+    try:
+        item_resp = await client.post(
+            f"/v1/sessions/{url_component(old_session_id)}/events",
+            json={
+                "type": "external_conversation_item",
+                "data": {
+                    "item_type": "message",
+                    "item_data": {
+                        "role": "assistant",
+                        "agent": agent_name,
+                        "content": [{"type": "output_text", "text": notice}],
+                    },
+                },
+            },
+        )
+        item_resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.warning(
+            "Failed to post /clear supersession notice; old_session=%s new_session=%s",
+            old_session_id,
+            new_session_id,
+            exc_info=True,
+        )
+    try:
+        event_resp = await client.post(
+            f"/v1/sessions/{url_component(old_session_id)}/events",
+            json={
+                "type": "external_session_superseded",
+                "data": {"target_conversation_id": new_session_id},
+            },
+        )
+        event_resp.raise_for_status()
+    except httpx.HTTPError:
+        _logger.warning(
+            "Failed to post /clear supersession redirect event; old_session=%s new_session=%s",
+            old_session_id,
+            new_session_id,
+            exc_info=True,
+        )
 
 
 async def _post_external_conversation_item(

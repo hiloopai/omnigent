@@ -394,7 +394,18 @@ def _create_clear_replacement_session(
     write_active_session_id(bridge_dir, new_session_id)
     clear_resp = client.patch(
         f"{ap_server_url}/v1/sessions/{url_component(old_session_id)}",
-        json={"runner_id": ""},
+        json={
+            "runner_id": "",
+            # Re-key the superseded session onto its OWN bridge id. The new
+            # session keeps the original bridge id (set above) and owns the
+            # live terminal/pane; without re-keying, the old session shares
+            # that bridge id, so resuming it (host wake-on-message or
+            # ``omnigent claude --resume``) would cold-start a Claude
+            # terminal into the SAME bridge dir as the live session — two
+            # forwarders mirroring one transcript, i.e. duplicated items.
+            # Pointing it at its own conversation id isolates that resume.
+            "labels": {BRIDGE_ID_LABEL_KEY: old_session_id},
+        },
     )
     if clear_resp.status_code >= 400:
         print(

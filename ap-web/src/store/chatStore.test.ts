@@ -2694,6 +2694,43 @@ describe("chatStore — handleSessionEvent (session.* events)", () => {
     });
   });
 
+  describe("session.superseded", () => {
+    it("records the redirect target for the bound conversation", () => {
+      useChatStore.setState({ conversationId: "conv_old", redirectToConversationId: null });
+      handleSessionEvent({
+        type: "session_superseded",
+        conversationId: "conv_old",
+        targetConversationId: "conv_new",
+        reason: "clear",
+      });
+      expect(useChatStore.getState().redirectToConversationId).toBe("conv_new");
+    });
+
+    it("ignores a superseded frame from a switched-away conversation", () => {
+      useChatStore.setState({ conversationId: "conv_current", redirectToConversationId: null });
+      handleSessionEvent({
+        type: "session_superseded",
+        conversationId: "conv_other",
+        targetConversationId: "conv_new",
+        reason: "clear",
+      });
+      // A late frame from the previous session's still-draining stream must
+      // not yank the user out of the conversation they're now viewing.
+      expect(useChatStore.getState().redirectToConversationId).toBeNull();
+    });
+
+    it("ignores a self-target no-op", () => {
+      useChatStore.setState({ conversationId: "conv_old", redirectToConversationId: null });
+      handleSessionEvent({
+        type: "session_superseded",
+        conversationId: "conv_old",
+        targetConversationId: "conv_old",
+        reason: "clear",
+      });
+      expect(useChatStore.getState().redirectToConversationId).toBeNull();
+    });
+  });
+
   describe("session.status", () => {
     it("updates sessionStatus from the event", () => {
       const event: SessionStatusEvent = {

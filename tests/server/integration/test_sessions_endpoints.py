@@ -502,6 +502,61 @@ async def test_external_session_status_event_lands_in_status_cache(
         sessions_module._session_status_cache.pop(session["id"], None)
 
 
+# ── POST /v1/sessions/{id}/events external_session_superseded ─────
+
+
+async def test_external_session_superseded_publishes_redirect_event(
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Posting ``external_session_superseded`` republishes a
+    ``session.superseded`` SSE event carrying the redirect target.
+
+    This is the claude-native forwarder's live-only redirect signal after
+    a Claude ``/clear``: a client viewing the old conversation follows to
+    the new one. The event is transient (not persisted) — the handler only
+    publishes to the session stream.
+    """
+    published: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "omnigent.server.routes.sessions.session_stream.publish",
+        lambda sid, ev: published.append((sid, ev)),
+    )
+
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/events",
+        json={
+            "type": "external_session_superseded",
+            "data": {"target_conversation_id": "conv_new"},
+        },
+    )
+    assert resp.status_code in (200, 202)
+
+    superseded = [ev for _sid, ev in published if ev.get("type") == "session.superseded"]
+    assert len(superseded) == 1
+    event = superseded[0]
+    assert event["conversation_id"] == session["id"]
+    assert event["target_conversation_id"] == "conv_new"
+    assert event["reason"] == "clear"
+
+
+async def test_external_session_superseded_requires_target(
+    client: httpx.AsyncClient,
+) -> None:
+    """A superseded event without a target conversation id is rejected."""
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+    resp = await client.post(
+        f"/v1/sessions/{session['id']}/events",
+        json={"type": "external_session_superseded", "data": {}},
+    )
+    assert resp.status_code == 400
+
+
 # ── POST /v1/sessions/{id}/events external_subagent_start ─────────
 
 

@@ -175,6 +175,16 @@ export interface ChatState {
   // Reactive — subscribed to by UI components.
   conversationId: string | null;
   /**
+   * Set when a live `session.superseded` event asks the client to follow
+   * the active conversation to another one (e.g. after a Claude `/clear`).
+   * `ChatPage` observes this, navigates to `/c/<id>` (replacing history so
+   * Back doesn't return to the cleared session), then clears it. Null when
+   * no redirect is pending. The store can't call react-router directly, so
+   * it hands the target to the page via this field. Live-only — a reload of
+   * the old conversation renders the persisted notice instead.
+   */
+  redirectToConversationId: string | null;
+  /**
    * Flat block list (history + streaming). Renderer walks this.
    *
    * Terminal-observed (claude-native) live streaming inserts a
@@ -680,6 +690,7 @@ export function consumePendingInitialPrompt(conversationId: string): PendingInit
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversationId: null,
+  redirectToConversationId: null,
   blocks: [],
   pendingUserMessages: [],
   pendingByConversation: {},
@@ -1153,6 +1164,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         pendingByConversation,
         conversationId,
+        // Clear any pending supersession redirect: we've now switched
+        // sessions, so a leftover target (e.g. already consumed by the
+        // navigate that brought us here) must not fire again.
+        redirectToConversationId: null,
         // Cleared here, so a different session's in-flight preview blocks
         // (``live:*``) never bleed across.
         blocks: [],
@@ -3727,6 +3742,19 @@ export function handleSessionEvent(event: StreamEvent): void {
           queryKey: childSessionsQueryKey(event.conversationId),
         });
       }
+      return;
+    case "session_superseded":
+      // The conversation we're viewing was rotated away (e.g. Claude
+      // `/clear`): follow it to the new one. Guard on the active
+      // conversation id so a late event from a stream we've already
+      // switched away from can't yank the user, and ignore a self-target
+      // no-op. `ChatPage` observes `redirectToConversationId` and performs
+      // the actual react-router navigation.
+      useChatStore.setState((s) => {
+        if (s.conversationId !== event.conversationId) return {};
+        if (event.targetConversationId === s.conversationId) return {};
+        return { redirectToConversationId: event.targetConversationId };
+      });
       return;
     case "session_resource_created":
       if (event.resource.type === "terminal") {

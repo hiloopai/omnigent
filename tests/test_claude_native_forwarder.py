@@ -298,7 +298,10 @@ async def test_clear_hook_rotates_active_session_without_reprocessing(
             assert body == {"target_session_id": "conv_new"}
             return httpx.Response(200, json={"id": "terminal_claude_main"})
         if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_old":
-            assert body == {"runner_id": ""}
+            assert body == {
+                "runner_id": "",
+                "labels": {BRIDGE_ID_LABEL_KEY: "conv_old"},
+            }
             return httpx.Response(200, json={"id": "conv_old"})
         raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
@@ -351,7 +354,11 @@ async def test_clear_hook_rotates_active_session_without_reprocessing(
             "/v1/sessions/conv_old/resources/terminals/terminal_claude_main/transfer",
             {"target_session_id": "conv_new"},
         ),
-        ("PATCH", "/v1/sessions/conv_old", {"runner_id": ""}),
+        (
+            "PATCH",
+            "/v1/sessions/conv_old",
+            {"runner_id": "", "labels": {BRIDGE_ID_LABEL_KEY: "conv_old"}},
+        ),
     ]
 
 
@@ -417,7 +424,10 @@ async def test_clear_hook_rotation_survives_old_runner_clear_failure(
             assert body == {"target_session_id": "conv_new"}
             return httpx.Response(200, json={"id": "terminal_claude_main"})
         if request.method == "PATCH" and request.url.path == "/v1/sessions/conv_old":
-            assert body == {"runner_id": ""}
+            assert body == {
+                "runner_id": "",
+                "labels": {BRIDGE_ID_LABEL_KEY: "conv_old"},
+            }
             return httpx.Response(503, json={"error": {"message": "temporary failure"}})
         raise AssertionError(f"unexpected request: {request.method} {request.url.path}")
 
@@ -450,6 +460,78 @@ async def test_clear_hook_rotation_survives_old_runner_clear_failure(
     assert rotated_again is None
     assert create_count == 1
     assert read_active_session_id(bridge_dir) == "conv_new"
+
+
+@pytest.mark.asyncio
+async def test_post_clear_supersession_notifies_old_session() -> None:
+    """
+    A /clear rotation notifies the superseded (old) conversation.
+
+    It POSTs, in order, (1) a persisted assistant ``message`` item linking
+    to the new conversation so a reload explains the clear, and (2) a
+    transient ``external_session_superseded`` redirect event so a live
+    viewer auto-follows. Both are addressed to the OLD conversation.
+    """
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Record each POST and return a benign success."""
+        body = json.loads(request.content.decode("utf-8")) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        return httpx.Response(200, json={"queued": False, "item_id": "item_x"})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ap") as client:
+        await forwarder._post_clear_supersession(
+            client,
+            old_session_id="conv_old",
+            new_session_id="conv_new",
+            agent_name="claude-native-ui",
+        )
+
+    assert len(calls) == 2
+    method, path, notice_body = calls[0]
+    assert (method, path) == ("POST", "/v1/sessions/conv_old/events")
+    assert notice_body is not None
+    assert notice_body["type"] == "external_conversation_item"
+    assert notice_body["data"]["item_type"] == "message"
+    item_data = notice_body["data"]["item_data"]
+    assert item_data["role"] == "assistant"
+    assert item_data["agent"] == "claude-native-ui"
+    notice_text = item_data["content"][0]["text"]
+    assert "/clear" in notice_text
+    assert "/c/conv_new" in notice_text
+
+    method, path, event_body = calls[1]
+    assert (method, path) == ("POST", "/v1/sessions/conv_old/events")
+    assert event_body == {
+        "type": "external_session_superseded",
+        "data": {"target_conversation_id": "conv_new"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_post_clear_supersession_swallows_post_failure() -> None:
+    """
+    A failed notice/redirect POST is swallowed, not raised.
+
+    The rotation has already completed and reset forwarder state by the
+    time this runs, so a notification error must not break the poll loop.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        """Fail every POST so both best-effort calls hit their except path."""
+        return httpx.Response(500, json={"error": {"message": "boom"}})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://ap") as client:
+        # Must not raise despite both POSTs returning 500.
+        await forwarder._post_clear_supersession(
+            client,
+            old_session_id="conv_old",
+            new_session_id="conv_new",
+            agent_name="claude-native-ui",
+        )
 
 
 @pytest.mark.asyncio
