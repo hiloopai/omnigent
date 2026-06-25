@@ -57,6 +57,116 @@ async function evalNativePolicyHttp(config, toolName, args) {
   }
 }
 
+/**
+ * Build a Pi tool-result object from an MCP ``tools/call`` JSON-RPC response.
+ *
+ * Pi expects ``{ content: [{ type: "text", text }], isError }``. The Omnigent
+ * MCP proxy returns a JSON-RPC envelope whose ``result`` carries an MCP
+ * content array (``[{ type: "text", text }]``) on success, or a JSON-RPC
+ * ``error`` object (with the MCP convention code -32000 for tool denials /
+ * tool errors) on failure. Map both into a single text block so the Pi agent
+ * can read the output — denials surface as a readable error rather than
+ * wedging the loop.
+ */
+function piResultFromMcpResponse(json) {
+  if (json && typeof json === "object" && json.error) {
+    const msg =
+      (json.error && json.error.message) || "Omnigent tool call failed";
+    return { content: [{ type: "text", text: String(msg) }], isError: true };
+  }
+  const result = json && typeof json === "object" ? json.result : undefined;
+  if (result && Array.isArray(result.content)) {
+    const parts = [];
+    for (const block of result.content) {
+      if (block && typeof block === "object" && typeof block.text === "string") {
+        parts.push(block.text);
+      }
+    }
+    const text = parts.join("\n");
+    return {
+      content: [{ type: "text", text: text || safeJsonStringify(result) }],
+      isError: result.isError === true,
+    };
+  }
+  // Unexpected shape: hand the raw result back so nothing is silently dropped.
+  return {
+    content: [{ type: "text", text: safeJsonStringify(result ?? json ?? {}) }],
+    isError: false,
+  };
+}
+
+/**
+ * Execute an Omnigent tool by POSTing a JSON-RPC ``tools/call`` request to the
+ * server's per-session MCP proxy endpoint
+ * (``POST /v1/sessions/{sessionId}/mcp``).
+ *
+ * This is the SAME endpoint the runner's ``ProxyMcpManager`` uses: the Omnigent
+ * server evaluates TOOL_CALL / TOOL_RESULT policy and then forwards execution
+ * to the runner's ``/mcp/execute`` (which dispatches the real ``sys_*`` tool on
+ * the correct machine with the session's terminal/workspace). The extension
+ * already carries ``serverUrl`` + ``sessionId`` + ``authHeaders`` in its config,
+ * so no extra relay process is needed.
+ *
+ * Fail-safe: any transport/parse error resolves to a readable tool-result error
+ * (``isError: true``) rather than throwing, so a server hiccup never wedges Pi's
+ * agent loop.
+ */
+async function callOmnigentTool(config, toolName, args) {
+  if (
+    !config ||
+    !config.serverUrl ||
+    !config.sessionId ||
+    typeof fetch !== "function"
+  ) {
+    return {
+      content: [
+        { type: "text", text: "Omnigent tool bridge is not configured" },
+      ],
+      isError: true,
+    };
+  }
+  const url = `${config.serverUrl}/v1/sessions/${encodeURIComponent(config.sessionId)}/mcp`;
+  const body = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: { name: toolName, arguments: args || {} },
+  });
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(config.authHeaders || {}),
+      },
+      body,
+    });
+    if (!resp.ok) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Omnigent tool call failed: HTTP ${resp.status}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    const json = await resp.json();
+    return piResultFromMcpResponse(json);
+  } catch (err) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Omnigent tool call failed: ${err && err.message ? err.message : String(err)}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
 function textFromContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -324,6 +434,43 @@ module.exports = function (pi) {
   const toolCallsById = new Map();
   const pendingInterruptMs = 30_000;
 
+  // Names of the Omnigent tools registered via pi.registerTool below. Bridged
+  // tools are policy-evaluated server-side inside the /mcp proxy (TOOL_CALL +
+  // TOOL_RESULT), so the tool_call hook must NOT also call
+  // evalNativePolicyHttp for them — that would double-evaluate and, for ASK
+  // policies, double-prompt. Pi's OWN built-in tools (read/shell/etc) are not
+  // in this set and stay gated by the hook below.
+  const bridgedTools = new Set();
+  if (config && Array.isArray(config.tools)) {
+    for (const tool of config.tools) {
+      if (!tool || typeof tool !== "object") continue;
+      const name = typeof tool.name === "string" ? tool.name : "";
+      if (!name) continue;
+      bridgedTools.add(name);
+      const description =
+        typeof tool.description === "string" ? tool.description : "";
+      const parameters =
+        tool.parameters && typeof tool.parameters === "object"
+          ? tool.parameters
+          : { type: "object", properties: {} };
+      // Pi passes tool.parameters straight to the LLM as JSON Schema, so the
+      // Omnigent schema is usable as-is. execute() round-trips the call to the
+      // Omnigent server's MCP proxy and returns the result to Pi.
+      if (typeof pi.registerTool === "function") {
+        pi.registerTool({
+          name,
+          label: name,
+          description,
+          promptSnippet: description ? description.slice(0, 120) : name,
+          parameters,
+          async execute(_toolCallId, params) {
+            return callOmnigentTool(config, name, params || {});
+          },
+        });
+      }
+    }
+  }
+
   function rememberContext(ctx) {
     if (ctx) latestContext = ctx;
   }
@@ -575,6 +722,14 @@ module.exports = function (pi) {
     );
     if (blocked) {
       return { block: true, reason: "Interrupted by user" };
+    }
+    // Bridged Omnigent tools (registered via pi.registerTool above) are
+    // policy-evaluated server-side inside the /mcp proxy when execute() runs,
+    // so skip the hook-level eval for them to avoid double-evaluation and, for
+    // ASK policies, a double prompt. Pi's own built-in tools (read/shell/etc)
+    // are NOT bridged and stay gated here.
+    if (bridgedTools.has((event && event.toolName) || "")) {
+      return;
     }
     // Evaluate TOOL_CALL policy via the Omnigent server's session-level HTTP
     // endpoint. This works even after the harness turn has completed (which
