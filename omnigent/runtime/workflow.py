@@ -52,8 +52,10 @@ from omnigent.onboarding.provider_config import (
     FamilyConfig,
     ProviderEntry,
     default_provider_for_harness,
+    harness_family,
     load_config,
     load_providers,
+    provider_families,
 )
 from omnigent.onboarding.ucode_state import UcodeAgentState, read_ucode_state
 from omnigent.runtime import (
@@ -883,6 +885,7 @@ def _resolve_provider_for_build(
     spec: AgentSpec,
     *,
     harness_type: AgentHarnessType,
+    allow_first_available_fallback: bool = False,
 ) -> ProviderEntry | None:
     """Resolve the generic provider that should route *harness_type*, if any.
 
@@ -896,6 +899,15 @@ def _resolve_provider_for_build(
        legacy ``profile``) → use the per-family global default returned by
        :func:`default_provider_for_harness` for this harness, if one is
        configured (``default: true``).
+    3. (spawn only — *allow_first_available_fallback*) no default is configured
+       for the family anywhere, but a credential that CAN serve it exists → use
+       the first such credential. This credentials a head whose family has a
+       configured-but-not-default provider — e.g. Debby's GPT (codex) head when
+       the user's only ``openai``-family credential is a Databricks workspace
+       they added via ``omnigent setup`` but never marked default — rather than
+       launching it with no credential ("Invalid API key"). Resolved per spawn;
+       nothing is persisted. Off by default so the ``/model`` readout and cost
+       paths never present a provider the user did not choose as a default.
 
     Returns ``None`` in every other case (legacy profile present, a
     non-provider explicit auth, or no provider configured), leaving the
@@ -903,6 +915,11 @@ def _resolve_provider_for_build(
 
     :param spec: The agent spec.
     :param harness_type: Canonical workflow harness type, e.g. ``"codex"``.
+    :param allow_first_available_fallback: When ``True`` (the spawn-env
+        builders), fall back to the first credential serving the harness's
+        family when no default is configured anywhere — so a launch credentials
+        the head instead of failing. ``False`` (the ``/model`` readout / cost
+        paths) keeps the strict default-only resolution.
     :returns: The :class:`ProviderEntry` to route through, or ``None`` when
         no provider applies.
     :raises OmnigentError: If a named :class:`ProviderAuth` references a
@@ -932,7 +949,8 @@ def _resolve_provider_for_build(
     if _spec_has_legacy_profile:
         return None
 
-    # No spec auth. Precedence — most explicit wins, ambient last:
+    # No spec auth. Precedence — most explicit wins, ambient then a spawn-only
+    # last-resort fallback:
     #   1. an EXPLICIT provider default (providers: ... default: true);
     #   2. else an EXPLICIT global ``auth:`` block (e.g. the databricks auth
     #      `omnigent setup` writes) — return None so the caller's existing
@@ -941,7 +959,9 @@ def _resolve_provider_for_build(
     #      auto-databricks model-prefix heuristic runs (the model itself
     #      signals Databricks intent), NOT shadowed by an ambient key;
     #   4. else an AMBIENT-detected provider, so a fresh machine with only an
-    #      env key / CLI login still routes (first run without configure).
+    #      env key / CLI login still routes (first run without configure);
+    #   5. else (spawn only) the FIRST credential that can serve this family,
+    #      even though it is not marked default.
     explicit_default = default_provider_for_harness(explicit_config, harness)
     if explicit_default is not None:
         return explicit_default
@@ -950,7 +970,24 @@ def _resolve_provider_for_build(
     model = _resolve_spec_model(spec)
     if model is not None and model.startswith(("databricks-", "databricks/")):
         return None
-    return default_provider_for_harness(effective_config_with_detected(explicit_config), harness)
+    effective = effective_config_with_detected(explicit_config)
+    ambient_default = default_provider_for_harness(effective, harness)
+    if ambient_default is not None:
+        return ambient_default
+    # Tier 5 (spawn only): no default anywhere, but a credential that serves
+    # this family is configured — e.g. a Databricks workspace the user added via
+    # `omnigent setup` but never set as the GPT default. An actual launch
+    # credentials the head rather than failing with "no credential". The runner
+    # is the one chokepoint every head (CLI, web UI, or a remote host) funnels
+    # through, so this fixes all surfaces at once, for any agent. Resolved per
+    # spawn — nothing is persisted to the user's config.
+    if allow_first_available_fallback:
+        family = harness_family(harness)
+        if family is not None:
+            for entry in load_providers(effective).values():
+                if family in provider_families(entry):
+                    return entry
+    return None
 
 
 def _resolve_spec_model(spec: AgentSpec) -> str | None:
@@ -1037,7 +1074,9 @@ def _build_claude_sdk_spawn_env(
     #    no auth at all (same guard as openai-agents to prevent global defaults
     #    from silently overriding YAML-declared legacy profiles).
     # 4. Auto-Databricks: databricks-* model prefix triggers Databricks routing.
-    provider = _resolve_provider_for_build(spec, harness_type="claude-sdk")
+    provider = _resolve_provider_for_build(
+        spec, harness_type="claude-sdk", allow_first_available_fallback=True
+    )
     if provider is not None:
         configure_agent_harness_with_provider(env, provider, harness_type="claude-sdk")
     else:
@@ -1176,7 +1215,9 @@ def _build_codex_spawn_env(
     # declares no auth — the per-family global default. See
     # :func:`_resolve_provider_for_build`. Otherwise the existing path is
     # unchanged.
-    provider = _resolve_provider_for_build(spec, harness_type="codex")
+    provider = _resolve_provider_for_build(
+        spec, harness_type="codex", allow_first_available_fallback=True
+    )
     if provider is not None:
         configure_agent_harness_with_provider(env, provider, harness_type="codex")
     else:
@@ -1259,7 +1300,9 @@ def _build_pi_spawn_env(
     # declares no auth — the per-family global default. pi consumes both
     # families (see :func:`_apply_provider_to_pi`). Otherwise the existing
     # path is unchanged.
-    provider = _resolve_provider_for_build(spec, harness_type="pi")
+    provider = _resolve_provider_for_build(
+        spec, harness_type="pi", allow_first_available_fallback=True
+    )
     if provider is not None:
         configure_agent_harness_with_provider(env, provider, harness_type="pi")
     else:
@@ -1324,7 +1367,9 @@ def _build_qwen_spawn_env(
     # databricks-prefix path): a ProviderAuth on the spec, or — when the spec
     # declares no auth — the per-family global default. qwen routes through
     # OpenAI-compatible providers.
-    provider = _resolve_provider_for_build(spec, harness_type="qwen")
+    provider = _resolve_provider_for_build(
+        spec, harness_type="qwen", allow_first_available_fallback=True
+    )
     if provider is not None:
         configure_agent_harness_with_provider(env, provider, harness_type="qwen")
     else:
@@ -1490,7 +1535,9 @@ def _build_openai_agents_sdk_spawn_env(spec: AgentSpec) -> dict[str, str]:
     #    USE_RESPONSES. No ucode enrichment (no Databricks profile to look
     #    up), so it returns early. A spec's explicit ``use_responses`` still
     #    wins over the provider's wire_api.
-    provider = _resolve_provider_for_build(spec, harness_type="openai-agents-sdk")
+    provider = _resolve_provider_for_build(
+        spec, harness_type="openai-agents-sdk", allow_first_available_fallback=True
+    )
     if provider is not None:
         configure_agent_harness_with_provider(env, provider, harness_type="openai-agents-sdk")
         use_responses = spec.executor.config.get("use_responses")
