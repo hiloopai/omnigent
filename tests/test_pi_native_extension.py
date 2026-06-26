@@ -808,6 +808,95 @@ require(extensionPath)(pi);
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_mcp_unreachable_fails_closed_without_throwing(tmp_path: Path) -> None:
+    """An unreachable Omnigent MCP server resolves to an error, never a throw.
+
+    Boundary discipline at the /mcp call site: a transport failure (connection
+    refused) and an HTTP non-2xx must each resolve ``execute`` to a readable
+    ``isError: true`` tool result so the Pi agent loop keeps running, rather than
+    rejecting the promise and wedging the turn.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+
+    extension_path = (
+        Path(__file__).resolve().parents[1]
+        / "omnigent"
+        / "resources"
+        / "pi_native"
+        / "omnigent_pi_native_extension.js"
+    )
+
+    script = r"""
+const assert = require("assert").strict;
+const fs = require("fs");
+const path = require("path");
+
+const extensionPath = process.argv[1];
+const tmpDir = process.argv[2];
+const inboxDir = path.join(tmpDir, "inbox");
+const configPath = path.join(tmpDir, "config.json");
+
+fs.mkdirSync(inboxDir, { recursive: true });
+fs.writeFileSync(
+  configPath,
+  JSON.stringify({
+    serverUrl: "http://omnigent.test",
+    sessionId: "conv_abc",
+    inboxDir,
+    authHeaders: {},
+    tools: [
+      { name: "sys_os_shell", description: "", parameters: { type: "object", properties: {} } },
+    ],
+  }),
+);
+
+process.env.OMNIGENT_PI_NATIVE_CONFIG = configPath;
+
+let mode = "throw";
+global.fetch = async () => {
+  if (mode === "throw") throw new Error("ECONNREFUSED 127.0.0.1:7284");
+  return { ok: false, status: 503, async json() { return {}; } };
+};
+global.setInterval = () => ({ fakeInterval: true });
+
+const registered = {};
+const pi = {
+  registerCommand() {},
+  on() {},
+  registerTool(spec) { registered[spec.name] = spec; },
+  sendUserMessage() {},
+};
+
+require(extensionPath)(pi);
+
+(async () => {
+  const thrown = await registered.sys_os_shell.execute("call-1", {});
+  assert.equal(thrown.isError, true, JSON.stringify(thrown));
+  assert.ok(thrown.content[0].text.indexOf("ECONNREFUSED") !== -1, thrown.content[0].text);
+
+  mode = "http";
+  const http = await registered.sys_os_shell.execute("call-2", {});
+  assert.equal(http.isError, true, JSON.stringify(http));
+  assert.ok(http.content[0].text.indexOf("503") !== -1, http.content[0].text);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+
+    result = subprocess.run(
+        [node, "-e", script, str(extension_path), str(tmp_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_input_required_denied_fails_closed_not_false_success(tmp_path: Path) -> None:
     """A declined ASK gate fails CLOSED (isError) — never reports false success.
 
