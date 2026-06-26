@@ -853,7 +853,7 @@ class TestModelFlagHelpers:
     async def test_supports_model_flag_false_when_probe_cannot_run(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """An OSError spawning the probe is treated as unsupported (env fallback)."""
+        """An OSError spawning the probe is treated as unsupported (flag skipped)."""
         from omnigent.codex_native_app_server import _codex_supports_model_flag
 
         async def _fake_exec(*_args: Any, **_kwargs: Any) -> Any:
@@ -1009,14 +1009,11 @@ class TestModelFlagPlumbing:
     async def test_flag_off_omits_model_flag_and_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """With the opt-in off, neither ``--model`` nor ``CODEX_MODEL`` appears.
+        """With the opt-in off, no ``--model`` flag is passed.
 
-        The config.toml pin (asserted elsewhere) remains the only route.
+        The config.toml pin (asserted below) remains the only route.
         """
-        from omnigent.codex_native_app_server import (
-            _CODEX_MODEL_ENV_VAR,
-            _MODEL_FLAG_ENV_VAR,
-        )
+        from omnigent.codex_native_app_server import _MODEL_FLAG_ENV_VAR
 
         # The opt-in is read from the server's own process env (os.environ);
         # ensure it isn't ambiently set so "off" is genuinely off.
@@ -1030,8 +1027,6 @@ class TestModelFlagPlumbing:
 
         assert recorder.argv is not None
         assert "--model" not in recorder.argv
-        assert recorder.env is not None
-        assert _CODEX_MODEL_ENV_VAR not in recorder.env
         # config.toml pin still seeds the model regardless of the flag.
         assert 'model = "databricks-gpt-5-4-mini"' in (
             server.codex_home / "config.toml"
@@ -1045,10 +1040,7 @@ class TestModelFlagPlumbing:
         The flag must precede the ``app-server`` subcommand (it is a codex
         global option).
         """
-        from omnigent.codex_native_app_server import (
-            _CODEX_MODEL_ENV_VAR,
-            _MODEL_FLAG_ENV_VAR,
-        )
+        from omnigent.codex_native_app_server import _MODEL_FLAG_ENV_VAR
 
         async def _supports(_codex_path: str) -> bool:
             return True
@@ -1077,18 +1069,17 @@ class TestModelFlagPlumbing:
         assert argv[model_idx + 1] == "databricks-gpt-5-4-mini"
         # Global option: precedes the subcommand.
         assert model_idx < argv.index("app-server")
-        # No env fallback when the flag is used.
-        assert recorder.env is not None
-        assert _CODEX_MODEL_ENV_VAR not in recorder.env
 
-    async def test_flag_on_without_cli_support_falls_back_to_env(
+    async def test_flag_on_without_cli_support_skips_model_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Opt-in + a codex lacking ``--model`` → ``CODEX_MODEL`` env fallback."""
-        from omnigent.codex_native_app_server import (
-            _CODEX_MODEL_ENV_VAR,
-            _MODEL_FLAG_ENV_VAR,
-        )
+        """Opt-in + a codex lacking ``--model`` -> no flag (config.toml pin carries it).
+
+        Passing an unknown flag would error, so an unsupported codex simply
+        doesn't get ``--model``; the always-on config.toml pin still launches
+        it on the right model.
+        """
+        from omnigent.codex_native_app_server import _MODEL_FLAG_ENV_VAR
 
         async def _unsupported(_codex_path: str) -> bool:
             return False
@@ -1110,8 +1101,10 @@ class TestModelFlagPlumbing:
 
         assert recorder.argv is not None
         assert "--model" not in recorder.argv
-        assert recorder.env is not None
-        assert recorder.env[_CODEX_MODEL_ENV_VAR] == "databricks-gpt-5-4-mini"
+        # config.toml pin still seeds the model regardless of the flag.
+        assert 'model = "databricks-gpt-5-4-mini"' in (
+            server.codex_home / "config.toml"
+        ).read_text(encoding="utf-8")
 
     async def test_flag_in_spawn_env_alone_does_not_enable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1121,13 +1114,10 @@ class TestModelFlagPlumbing:
         Regression guard: ``self.env`` is the ``_clean_codex_env`` output,
         whose prefix allowlist strips ``OMNIGENT_*`` keys, so the opt-in can
         only arrive via the server's own ``os.environ``. If the gate ever
-        reverts to reading ``self.env``, this fails — the flag would appear to
+        reverts to reading ``self.env``, this fails: the flag would appear to
         work in a unit test that injects it via ``env=`` but be dead in prod.
         """
-        from omnigent.codex_native_app_server import (
-            _CODEX_MODEL_ENV_VAR,
-            _MODEL_FLAG_ENV_VAR,
-        )
+        from omnigent.codex_native_app_server import _MODEL_FLAG_ENV_VAR
 
         async def _supports(_codex_path: str) -> bool:
             return True
@@ -1135,7 +1125,7 @@ class TestModelFlagPlumbing:
         monkeypatch.setattr(
             "omnigent.codex_native_app_server._codex_supports_model_flag", _supports
         )
-        # NOT set in os.environ — only smuggled into the spawn env.
+        # NOT set in os.environ -- only smuggled into the spawn env.
         monkeypatch.delenv(_MODEL_FLAG_ENV_VAR, raising=False)
         recorder = _SpawnRecorder()
         _patch_start_spawn(monkeypatch, recorder)
@@ -1149,5 +1139,3 @@ class TestModelFlagPlumbing:
 
         assert recorder.argv is not None
         assert "--model" not in recorder.argv
-        assert recorder.env is not None
-        assert _CODEX_MODEL_ENV_VAR not in recorder.env

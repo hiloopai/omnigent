@@ -96,14 +96,8 @@ _MIN_POLICY_HOOK_CODEX_VERSION = (0, 129, 0)
 # (``omnigent/_startup_profile.py``, ``omnigent/cli.py``).
 _MODEL_FLAG_ENV_VAR = "OMNIGENT_CODEX_NATIVE_MODEL_FLAG"
 _MODEL_FLAG_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
-# Codex CLI exposes ``-m/--model`` as a *global* option (it precedes the
-# ``app-server`` subcommand). When a codex build predates that flag, fall
-# back to seeding the model through this env var, which codex's config
-# loader reads in addition to the ``config.toml`` pin. Kept as a single
-# constant so the launch path and tests agree on the spelling.
-_CODEX_MODEL_ENV_VAR = "CODEX_MODEL"
 # Timeout for the one-shot ``codex --help`` capability probe. Matches the
-# ``codex --version`` probe budget — a hung help invocation must never block
+# ``codex --version`` probe budget -- a hung help invocation must never block
 # app-server startup.
 _CODEX_HELP_PROBE_TIMEOUT_SECONDS = 5.0
 
@@ -118,7 +112,7 @@ def _model_flag_enabled(env: dict[str, str] | None = None) -> bool:
 
     :param env: Environment mapping to inspect; defaults to ``os.environ``.
     :returns: ``True`` when the override should also be passed as an
-        explicit launch flag (or its env fallback).
+        explicit ``--model`` launch flag.
     """
     source = os.environ if env is None else env
     return source.get(_MODEL_FLAG_ENV_VAR, "").strip().lower() in _MODEL_FLAG_TRUE_VALUES
@@ -131,14 +125,14 @@ async def _codex_supports_model_flag(codex_path: str) -> bool:
     Runs ``codex --help`` and looks for the ``--model`` long option in the
     top-level options. Codex exposes ``-m/--model`` as a global flag that
     precedes the ``app-server`` subcommand; builds that predate it omit the
-    option from ``--help``, so the caller routes the override through the
-    :data:`_CODEX_MODEL_ENV_VAR` env fallback instead.
+    option from ``--help``, so the caller skips the flag (passing an unknown
+    flag would error) and relies on the always-on ``config.toml`` pin.
 
     :param codex_path: Path to the codex CLI, e.g.
         ``"/usr/local/bin/codex"``.
     :returns: ``True`` when ``--model`` appears in ``codex --help`` output;
         ``False`` when it does not, or the probe cannot be run / times out
-        (treated conservatively as "unsupported" so the env fallback runs).
+        (treated conservatively as "unsupported" so the flag is not passed).
     """
     try:
         proc = await _create_subprocess_exec(
@@ -155,7 +149,7 @@ async def _codex_supports_model_flag(codex_path: str) -> bool:
         )
     except asyncio.TimeoutError:
         # A hung ``codex --help`` must not block startup: kill it and treat
-        # the flag as unsupported (the env fallback still carries the model).
+        # the flag as unsupported (the config.toml pin still carries the model).
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
         with contextlib.suppress(Exception):
@@ -659,23 +653,23 @@ class CodexNativeAppServer:
         # Opt-in, additive to the config.toml ``model =`` pin above: when the
         # operator enables the flag and a model is pinned, ALSO pass it
         # explicitly. ``-m/--model`` is a codex *global* option, so it must
-        # precede the ``app-server`` subcommand; on a codex build that lacks
-        # the flag, fall back to seeding ``CODEX_MODEL`` in the spawn env
-        # (which codex's config loader honors) so the explicit path still
-        # carries the model. Either way the config.toml pin remains the
-        # primary route, so a probe failure never strands the session.
+        # precede the ``app-server`` subcommand. A codex build that lacks the
+        # flag simply doesn't get it (passing an unknown flag would error) --
+        # the config.toml pin remains the primary route, so the session still
+        # launches on the right model regardless.
         # Read the opt-in from the omnigent server's OWN process environment
         # (``os.environ``, the default), NOT ``self.env``: ``self.env`` is the
         # cleaned codex spawn env from ``_clean_codex_env``, whose prefix
-        # allowlist strips ``OMNIGENT_*`` keys — so the flag would never be
+        # allowlist strips ``OMNIGENT_*`` keys -- so the flag would never be
         # visible there. The flag is an operator knob for omnigent, not
         # something codex itself consumes.
         model_global_args: list[str] = []
-        if self.pinned_model and _model_flag_enabled():
-            if await _codex_supports_model_flag(self.codex_path):
-                model_global_args = ["--model", self.pinned_model]
-            else:
-                proc_env[_CODEX_MODEL_ENV_VAR] = self.pinned_model
+        if (
+            self.pinned_model
+            and _model_flag_enabled()
+            and await _codex_supports_model_flag(self.codex_path)
+        ):
+            model_global_args = ["--model", self.pinned_model]
         # argv[0] carries the inert crash-reap marker (the real binary is passed
         # via ``executable=`` below); the model global option rides after it so
         # codex still parses it ahead of the ``app-server`` subcommand.
