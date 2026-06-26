@@ -98,16 +98,18 @@
         opacity: 0.5;
         cursor: default;
       }
+      /* Connect (to a remote server) is the secondary path; "Run locally" below
+         is the prominent primary action. */
       #connect {
         margin-top: 16px;
         padding: 9px 12px;
         font-weight: 500;
-        border: none;
-        background: var(--primary);
-        color: var(--primary-foreground);
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--foreground);
       }
       #connect:hover:not(:disabled) {
-        background: color-mix(in srgb, var(--primary) 90%, transparent);
+        background: color-mix(in srgb, var(--foreground) 5%, transparent);
       }
       .recents {
         margin-top: 24px;
@@ -155,16 +157,17 @@
         height: 1px;
         background: var(--border);
       }
-      .secondary-btn {
+      /* "Run locally" — the prominent primary action (filled). */
+      #start-local {
         margin-top: 12px;
-        padding: 9px 12px;
-        font-weight: 500;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--foreground);
+        padding: 10px 12px;
+        font-weight: 600;
+        border: none;
+        background: var(--primary);
+        color: var(--primary-foreground);
       }
-      .secondary-btn:hover:not(:disabled) {
-        background: color-mix(in srgb, var(--foreground) 5%, transparent);
+      #start-local:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--primary) 90%, transparent);
       }
       .cli-panel {
         margin-top: 16px;
@@ -316,9 +319,7 @@
 
       <div id="local-section">
         <div class="divider">or</div>
-        <button id="start-local" class="secondary-btn" disabled>
-          Start a server on this machine
-        </button>
+        <button id="start-local" disabled>Run locally</button>
 
         <div class="cli-panel" id="cli-panel" hidden>
           <p class="title" id="cli-title"></p>
@@ -456,9 +457,9 @@
         if (e.key === "Enter") connect();
       });
 
-      // --- Start locally + omnigent CLI detection -------------------------
-      // "Start a server on this machine" runs `omnigent server` via the main
-      // process, then connects this window to it through the normal flow. It
+      // --- Run locally + omnigent CLI detection ---------------------------
+      // "Run locally" runs `omnigent server` via the main process, then
+      // connects this window to it through the normal flow. It
       // needs the local omnigent CLI, so we detect the CLI on load and, when
       // it's missing, show install instructions plus a way to point at the
       // binary. Remote Connect never depends on the CLI.
