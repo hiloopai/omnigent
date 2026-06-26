@@ -194,26 +194,33 @@ export type SidebarDropTarget =
 
 /** The action a drop resolves to. `move` files the session into a project;
     `ungroup` removes it from its current project (the caller still confirms
-    when it's the project's last member); `pin` pins it (the pin-precedence in
-    the list then floats it out of any project into the Pinned section);
-    `none` is a no-op (dropped on nothing, on its own folder, "ungroup" while
-    already unfiled, or "pin" while already pinned). */
+    when it's the project's last member); `pin` pins it (pin-precedence then
+    floats it into the Pinned section); `unpin` just unpins it (so it leaves
+    Pinned and falls back to its project / the flat list); `none` is a no-op.
+
+    `move`/`ungroup` carry an `unpin` flag: a PINNED session is shown in the
+    Pinned section regardless of its project label, so moving/unfiling it has no
+    visible effect until it's also unpinned. Dragging a pinned row onto a
+    project / Chats therefore unpins it too, so it actually lands where dropped
+    (this is why a pinned session previously appeared "stuck" in Pinned). */
 export type SidebarDropAction =
-  | { kind: "move"; project: string }
-  | { kind: "ungroup"; project: string }
+  | { kind: "move"; project: string; unpin: boolean }
+  | { kind: "ungroup"; project: string; unpin: boolean }
   | { kind: "pin" }
+  | { kind: "unpin" }
   | { kind: "none" };
 
 /**
  * Pure resolution of a sidebar drag-and-drop: given the dragged session and the
  * target it was released over, decide whether to file it into a project, remove
- * it from its project, pin it, or do nothing. Kept side-effect-free so the
+ * it from its project, pin/unpin it, or do nothing. Kept side-effect-free so the
  * routing is unit-testable independent of dnd-kit and the mutation hooks.
  *
- * - Dropped on a project folder it isn't already in → `move`.
- * - Dropped on its OWN folder → `none` (no pointless PATCH / re-fetch).
- * - Dropped on the ungroup zone while filed → `ungroup`.
- * - Dropped on the ungroup zone while already unfiled → `none`.
+ * - Dropped on a project folder it isn't already in → `move` (+`unpin` if pinned).
+ * - Dropped on its OWN folder → `none`, unless pinned (then `move` to re-reveal
+ *   it in that folder by unpinning — no visible change otherwise).
+ * - Dropped on the ungroup zone while filed → `ungroup` (+`unpin` if pinned).
+ * - Dropped on the ungroup zone while unfiled → `unpin` if pinned, else `none`.
  * - Dropped on the pin zone while not already pinned → `pin`.
  * - Dropped on the pin zone while already pinned → `none`.
  * - Dropped on nothing → `none`.
@@ -224,15 +231,19 @@ export function resolveSidebarDrop(
 ): SidebarDropAction {
   if (!target) return { kind: "none" };
   if (target.type === "project") {
-    if (target.name === source.project) return { kind: "none" };
-    return { kind: "move", project: target.name };
+    // Same project, not pinned → nothing to do. Same project but pinned → the
+    // session is hidden up in Pinned, so re-file it (a no-op label write) and
+    // unpin so it drops into this folder.
+    if (target.name === source.project && !source.isPinned) return { kind: "none" };
+    return { kind: "move", project: target.name, unpin: source.isPinned };
   }
   if (target.type === "pin") {
     // Pinning an already-pinned session is a no-op; otherwise pin it (the list
     // floats pinned sessions out of their project into the Pinned section).
     return source.isPinned ? { kind: "none" } : { kind: "pin" };
   }
-  // Ungroup: only meaningful for a session that's actually filed somewhere.
-  if (!source.project) return { kind: "none" };
-  return { kind: "ungroup", project: source.project };
+  // Ungroup (dropped on "Chats" / the fallback strip): land it in the flat list.
+  if (source.project) return { kind: "ungroup", project: source.project, unpin: source.isPinned };
+  // No project label: only meaningful if pinned (unpin → it drops into Chats).
+  return source.isPinned ? { kind: "unpin" } : { kind: "none" };
 }

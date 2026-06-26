@@ -954,10 +954,13 @@ function ConversationList({
   } | null>(null);
   // A drop-to-ungroup that turned out to remove the project's last session —
   // held here to confirm (the implicit project vanishes with it), mirroring the
-  // kebab's "Remove from project" flow.
-  const [pendingUngroup, setPendingUngroup] = useState<{ id: string; project: string } | null>(
-    null,
-  );
+  // kebab's "Remove from project" flow. `unpin` carries through whether the
+  // dragged session was also pinned (and so must be unpinned to leave Pinned).
+  const [pendingUngroup, setPendingUngroup] = useState<{
+    id: string;
+    project: string;
+    unpin: boolean;
+  } | null>(null);
   // Mouse: a small drag threshold so a plain click still navigates / opens the
   // kebab. Touch: a press-and-hold delay so scrolling the list isn't hijacked
   // into a drag. Keyboard users use the kebab menu instead (no KeyboardSensor).
@@ -988,18 +991,22 @@ function ConversationList({
       );
       if (action.kind === "move") {
         moveToProject.mutate({ id: dragged.id, project: action.project });
+        // Unpin a pinned session so it actually drops into the folder instead of
+        // staying floated up in Pinned (pin outranks project membership).
+        if (action.unpin) onTogglePinned(dragged.id);
         // Open the (possibly brand-new) folder so the session is visible in it.
         expandProject(action.project);
         return;
       }
-      if (action.kind === "pin") {
-        // Pin it — the list's pin-precedence then floats it out of any project
-        // into the Pinned section (the session keeps its project label, so
-        // unpinning later returns it there, matching the pin button's behavior).
+      if (action.kind === "pin" || action.kind === "unpin") {
+        // Toggle the pin: `pin` is only emitted for an unpinned session, `unpin`
+        // only for a pinned one, so a single toggle lands the intended state.
+        // Unpinning a pinned session drops it back into its project / Chats.
         onTogglePinned(dragged.id);
         return;
       }
       if (action.kind === "ungroup") {
+        const unpin = action.unpin;
         // Removing a project's LAST session deletes the implicit project, so
         // confirm that case (server-side check, accurate regardless of the
         // loaded window); otherwise remove silently. Mirrors the kebab flow.
@@ -1012,9 +1019,10 @@ function ConversationList({
             isLastSession = true;
           }
           if (isLastSession) {
-            setPendingUngroup({ id: dragged.id, project: action.project });
+            setPendingUngroup({ id: dragged.id, project: action.project, unpin });
           } else {
             moveToProject.mutate({ id: dragged.id, project: "" });
+            if (unpin) onTogglePinned(dragged.id);
           }
         })();
       }
@@ -1240,10 +1248,13 @@ function ConversationList({
               </SectionGroup>
             )}
             {sections.sessions.length > 0 && (
-              // Drop a filed session here to remove it from its project — the
-              // flat "Chats" list is where unfiled sessions live. Active only
-              // while dragging a filed session; outline-only highlight.
-              <ChatsDropZone active={activeDrag?.project != null}>
+              // Drop a session here to send it to the flat "Chats" list — where
+              // unfiled, unpinned sessions live. Active while dragging a filed
+              // session (removes it from its project) or a pinned one (unpins
+              // it), since both have somewhere to land here.
+              <ChatsDropZone
+                active={activeDrag != null && (activeDrag.project != null || activeDrag.isPinned)}
+              >
                 <ConversationSection
                   title="Chats"
                   conversations={sections.sessions}
@@ -1336,6 +1347,9 @@ function ConversationList({
                   { id: pendingUngroup.id, project: "" },
                   { onSuccess: () => setPendingUngroup(null) },
                 );
+                // A pinned session must also be unpinned to leave Pinned and
+                // land in the flat list.
+                if (pendingUngroup.unpin) onTogglePinned(pendingUngroup.id);
               }}
             >
               Remove from project
