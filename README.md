@@ -248,14 +248,13 @@ omnigent setup
 ```
 
 Add a credential, set a default, or remove one, grouped by agent. Omnigent
-works with five kinds of credentials:
+works with four kinds of credentials:
 
 | | Kind | What it is |
 |---|---|---|
 | 🔑 | **API key** | A first-party vendor key for Anthropic, OpenAI, and similar providers |
 | 🎟️ | **Subscription** | A Claude Pro/Max or ChatGPT plan, via the official `claude` / `codex` CLIs |
 | 🌐 | **Gateway** | Any OpenAI- or Anthropic-compatible `base_url` and key (OpenRouter, LiteLLM, Ollama, vLLM, Azure) |
-| ☁️ | **AWS Bedrock** | A Bedrock (or Bedrock-compatible) endpoint via your AWS credentials |
 | 🧱 | **Databricks** | A Databricks workspace profile (requires the `databricks` extra) |
 
 Defaults are per agent, so a Claude default and a Codex default coexist. You
