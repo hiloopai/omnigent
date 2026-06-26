@@ -148,7 +148,17 @@ def clone_hermes_session(
         return
 
     target_db.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source_db, target_db)
+    # Use SQLite's backup API instead of shutil.copy2 — Hermes uses WAL mode
+    # and may not have checkpointed, so the main .db file can be nearly empty
+    # with all data in the -wal sidecar. The backup API reads through WAL
+    # and produces a self-contained copy.
+    src_backup = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    tgt_backup = sqlite3.connect(str(target_db))
+    try:
+        src_backup.backup(tgt_backup)
+    finally:
+        tgt_backup.close()
+        src_backup.close()
 
     conn = sqlite3.connect(str(target_db))
     try:
