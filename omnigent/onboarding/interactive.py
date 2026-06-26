@@ -118,9 +118,9 @@ def _render_menu(
 
     render_console.print()
     if status:
-        render_console.print(Text.from_markup(f"  [bold green]{status}[/]"))
+        render_console.print(Text(f"  {status}", style="bold green"))
         render_console.print()
-    render_console.print(Text.from_markup(f"  [bold {ACCENT}]{title}[/]"))
+    render_console.print(Text(f"  {title}", style=f"bold {ACCENT}"))
     if not compact:
         # The compact overview hugs the title to the list (Hermes-style); other
         # menus keep a blank line below the title for breathing room.
@@ -175,7 +175,7 @@ def _render_menu(
 
     if descriptions is not None and descriptions[selected]:
         render_console.print()
-        render_console.print(Text.from_markup(f"    [dim italic]{descriptions[selected]}[/]"))
+        render_console.print(Text(f"    {descriptions[selected]}", style="dim italic"))
 
     render_console.print()
     # The compact overview is a top-level menu (Esc exits setup), so it shows a

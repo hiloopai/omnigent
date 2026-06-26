@@ -1721,10 +1721,14 @@ def test_overview_truncates_long_status_for_narrow_terminal(isolated_config, mon
     lets rows wrap at the selector's 40-column minimum, so the cap must derive
     from the actual terminal width. This forces a long OpenCode summary and a
     40-column terminal, then renders the captured rows to prove the OpenCode row
-    remains one physical line and carries an ellipsis.
+    remains within the terminal-cell width and carries an ellipsis. The summary
+    includes wide CJK / emoji text so this catches regressions back to Python
+    ``len()`` slicing.
     """
     import os
     import re
+
+    from rich.cells import cell_len
 
     from omnigent.onboarding import interactive
     from omnigent.onboarding.opencode_auth import OpenCodeAuthSummary
@@ -1736,8 +1740,8 @@ def test_overview_truncates_long_status_for_narrow_terminal(isolated_config, mon
         "omnigent.onboarding.opencode_auth.opencode_auth_summary",
         lambda: OpenCodeAuthSummary(
             installed=True,
-            stored_providers=("anthropic", "databricks", "openai"),
-            env_providers=("OpenAI", "Anthropic", "OpenRouter"),
+            stored_providers=("anthropic", "データブリックス", "🚀provider"),
+            env_providers=("OpenAI", "长模型供应商", "OpenRouter"),
         ),
     )
 
@@ -1755,7 +1759,7 @@ def test_overview_truncates_long_status_for_narrow_terminal(isolated_config, mon
     plain = re.sub(r"\x1b\[[0-9;]*m", "", rendered)
     opencode_line = next(line for line in plain.splitlines() if "OpenCode" in line)
     assert "…" in opencode_line
-    assert len(opencode_line) <= 40
+    assert cell_len(opencode_line) <= 40
 
 
 @pytest.mark.parametrize(

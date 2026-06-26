@@ -10847,6 +10847,7 @@ def _run_configure_harnesses_interactive() -> None:
         the backfill/adopt steps and any add/set-default/remove the user
         performs while navigating.
     """
+    from rich.cells import cell_len
     from rich.markup import escape
 
     from omnigent.onboarding.antigravity_auth import (
@@ -10952,6 +10953,22 @@ def _run_configure_harnesses_interactive() -> None:
         # (e.g. ``pip install "omnigent[cursor]"``) renders literally instead of
         # parsing as Rich markup.
         return f"Install with `{escape(command)}`"
+
+    def _truncate_cells(text: str, max_cells: int) -> str:
+        """Truncate *text* to a terminal-cell budget, adding an ellipsis if needed."""
+        if cell_len(text) <= max_cells:
+            return text
+        ellipsis = "…"
+        budget = max(0, max_cells - cell_len(ellipsis))
+        out: list[str] = []
+        used = 0
+        for ch in text:
+            width = cell_len(ch)
+            if used + width > budget:
+                break
+            out.append(ch)
+            used += width
+        return "".join(out) + ellipsis
 
     def _family_row(fam: str) -> tuple[str, str, str, str, str]:
         # Claude / Codex / Pi: a CLI binary plus a usable default credential.
@@ -11207,8 +11224,7 @@ def _run_configure_harnesses_interactive() -> None:
         row_target: list[str | None] = []
         descriptions: list[str] = []
         for target, name, status_text, kind, desc in harness_rows:
-            if len(status_text) > max_status_width:
-                status_text = status_text[: max_status_width - 1] + "…"
+            status_text = _truncate_cells(status_text, max_status_width)
             glyph, color = status_styles[kind]
             options.append(f"{name.ljust(name_col)}[{color}]{glyph} {escape(status_text)}[/]")
             selectable.append(True)
