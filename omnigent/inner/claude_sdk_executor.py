@@ -2467,7 +2467,8 @@ class ClaudeSDKExecutor(Executor):
                             if error_status == 404:
                                 if self._gateway:
                                     endpoint_hint = (
-                                        "Check ANTHROPIC_BASE_URL / gateway endpoint configuration."
+                                        "Check ANTHROPIC_BASE_URL / gateway endpoint "
+                                        "configuration."
                                     )
                                 else:
                                     endpoint_hint = (
