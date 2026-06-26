@@ -4160,7 +4160,7 @@ def test_node_dependency_problem_missing(monkeypatch: pytest.MonkeyPatch) -> Non
     problem = _node_dependency_problem()
 
     assert problem is not None
-    assert "node not found on PATH" in problem
+    assert "node not found" in problem
     assert "Pi" in problem  # the harnesses that need it are named
 
 
@@ -4190,10 +4190,10 @@ def test_node_dependency_problem_too_old(monkeypatch: pytest.MonkeyPatch) -> Non
 
     assert problem is not None
     assert "too old" in problem
-    # The concrete version and the opaque error users actually see must
-    # both appear — that's what makes the warning recognizable.
+    # The concrete detected version and the required floor must both appear —
+    # that's what makes the compact warning recognizable and actionable.
     assert "v20.12.2" in problem
-    assert "markAsUncloneable" in problem
+    assert "Node.js 22 LTS" in problem
 
 
 def test_node_dependency_problem_probe_inconclusive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4267,7 +4267,7 @@ def test_warn_missing_harness_dependencies_lists_all_gaps(
 
     err = capsys.readouterr().err
     assert "Node.js is too old" in err
-    assert "tmux not found on PATH" in err
+    assert "tmux not found" in err
 
 
 def test_click_subcommands_allowlist_covers_registered_commands() -> None:
