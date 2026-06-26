@@ -11635,6 +11635,55 @@ def create_runner_app(
             )
         return Response(status_code=204)
 
+    async def _handle_opencode_native_blocked_notice(
+        conv_id: str,
+        message: str,
+        policy_name: str | None = None,
+    ) -> Response:
+        """
+        Pop a dismissable HARD-block notice on opencode's tmux pane.
+
+        The DENY counterpart of :func:`_handle_opencode_native_cost_popup` (no
+        approve/decline). opencode hard-blocks a denied prompt by its policy
+        plugin throwing — which opencode renders as a generic "Unexpected server
+        error" — so this surfaces the policy reason as a clean ``display-popup``
+        on the pane. Only opencode-native reaches here; claude/codex show a clean
+        ``UserPromptSubmit`` block and the dispatch no-ops them.
+
+        Best-effort: 204 when no live opencode terminal is registered.
+
+        :param conv_id: Session/conversation identifier, e.g. ``"conv_abc123"``.
+        :param message: The block reason to display.
+        :param policy_name: Deciding policy name (popup header); ``None`` →
+            generic header.
+        :returns: 204 once dispatched (or skipped); 503 if launching raised.
+        """
+        from omnigent.native_cost_popup import launch_blocked_notice
+
+        registry = resource_registry.terminal_registry
+        instance = registry.get(conv_id, "opencode", "main") if registry is not None else None
+        if instance is None or not instance.running:
+            return Response(status_code=204)
+        try:
+            await asyncio.to_thread(
+                launch_blocked_notice,
+                str(instance.socket_path),
+                instance.tmux_target,
+                message=message,
+                policy_name=policy_name,
+            )
+        except (RuntimeError, ValueError) as exc:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "opencode_native_blocked_notice_failed",
+                    "detail": _client_safe_error_detail(
+                        exc, context="opencode-native blocked notice"
+                    ),
+                },
+            )
+        return Response(status_code=204)
+
     async def _native_cost_popup_config_file(conv_id: str, harness: str) -> Path:
         """
         Resolve the AP-routing config file the cost popup reads, per harness.
@@ -14501,6 +14550,22 @@ def create_runner_app(
             if harness == "opencode-native":
                 return await _handle_opencode_native_cost_popup(
                     conversation_id, elicitation_id, popup_message, popup_policy_name
+                )
+            return Response(status_code=204)
+
+        if body_type == "policy_blocked_notice":
+            # Informational HARD-block notice (request-phase DENY). opencode-native
+            # hard-blocks a denied prompt by its plugin throwing (a generic error
+            # in the TUI), so pop a dismissable popup carrying the reason. Only
+            # opencode-native renders it; claude/codex show a clean
+            # UserPromptSubmit block, so they 204 no-op.
+            if _session_harness_name(conversation_id) == "opencode-native":
+                message = body.get("message") if isinstance(body, dict) else None
+                policy_name = body.get("policy_name") if isinstance(body, dict) else None
+                return await _handle_opencode_native_blocked_notice(
+                    conversation_id,
+                    message if isinstance(message, str) and message else "Blocked by policy.",
+                    policy_name if isinstance(policy_name, str) and policy_name else None,
                 )
             return Response(status_code=204)
 
