@@ -18,8 +18,7 @@ Omnigent is an open-source **meta-harness** that gives you a common orchestratio
 </div>
 
 <p align="center">
-  <!-- TODO: replace with the final desktop-app screenshot at docs/images/omnigent-desktop.png -->
-  <img src="https://raw.githubusercontent.com/omnigent-ai/omnigent/main/docs/images/omnigent-desktop.png" alt="The Omnigent desktop app showing a live agent session in its terminal view" width="640" />
+  <img src="https://raw.githubusercontent.com/omnigent-ai/omnigent/main/docs/images/omnigent-desktop.png" alt="The Omnigent desktop app: starting a new session, with pinned and project-grouped sessions in the sidebar" width="720" />
 </p>
 
 ---
