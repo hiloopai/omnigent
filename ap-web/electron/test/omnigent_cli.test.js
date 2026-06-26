@@ -10,6 +10,7 @@ const assert = require("node:assert/strict");
 const {
   normalizeServerUrl,
   isLoopbackServer,
+  sameLoopbackServer,
   resolveCliPath,
   parseJsonLoose,
   matchesServer,
@@ -40,6 +41,22 @@ describe("isLoopbackServer", () => {
   it("is false for remote hosts and junk", () => {
     assert.equal(isLoopbackServer("https://example.databricksapps.com"), false);
     assert.equal(isLoopbackServer("not a url"), false);
+  });
+});
+
+describe("sameLoopbackServer", () => {
+  it("matches loopback hosts on the same port (localhost == 127.0.0.1)", () => {
+    assert.equal(sameLoopbackServer("http://127.0.0.1:6767", "http://localhost:6767/"), true);
+    assert.equal(sameLoopbackServer("http://localhost:6767", "http://[::1]:6767"), true);
+  });
+
+  it("does not match different ports", () => {
+    assert.equal(sameLoopbackServer("http://127.0.0.1:6767", "http://localhost:8000"), false);
+  });
+
+  it("does not match when either side is remote, or on junk", () => {
+    assert.equal(sameLoopbackServer("http://localhost:6767", "https://example.com:6767"), false);
+    assert.equal(sameLoopbackServer("not a url", "http://localhost:6767"), false);
   });
 });
 
@@ -100,10 +117,7 @@ describe("parseJsonLoose", () => {
 
 describe("matchesServer", () => {
   it("matches on server_url or target, ignoring trailing slashes", () => {
-    assert.equal(
-      matchesServer({ server_url: "https://x.com/" }, "https://x.com"),
-      true,
-    );
+    assert.equal(matchesServer({ server_url: "https://x.com/" }, "https://x.com"), true);
     assert.equal(matchesServer({ target: "https://x.com" }, "https://x.com/"), true);
   });
 

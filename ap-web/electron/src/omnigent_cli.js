@@ -64,6 +64,27 @@ function isLoopbackServer(serverUrl) {
 }
 
 /**
+ * True when two URLs refer to the same local server — both loopback hosts on
+ * the same port (so ``localhost:6767`` and ``127.0.0.1:6767`` match, but
+ * ``localhost:8000`` does not). Used to confirm the CLI's local server is the
+ * one a window is actually connected to before showing its controls.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function sameLoopbackServer(a, b) {
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    if (!url.LOCAL_HOSTS.has(ua.hostname) || !url.LOCAL_HOSTS.has(ub.hostname)) return false;
+    return ua.port === ub.port;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Well-known install locations for the `omnigent` binary, in priority order.
  * `uv tool install` (the documented installer) drops it in ~/.local/bin;
  * the rest cover Homebrew and source/cargo installs. Probing these matters
@@ -330,8 +351,7 @@ function matchesServer(daemon, serverUrl) {
   const want = normalizeServerUrl(serverUrl);
   if (want === "") return false;
   return (
-    normalizeServerUrl(daemon.server_url) === want ||
-    normalizeServerUrl(daemon.target) === want
+    normalizeServerUrl(daemon.server_url) === want || normalizeServerUrl(daemon.target) === want
   );
 }
 
@@ -352,8 +372,7 @@ function matchesServer(daemon, serverUrl) {
  * }}
  */
 function connectionFromStatus(statusJson, serverUrl) {
-  const daemons =
-    statusJson && Array.isArray(statusJson.daemons) ? statusJson.daemons : [];
+  const daemons = statusJson && Array.isArray(statusJson.daemons) ? statusJson.daemons : [];
   const daemon = daemons.find((d) => matchesServer(d, serverUrl)) || null;
   if (!daemon) {
     return {
@@ -382,6 +401,7 @@ module.exports = {
   DEFAULT_TIMEOUT_MS,
   normalizeServerUrl,
   isLoopbackServer,
+  sameLoopbackServer,
   candidatePaths,
   isExecutableFile,
   whichOmnigent,

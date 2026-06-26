@@ -308,11 +308,17 @@ async function statusFor(cliPath, serverUrl) {
 async function serverStatusFor(cliPath, serverUrl) {
   if (!cliPath || !cli.isLoopbackServer(serverUrl)) return null;
   const status = await cli.getServerStatus(cliPath);
+  const url = status && typeof status.url === "string" ? status.url : null;
+  // Only surface the local-server controls when the CLI's running local server
+  // is the one THIS window is connected to. Otherwise we'd be reporting an
+  // unrelated local server (e.g. the machine-global background server while the
+  // window is pointed at a different local port), so hide the row entirely.
+  if (!url || !cli.sameLoopbackServer(url, serverUrl)) return null;
   return {
-    running: Boolean(status && status.running),
-    url: status && typeof status.url === "string" ? status.url : null,
-    pid: status && typeof status.pid === "number" ? status.pid : null,
-    liveSessions: status && typeof status.live_sessions === "number" ? status.live_sessions : 0,
+    running: Boolean(status.running),
+    url,
+    pid: typeof status.pid === "number" ? status.pid : null,
+    liveSessions: typeof status.live_sessions === "number" ? status.live_sessions : 0,
     ownedByDesktop: Boolean(ownedLocalServer),
   };
 }
