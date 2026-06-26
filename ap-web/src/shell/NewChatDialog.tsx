@@ -52,6 +52,13 @@ import {
   nativeWrapperLabelsForAgent,
 } from "@/lib/nativeCodingAgents";
 import { useHosts, type Host } from "@/hooks/useHosts";
+import {
+  controlHost,
+  getHostStatus,
+  isElectronShell,
+  onHostStatusChanged,
+  type HostStatus,
+} from "@/lib/nativeBridge";
 import { useAvailableAgents, type AvailableAgent } from "@/hooks/useAvailableAgents";
 import { useAutoGrowTextarea } from "@/hooks/useAutoGrowTextarea";
 import { useRecentWorkspaces } from "@/hooks/useRecentWorkspaces";
@@ -188,7 +195,7 @@ const CODEX_NATIVE_APPROVAL_MODES: {
   },
 ];
 
-function HostOption({ host }: { host: Host }) {
+function HostOption({ host, thisMachine }: { host: Host; thisMachine?: boolean }) {
   const isOnline = host.status === "online";
   return (
     <span className="flex items-center gap-2">
@@ -198,6 +205,7 @@ function HostOption({ host }: { host: Host }) {
         <MonitorIcon className="size-4 text-muted-foreground" />
       )}
       <span className="text-xs">{host.name}</span>
+      {thisMachine && <span className="text-[10px] text-muted-foreground">· this machine</span>}
       <span
         className={`inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${isOnline ? "text-green-600" : "text-muted-foreground"}`}
       >
@@ -942,6 +950,10 @@ export function NewChatLandingScreen() {
   // host — the server provisions a sandbox host at create time
   // (host_type: "managed"), so no host_id or workspace is sent.
   const [sandboxSelected, setSandboxSelected] = useState(false);
+  // Desktop-shell host status for THIS machine (null outside Electron), so the
+  // picker can tag the current machine and offer to auto-connect it.
+  const [desktopHost, setDesktopHost] = useState<HostStatus | null>(null);
+  const [connectingThisMachine, setConnectingThisMachine] = useState(false);
   // Sandbox repository inputs — composed into the managed create's
   // `workspace` string (`<url>[#<branch>]`); both blank = empty
   // server-created workspace.
@@ -983,6 +995,31 @@ export function NewChatLandingScreen() {
   const allHosts = hosts ?? [];
   const onlineHosts = allHosts.filter((h) => h.status === "online");
   const offlineHosts = allHosts.filter((h) => h.status === "offline");
+
+  // Identify the current desktop machine in the list, and whether we can offer
+  // to auto-connect it (under the desktop shell, CLI present, and not already
+  // an online host here).
+  const thisMachineHostId = desktopHost?.hostId ?? null;
+  const thisMachineOnline =
+    thisMachineHostId != null && onlineHosts.some((h) => h.host_id === thisMachineHostId);
+  const canRunOnThisMachine = Boolean(desktopHost?.cliInstalled) && !thisMachineOnline;
+
+  // Track this machine's host status from the desktop shell (no-op in a browser).
+  useEffect(() => {
+    if (!isElectronShell()) return;
+    let cancelled = false;
+    const refresh = () => {
+      void getHostStatus().then((s) => {
+        if (!cancelled) setDesktopHost(s);
+      });
+    };
+    refresh();
+    const unsubscribe = onHostStatusChanged(refresh);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   // Auto-select the FIRST AVAILABLE option, mirroring the menu order, so
   // a session can be started without an explicit pick: the sandbox when
@@ -1318,6 +1355,25 @@ export function NewChatLandingScreen() {
     setSelectedHostId(null);
     setWorkspace("");
     seededHostRef.current = null;
+  }
+
+  // Connect THIS desktop machine as a host for the current server, then select
+  // it — so the user doesn't have to run `omni host` in a terminal first. The
+  // bridge's controlHost resolves once the host is connected; we then read its
+  // id, refresh the host list, and pick it.
+  async function connectThisMachine() {
+    if (connectingThisMachine) return;
+    setConnectingThisMachine(true);
+    try {
+      const res = await controlHost("start");
+      if (!res.ok) return;
+      const status = await getHostStatus();
+      setDesktopHost(status);
+      await queryClient.invalidateQueries({ queryKey: ["hosts"] });
+      if (status?.hostId) selectHost(status.hostId);
+    } finally {
+      setConnectingThisMachine(false);
+    }
   }
 
   async function handleCreate() {
@@ -1848,7 +1904,7 @@ export function NewChatLandingScreen() {
                       <DropdownMenuSeparator />
                     </>
                   )}
-                  {allHosts.length === 0 && (
+                  {allHosts.length === 0 && !canRunOnThisMachine && (
                     <div className="px-2 py-1.5 text-xs text-muted-foreground">
                       No hosts connected yet.
                     </div>
@@ -1860,15 +1916,35 @@ export function NewChatLandingScreen() {
                       data-active={host.host_id === selectedHostId ? "true" : undefined}
                       className="text-xs data-[active=true]:bg-accent/60"
                     >
-                      <HostOption host={host} />
+                      <HostOption host={host} thisMachine={host.host_id === thisMachineHostId} />
                     </DropdownMenuItem>
                   ))}
                   {offlineHosts.map((host) => (
                     <DropdownMenuItem key={host.host_id} disabled className="text-xs">
-                      <HostOption host={host} />
+                      <HostOption host={host} thisMachine={host.host_id === thisMachineHostId} />
                     </DropdownMenuItem>
                   ))}
-                  {allHosts.length > 0 && <DropdownMenuSeparator />}
+                  {/* Desktop shell: this machine can host but isn't connected to
+                    this server yet. Offer to connect it in one click (keeps the
+                    menu open while connecting; it then appears as a selected
+                    host above). */}
+                  {canRunOnThisMachine && (
+                    <DropdownMenuItem
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        void connectThisMachine();
+                      }}
+                      disabled={connectingThisMachine}
+                      data-testid="new-chat-landing-run-on-this-machine"
+                      className="gap-2 text-xs"
+                    >
+                      <MonitorIcon className="size-4 text-muted-foreground" />
+                      <span className="text-xs">
+                        {connectingThisMachine ? "Connecting this machine…" : "Run on this machine"}
+                      </span>
+                    </DropdownMenuItem>
+                  )}
+                  {(allHosts.length > 0 || canRunOnThisMachine) && <DropdownMenuSeparator />}
                   {/* Persistent escape hatch: open the connect-a-host
                     instructions. Present even with zero hosts so a fresh user
                     is never stuck. */}
