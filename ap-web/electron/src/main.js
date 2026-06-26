@@ -602,28 +602,63 @@ function followLocalServerMove(event, oldServerUrl, newUrl) {
 
 /**
  * Show a small, auto-dismissing toast inside the focused window's web page by
- * injecting a self-contained element — works regardless of the server's SPA
- * version (old SPAs have no in-app host indicator) and isn't suppressed like a
- * notification is for the frontmost app, nor as heavy as a modal dialog.
+ * injecting a self-contained element built from real DOM nodes (text via
+ * textContent, the command in a proper `<code>` chip — no markup parsing of
+ * untrusted strings). Works regardless of the server's SPA version, isn't
+ * suppressed like a notification for the frontmost app, and is lighter than a
+ * modal dialog.
  *
  * @param {string} message
- * @param {"info" | "error"} [kind]
+ * @param {{ kind?: "info" | "error", command?: string }} [opts]
  */
-function showRunnerToast(message, kind = "info") {
+function showRunnerToast(message, opts = {}) {
   const win = activeWindow();
   if (!win || win.isDestroyed()) return;
-  const arg = JSON.stringify({ message: String(message), error: kind === "error" });
-  // Self-contained IIFE; styled inline so it needs nothing from the page.
+  const arg = JSON.stringify({
+    message: String(message),
+    command: opts.command ? String(opts.command) : "",
+    error: opts.kind === "error",
+  });
+  // Self-contained IIFE: a blurred dark card with a status dot, the message,
+  // and an optional <code> chip. Slides up + fades; auto-dismisses.
   const js = `(function(o){try{
-    var id="omnigent-runner-toast";var p=document.getElementById(id);if(p)p.remove();
-    var e=document.createElement("div");e.id=id;e.textContent=o.message;
-    e.style.cssText="position:fixed;z-index:2147483647;left:50%;bottom:24px;transform:translateX(-50%);"
-      +"max-width:min(90vw,440px);padding:10px 14px;border-radius:10px;"
-      +"font:13px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif;color:#fff;"
-      +"background:"+(o.error?"rgba(176,42,62,0.97)":"rgba(28,28,32,0.97)")+";"
-      +"box-shadow:0 8px 28px rgba(0,0,0,0.4);opacity:0;transition:opacity .18s ease";
-    document.body.appendChild(e);requestAnimationFrame(function(){e.style.opacity="1"});
-    setTimeout(function(){e.style.opacity="0";setTimeout(function(){e.remove()},250)}, o.error?7000:4000);
+    var ID="omnigent-runner-toast";
+    var prev=document.getElementById(ID);if(prev)prev.remove();
+    var card=document.createElement("div");card.id=ID;
+    card.style.cssText=[
+      "position:fixed","z-index:2147483647","left:50%","bottom:28px",
+      "transform:translateX(-50%) translateY(10px)","display:flex","align-items:flex-start","gap:10px",
+      "max-width:min(92vw,460px)","padding:12px 14px","border-radius:12px",
+      "font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif","color:#f4f4f5",
+      "background:rgba(24,24,27,0.97)","border:1px solid rgba(255,255,255,0.08)",
+      "box-shadow:0 12px 40px rgba(0,0,0,0.45)","opacity:0",
+      "transition:opacity .2s ease,transform .2s ease",
+      "-webkit-backdrop-filter:blur(10px)","backdrop-filter:blur(10px)"
+    ].join(";");
+    var dot=document.createElement("span");
+    dot.style.cssText="flex:none;width:8px;height:8px;margin-top:5px;border-radius:50%;background:"
+      +(o.error?"#f87171":"#34d399");
+    card.appendChild(dot);
+    var col=document.createElement("div");
+    col.style.cssText="display:flex;flex-direction:column;gap:7px;min-width:0";
+    var msg=document.createElement("div");msg.style.cssText="font-size:13px;line-height:1.45";
+    msg.textContent=o.message;col.appendChild(msg);
+    if(o.command){
+      var code=document.createElement("code");code.textContent=o.command;
+      code.style.cssText=[
+        "font-family:ui-monospace,SFMono-Regular,Menlo,monospace","font-size:12px","color:#e5e7eb",
+        "background:rgba(255,255,255,0.10)","border:1px solid rgba(255,255,255,0.08)",
+        "padding:4px 8px","border-radius:6px","white-space:pre-wrap","word-break:break-all"
+      ].join(";");
+      col.appendChild(code);
+    }
+    card.appendChild(col);
+    document.body.appendChild(card);
+    requestAnimationFrame(function(){card.style.opacity="1";card.style.transform="translateX(-50%) translateY(0)"});
+    setTimeout(function(){
+      card.style.opacity="0";card.style.transform="translateX(-50%) translateY(10px)";
+      setTimeout(function(){card.remove()},260);
+    }, o.error?8000:4000);
   }catch(_){} })(${arg})`;
   win.webContents.executeJavaScript(js).catch(() => {});
 }
@@ -641,32 +676,36 @@ function showRunnerToast(message, kind = "info") {
 async function connectRunner(serverUrl) {
   const cliPath = resolvedCliPath();
   if (!cliPath) {
-    showRunnerToast("Omnigent CLI not found — install it or set its path in setup.", "error");
+    showRunnerToast("Omnigent CLI not found — install it or set its path in setup.", {
+      kind: "error",
+    });
     return;
   }
   const auth = await serverManager.ensureServerAuth(cliPath, serverUrl);
   if (!auth.ok) {
     console.warn("[omnigent] runner connect (auth):", auth.error);
-    showRunnerToast(
-      `Sign in to run this machine as a runner — run \`omnigent login ${serverUrl}\`.`,
-      "error",
-    );
+    showRunnerToast("Sign in to run this machine as a runner:", {
+      kind: "error",
+      command: `omnigent login ${serverUrl}`,
+    });
     broadcastHostStatus();
     return;
   }
   const result = await serverManager.ensureHostConnected(cliPath, serverUrl);
   broadcastHostStatus();
   if (result.ok) {
-    showRunnerToast("This machine is now connected as a runner.", "info");
+    showRunnerToast("This machine is now connected as a runner.");
     return;
   }
   console.warn("[omnigent] runner connect failed:", result.error);
-  showRunnerToast(
-    result.authError
-      ? `Sign in to run this machine as a runner — run \`omnigent login ${serverUrl}\`.`
-      : "Couldn't connect this machine as a runner.",
-    "error",
-  );
+  if (result.authError) {
+    showRunnerToast("Sign in to run this machine as a runner:", {
+      kind: "error",
+      command: `omnigent login ${serverUrl}`,
+    });
+  } else {
+    showRunnerToast("Couldn't connect this machine as a runner.", { kind: "error" });
+  }
 }
 
 /**
@@ -686,12 +725,14 @@ async function restoreRunner(serverUrl) {
   broadcastHostStatus();
   if (result.ok) return;
   console.warn("[omnigent] runner restore failed:", result.error);
-  showRunnerToast(
-    result.authError
-      ? `Sign in to reconnect this machine as a runner — run \`omnigent login ${serverUrl}\`.`
-      : "Couldn't reconnect this machine as a runner.",
-    "error",
-  );
+  if (result.authError) {
+    showRunnerToast("Sign in to reconnect this machine as a runner:", {
+      kind: "error",
+      command: `omnigent login ${serverUrl}`,
+    });
+  } else {
+    showRunnerToast("Couldn't reconnect this machine as a runner.", { kind: "error" });
+  }
 }
 
 /**
