@@ -202,23 +202,44 @@ function interruptActiveContext(ctx) {
  * fire-and-forget (returns void); Pi summarises older messages and appends a
  * CompactionEntry to the session. We bracket it with external_compaction_status
  * events the server republishes as response.compaction.* SSE, so the web UI's
- * "Compacting conversation…" spinner tracks Pi's real progress: in_progress on
- * submit, then completed/failed from Pi's onComplete/onError callbacks.
+ * "Compacting conversation…" spinner tracks Pi's real progress.
  *
- * Returns true once compaction was submitted: in_progress has been posted and a
- * completed/failed edge will follow from Pi's callbacks. Returns false in two
- * cases, neither of which strands the spinner:
- *   - No resident context (ctx missing or ctx.compact not a function): we return
- *     early WITHOUT posting in_progress, so no spinner is ever raised (the web
- *     spinner is created only by the response.compaction.in_progress SSE).
- *   - ctx.compact() threw synchronously: we posted in_progress, so the catch
- *     posts failed here to dismiss the spinner before returning.
- * The caller (the inbox poller) discards this boolean — spinner bracketing is
- * entirely self-contained here, so it must never depend on the caller cleaning
- * up. Keep it that way if an optimistic on-click spinner is ever added upstream.
+ * The server raises the spinner on the in_progress SSE and dismisses it on
+ * completed/failed, so a completed/failed that reaches the server before
+ * in_progress strands the spinner. ctx.compact() may invoke its callbacks
+ * synchronously, so in_progress is AWAITED before the call: the server then
+ * holds the spinner-raising edge before any terminal edge can post.
+ *
+ * Async and self-contained: the poller discards the returned promise, so every
+ * edge is published here, never by the caller. Three outcomes:
+ *   - No resident compaction API (ctx missing or ctx.compact not a function):
+ *     post a visible error item so a user's /compact does not silently vanish
+ *     (the runner already returned 200, so the server runs no fallback), post
+ *     no spinner edge, return false.
+ *   - ctx.compact() threw synchronously: in_progress was already posted, so the
+ *     catch posts failed to dismiss the spinner, return false.
+ *   - Submitted: in_progress posted and awaited; completed/failed follows from
+ *     Pi's onComplete/onError, return true.
  */
-function triggerCompaction(config, ctx, customInstructions) {
-  if (!ctx || typeof ctx.compact !== "function") return false;
+async function triggerCompaction(config, ctx, customInstructions) {
+  if (!ctx || typeof ctx.compact !== "function") {
+    await postEvent(config, {
+      type: "external_conversation_item",
+      data: {
+        response_id: `pi-compact-unavailable-${Date.now()}`,
+        item_type: "error",
+        item_data: {
+          source: "execution",
+          code: "pi_compact_unavailable",
+          message:
+            "Omnigent: /compact is unavailable for this Pi session. The " +
+            "resident Pi context exposes no compaction API, so the model or " +
+            "Pi version may not support it.",
+        },
+      },
+    });
+    return false;
+  }
   const options = {
     onComplete: () => {
       postEvent(config, {
@@ -237,17 +258,14 @@ function triggerCompaction(config, ctx, customInstructions) {
     options.customInstructions = customInstructions;
   }
   try {
-    // Raise the spinner first: ctx.compact() is fire-and-forget, so the
-    // in_progress edge must precede it to bracket the async work. If compact()
-    // throws synchronously the catch publishes failed to dismiss the spinner.
-    postEvent(config, {
+    await postEvent(config, {
       type: "external_compaction_status",
       data: { status: "in_progress" },
     });
     ctx.compact(options);
     return true;
   } catch (_err) {
-    postEvent(config, {
+    await postEvent(config, {
       type: "external_compaction_status",
       data: { status: "failed" },
     });
@@ -359,15 +377,12 @@ function startInboxPoller(pi, config, handleInterrupt, handleCompact) {
         if (typeof handleInterrupt === "function") handleInterrupt();
       }
       if (payload.type === "compact") {
-        // A compact request is point-in-time like an interrupt: make one
-        // delivery attempt against the resident context, then always consume
-        // the file (below). handleCompact owns all compaction-edge publishing
-        // (triggerCompaction posts in_progress only after it has a context to
-        // compact, then completed/failed from Pi's callbacks), so the web UI
-        // spinner is never stranded and there is nothing to retry — leaving the
-        // file would re-trigger compaction every tick. The return value is
-        // intentionally discarded: a missing resident context posts no edge and
-        // raises no spinner, so there is nothing for the poller to clean up.
+        // Point-in-time like an interrupt: one delivery attempt against the
+        // resident context, then always consume the file (below) — leaving it
+        // would re-trigger compaction every tick. handleCompact owns every
+        // status edge and the unavailable-context error item, so its returned
+        // promise is intentionally discarded: there is nothing for the poller
+        // to retry or clean up.
         if (typeof handleCompact === "function") {
           handleCompact(
             typeof payload.custom_instructions === "string"

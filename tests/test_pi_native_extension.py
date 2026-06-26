@@ -568,19 +568,125 @@ const ctx = {
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_compact_payload_without_ctx_compact_posts_no_status_and_consumes_file(
+def test_compact_in_progress_reaches_server_before_completed_when_slow(
     tmp_path: Path,
 ) -> None:
-    """A ``compact`` payload with no compactable context strands nothing.
+    """The server receives ``in_progress`` before ``completed`` even if it stalls.
+
+    ``ctx.compact()`` is fire-and-forget and may invoke ``onComplete``
+    synchronously. The web spinner is raised by the ``in_progress`` SSE and
+    dismissed by ``completed``/``failed``, so a ``completed`` that overtakes a
+    slow ``in_progress`` POST would strand the spinner. This pins the fix:
+    ``triggerCompaction`` AWAITS the ``in_progress`` POST before calling
+    ``ctx.compact()``. The mock fetch records each edge on RESOLUTION (server
+    receipt) and delays only ``in_progress``, with ``onComplete`` firing
+    synchronously — so without the await the server would see
+    ``[completed, in_progress]``. Asserts the server saw ``[in_progress,
+    completed]``.
+    """
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the pi-native extension e2e test")
+
+    script = r"""
+const assert = require("assert").strict;
+const fs = require("fs");
+const path = require("path");
+
+const extensionPath = process.argv[1];
+const tmpDir = process.argv[2];
+const inboxDir = path.join(tmpDir, "inbox");
+const payloadPath = path.join(inboxDir, "000-compact.json");
+const configPath = path.join(tmpDir, "config.json");
+
+fs.mkdirSync(inboxDir, { recursive: true });
+fs.writeFileSync(payloadPath, JSON.stringify({ id: "compact-1", type: "compact" }));
+fs.writeFileSync(
+  configPath,
+  JSON.stringify({ serverUrl: "http://omnigent.test", sessionId: "session-1", inboxDir }),
+);
+
+process.env.OMNIGENT_PI_NATIVE_CONFIG = configPath;
+
+// Record the order the SERVER receives edges (on resolution), and stall only
+// the in_progress POST so a non-awaited completed could overtake it.
+const serverOrder = [];
+global.fetch = async (_url, request) => {
+  const body = JSON.parse(request.body);
+  if (
+    body.type === "external_compaction_status" &&
+    body.data &&
+    body.data.status === "in_progress"
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  serverOrder.push(body);
+  return { ok: true };
+};
+
+let pollInbox = null;
+global.setInterval = (fn, _ms) => {
+  pollInbox = fn;
+  return { fakeInterval: true };
+};
+
+const handlers = {};
+const pi = {
+  registerCommand() {},
+  on(eventName, handler) { handlers[eventName] = handler; },
+  sendUserMessage() {},
+};
+
+require(extensionPath)(pi);
+
+const ctx = {
+  sessionManager: { getSessionId: () => "native-session-1" },
+  ui: { setTitle() {}, setStatus() {}, notify() {} },
+  abort() {},
+  isIdle: () => false,
+  compact(options) {
+    // Fire onComplete synchronously: its (immediate) completed POST must not
+    // beat the still-pending slow in_progress POST to the server.
+    if (options && typeof options.onComplete === "function") {
+      options.onComplete({ summary: "done" });
+    }
+  },
+};
+
+(async () => {
+  await handlers.session_start({}, ctx);
+  pollInbox();
+  await new Promise((resolve) => setTimeout(resolve, 120));
+
+  const statuses = serverOrder
+    .filter((event) => event.type === "external_compaction_status")
+    .map((event) => event.data && event.data.status);
+  assert.deepEqual(statuses, ["in_progress", "completed"], JSON.stringify(serverOrder));
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"""
+
+    result = _run_node(script, str(_extension_path()), str(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_compact_payload_without_ctx_compact_surfaces_error_and_consumes_file(
+    tmp_path: Path,
+) -> None:
+    """A ``compact`` payload with no compactable context surfaces a visible error.
 
     Runs the real JavaScript extension under Node with a resident context that
     exposes no ``compact`` function (e.g. an older Pi without the extension
-    compaction API). ``triggerCompaction`` returns early WITHOUT posting an
-    ``in_progress`` edge, so the web UI spinner — created only by the
-    ``response.compaction.in_progress`` SSE — is never raised and cannot strand.
-    This pins the safety property the review relies on: zero
-    ``external_compaction_status`` events, no throw, and the payload file is still
-    consumed (unlinked) so the poller does not re-read it forever.
+    compaction API, or a model that cannot compact). The runner already returned
+    200, so the server runs no AP-side fallback — if the extension stayed silent
+    the user's /compact would vanish with no feedback. ``triggerCompaction`` must
+    instead post a visible ``external_conversation_item`` error
+    (``pi_compact_unavailable``) and raise NO spinner edge (zero
+    ``external_compaction_status`` events, so the web spinner created only by the
+    ``response.compaction.in_progress`` SSE never appears and cannot strand). The
+    payload file is still consumed (unlinked) so the poller does not re-read it.
     """
     node = shutil.which("node")
     if node is None:
@@ -667,6 +773,20 @@ const ctx = {
   // No spinner is ever raised: zero compaction-status edges (most importantly
   // no in_progress), so nothing can strand.
   assert.deepEqual(compactionStatuses, [], JSON.stringify(postedEvents));
+
+  // The failure is surfaced as a visible conversation error item rather than
+  // silently swallowed, so the user knows /compact did nothing.
+  const unavailable = postedEvents.find(
+    (event) =>
+      event.type === "external_conversation_item" &&
+      event.data &&
+      event.data.item_type === "error" &&
+      event.data.item_data &&
+      event.data.item_data.code === "pi_compact_unavailable",
+  );
+  assert.ok(unavailable, JSON.stringify(postedEvents));
+  assert.equal(unavailable.data.item_data.source, "execution");
+  assert.match(unavailable.data.response_id, /^pi-compact-unavailable-/);
 
   // The payload file is still consumed so the poller does not re-read it.
   assert.equal(fs.existsSync(payloadPath), false);
