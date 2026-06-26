@@ -8,15 +8,15 @@ and the secret store (forced to the file backend via
 shape, not just the command's exit code, so a regression in the
 add/set-default/remove write paths surfaces here rather than silently.
 
-``configure harnesses`` is a **three-level** picker. Level 1 picks a harness —
-the cursor moves between ``1=Claude``, ``2=Codex``, ``3=Cursor``,
-``4=OpenCode``, ``5=Hermes``, ``6=Pi``, ``7=More harnesses…``, and
-``8=Quit`` (each
-harness's prominent default + ``+N more`` summary renders as non-selectable
-sub-lines that are skipped; a harness with no usable default — uninstalled or
-unconfigured — shows a red ✗, while a configured one carries no name-level
-marker). Selecting a
-harness drills into level 2 — its configured credentials, then ``+ Add a
+``configure harnesses`` is a **three-level** picker. Level 1 shows every
+harness on a single compact row — the name on the left, a right-aligned
+``✓``/``✗`` status on the right — in 0.3 priority order: ``1=Claude``,
+``2=Codex``, ``3=Cursor``, ``4=OpenCode``, ``5=Hermes``, ``6=Pi``,
+``7=Antigravity``, ``8=Qwen Code``, ``9=Goose``, ``10=Copilot``, ``11=Kiro``,
+``12=Kimi Code``, ``13=Quit``. There is no "More" folding — every harness is
+visible at once — and the actionable hint (install command / next step)
+renders only for the highlighted row, as the selector's description line.
+Selecting a harness drills into level 2 — its configured credentials, then ``+ Add a
 credential`` and ``← Back``. So an empty harness's level 2 is ``1=+Add 2=Back``;
 with one credential it's ``1=<credential> 2=+Add 3=Back``. Selecting a
 credential opens level 3 — ``Make default`` (only when not already the
@@ -1495,14 +1495,13 @@ def test_configure_harnesses_add_databricks_under_codex_scopes_to_codex(
 
 
 def test_uninstalled_harness_shows_x_and_not_installed(isolated_config, monkeypatch) -> None:
-    """A harness whose CLI isn't installed renders ✗ + a 'not installed yet' line.
+    """A harness whose CLI isn't installed renders a red ✗ "Not installed" status.
 
-    Overrides the installed-by-default fixture. The level-1 overview must mark
-    the harness with ✗ (not ✓) and a sub-line flagging it as not installed —
-    the first rung of the installed? → credential? → show-credential descent.
-    The exact ``npm install`` command lives on drill-in
-    (``_prompt_install_harness``), not the overview, so the hint parallels "no
-    credential yet — open to add one" and stays short enough not to wrap.
+    Overrides the installed-by-default fixture. The level-1 overview folds the
+    readiness into the row's right-aligned status: an absent CLI reads
+    ``✗ Not installed`` inline (the exact install command is the selection-only
+    description, surfaced when the row is highlighted, not in the always-visible
+    row).
     """
     monkeypatch.setattr(
         "omnigent.onboarding.harness_install.harness_cli_installed", lambda family: False
@@ -1511,7 +1510,7 @@ def test_uninstalled_harness_shows_x_and_not_installed(isolated_config, monkeypa
     assert result.exit_code == 0, result.output
     out = result.output
     assert "✗" in out
-    assert "not installed yet — open to install" in out
+    assert "Not installed" in out
 
 
 def test_overview_marks_unconfigured_with_x_and_configured_without_checkmark(
@@ -1548,84 +1547,90 @@ def test_overview_marks_unconfigured_with_x_and_configured_without_checkmark(
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="q\n")
     assert result.exit_code == 0, result.output
     out = result.output
-    # Configured Claude: NO name-level checkmark (the old "✓ Claude" is gone)…
+    # Configured Claude: the green ✓ rides the right-aligned status, not the
+    # name — so "✓ Claude" never appears, but the credential's "✓ …" does.
     assert "✓ Claude" not in out
-    # …but the summary default line still carries its green ✓ on the credential.
     assert "✓ Anthropic API Key" in out
-    # Unconfigured Codex: red ✗ on the name + the "no credential yet" hint.
-    assert "✗ Codex" in out
-    assert "no credential yet" in out
+    # Unconfigured Codex: the row's status is a red ✗ "No credential".
+    assert "Codex" in out
+    assert "✗ No credential" in out
 
 
-def test_overview_initial_menu_shows_core_harnesses_and_more(isolated_config, monkeypatch) -> None:
-    """The first harness menu shows the 0.3 core set and keeps extras folded."""
-    frames: list[tuple[list[str], list[bool]]] = []
+def _capture_setup_overview(
+    monkeypatch,
+) -> tuple[list[str], list[bool], list[str], bool]:
+    """Render the level-1 setup overview once and capture the menu it builds.
 
-    def _capture_select(
-        title: str,
-        options: list[str],
-        *,
-        selectable: list[bool] | None = None,
-        clear_on_exit: bool = False,
-    ) -> int:
-        assert title == "Configure harnesses"
-        assert selectable is not None
-        frames.append((options, selectable))
-        return -1
-
-    monkeypatch.setattr("omnigent.onboarding.interactive.select", _capture_select)
-
-    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"])
-    assert result.exit_code == 0, result.output
-    assert len(frames) == 1
-    options, selectable = frames[0]
-    visible_rows = [
-        option.replace("[red]✗[/] ", "").strip()
-        for option, is_selectable in zip(options, selectable, strict=True)
-        if is_selectable
-    ]
-    assert visible_rows == [
-        "Claude",
-        "Codex",
-        "Cursor",
-        "OpenCode",
-        "Hermes",
-        "Pi",
-        "More harnesses…",
-        "Quit",
-    ]
-
-
-def test_overview_more_reveals_additional_harnesses(isolated_config, monkeypatch) -> None:
-    """Selecting More expands the less-supported harness rows in-place."""
-    frames: list[tuple[list[str], list[bool]]] = []
+    Monkeypatches the shared ``select`` so the picker records the rows it would
+    draw, then returns ``-1`` (Esc) so setup exits after one frame. Returns the
+    captured ``(options, selectable, descriptions, compact)`` — enough to assert
+    the row set, ordering, single-line compactness, and the selection-only
+    install hints without driving a real TTY.
+    """
+    captured: dict[str, object] = {}
 
     def _capture_select(
         title: str,
         options: list[str],
         *,
         selectable: list[bool] | None = None,
+        descriptions: list[str] | None = None,
+        compact: bool = False,
         clear_on_exit: bool = False,
+        **_kwargs: object,
     ) -> int:
         assert title == "Configure harnesses"
         assert selectable is not None
-        frames.append((options, selectable))
-        if len(frames) == 1:
-            return options.index("More harnesses…")
+        assert descriptions is not None
+        captured.update(
+            options=options,
+            selectable=selectable,
+            descriptions=descriptions,
+            compact=compact,
+        )
         return -1
 
     monkeypatch.setattr("omnigent.onboarding.interactive.select", _capture_select)
-
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"])
     assert result.exit_code == 0, result.output
-    assert len(frames) == 2
-    options, selectable = frames[1]
-    visible_rows = [
-        option.replace("[red]✗[/] ", "").strip()
-        for option, is_selectable in zip(options, selectable, strict=True)
-        if is_selectable
-    ]
-    assert visible_rows == [
+    return (
+        captured["options"],  # type: ignore[return-value]
+        captured["selectable"],  # type: ignore[return-value]
+        captured["descriptions"],  # type: ignore[return-value]
+        captured["compact"],  # type: ignore[return-value]
+    )
+
+
+def _overview_row_names(options: list[str], selectable: list[bool]) -> list[str]:
+    """Extract the harness / Quit names from a captured overview frame.
+
+    Each row label is ``"<name><padding>[<color>]<glyph> <status>[/]"``; the
+    name is the text before the 2-space status gutter, recovered after Rich
+    markup is stripped.
+    """
+    import re
+
+    from rich.text import Text
+
+    names: list[str] = []
+    for option, is_selectable in zip(options, selectable, strict=True):
+        if not is_selectable:
+            continue
+        plain = Text.from_markup(option).plain
+        names.append(re.split(r"\s{2,}", plain, maxsplit=1)[0].strip())
+    return names
+
+
+def test_overview_lists_all_harnesses_in_priority_order(isolated_config, monkeypatch) -> None:
+    """The overview shows every harness on one compact row, in 0.3 priority order.
+
+    No "More" folding: all twelve harnesses are visible at once, followed by
+    Quit. A regression that hides a harness, reorders the core six, or
+    reintroduces a collapse row fails here. The menu also opts into the compact
+    (underline-highlight) rendering.
+    """
+    options, selectable, _descriptions, compact = _capture_setup_overview(monkeypatch)
+    assert _overview_row_names(options, selectable) == [
         "Claude",
         "Codex",
         "Cursor",
@@ -1640,34 +1645,50 @@ def test_overview_more_reveals_additional_harnesses(isolated_config, monkeypatch
         "Kimi Code",
         "Quit",
     ]
+    assert compact is True
 
 
-def test_overview_lists_kiro_native_row(isolated_config, monkeypatch) -> None:
-    """Level 1 after More: Kiro appears as an installable native harness row.
+def test_overview_rows_are_single_line(isolated_config, monkeypatch) -> None:
+    """Every overview row is a single selectable line — no skipped sub-lines.
+
+    The compact layout folds each harness's status into its row (right-aligned)
+    instead of a dim sub-line beneath it, so the cursor lands on every rendered
+    row and each row carries a (possibly empty) description. A regression that
+    brings back non-selectable sub-lines fails here.
+    """
+    options, selectable, descriptions, _compact = _capture_setup_overview(monkeypatch)
+    assert all(selectable)
+    assert len(descriptions) == len(options)
+
+
+def test_overview_lists_kiro_row(isolated_config, monkeypatch) -> None:
+    """Kiro is a first-class harness row with its own status + selection hint.
 
     Kiro (``kiro-native``) is a native CLI harness with its own auth
-    (``kiro-cli login``), so — like Goose/Hermes — it belongs in the setup
-    overview once the extended harness list is opened. Absent the CLI it renders
-    a red ✗ plus its curl install hint; installed, it renders ready with the
-    sign-in reminder. A regression that drops the Kiro row fails here.
+    (``kiro-cli login``). Absent the CLI the row reads ``✗ Not installed`` and
+    its selection-only description names the curl installer; installed, it reads
+    ``✓ Installed`` with the sign-in reminder. A regression that drops the Kiro
+    row fails here.
     """
-    # CLI absent → Kiro row + the curl install hint. (The red ✗ marker carries an
-    # ANSI reset between the glyph and the name, so assert on the stable text.)
-    monkeypatch.setattr(
-        "omnigent.onboarding.harness_install.harness_cli_installed",
-        lambda family: False,
-    )
-    out = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="7\nq\n").output
-    assert "Kiro" in out
-    assert "cli.kiro.dev/install" in out
+    from rich.text import Text
 
-    # CLI present → ready row naming the sign-in step (no Omnigent credential).
     monkeypatch.setattr(
-        "omnigent.onboarding.harness_install.harness_cli_installed",
-        lambda family: True,
+        "omnigent.onboarding.harness_install.harness_cli_installed", lambda family: False
     )
-    out = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="7\nq\n").output
-    assert "kiro-cli login" in out
+    options, selectable, descriptions, _ = _capture_setup_overview(monkeypatch)
+    names = _overview_row_names(options, selectable)
+    kiro = names.index("Kiro")
+    assert "Not installed" in Text.from_markup(options[kiro]).plain
+    assert "cli.kiro.dev/install" in Text.from_markup(descriptions[kiro]).plain
+
+    monkeypatch.setattr(
+        "omnigent.onboarding.harness_install.harness_cli_installed", lambda family: True
+    )
+    options, selectable, descriptions, _ = _capture_setup_overview(monkeypatch)
+    names = _overview_row_names(options, selectable)
+    kiro = names.index("Kiro")
+    assert "Installed" in Text.from_markup(options[kiro]).plain
+    assert "kiro-cli login" in Text.from_markup(descriptions[kiro]).plain
 
 
 def test_drill_into_uninstalled_installs_then_proceeds(isolated_config, monkeypatch) -> None:
@@ -2221,20 +2242,24 @@ def _cursor_sdk_absent(monkeypatch):
     )
 
 
-def test_cursor_overview_surfaces_install_command_when_sdk_missing(
-    isolated_config, _cursor_sdk_absent
+def test_cursor_overview_install_command_is_selection_only(
+    isolated_config, _cursor_sdk_absent, monkeypatch
 ) -> None:
-    """L1 overview: the Cursor row names the extra install command when absent.
+    """With the cursor extra absent, the Cursor row's install command is its description.
 
-    The exact ``pip install "omnigent[cursor]"`` is shown (escaped so the
-    literal brackets render).
+    The exact ``pip install "omnigent[cursor]"`` (brackets included) is the
+    selection-only hint — the selector's per-row description, shown when the row
+    is highlighted — and is NOT baked into the always-visible row label. This is
+    the "tooltip only on selection" behavior.
     """
-    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="q\n")
-    assert result.exit_code == 0, result.output
-    out = result.output
-    assert "not installed — open to install" in out
-    # The literal command (brackets included) reaches the rendered output.
-    assert 'pip install "omnigent[cursor]"' in out
+    from rich.text import Text
+
+    options, selectable, descriptions, _ = _capture_setup_overview(monkeypatch)
+    names = _overview_row_names(options, selectable)
+    cursor = names.index("Cursor")
+    assert 'pip install "omnigent[cursor]"' in Text.from_markup(descriptions[cursor]).plain
+    # The command lives in the description only — never the always-visible row.
+    assert "pip install" not in Text.from_markup(options[cursor]).plain
 
 
 def test_cursor_drillin_offers_install_when_sdk_missing(
@@ -2305,10 +2330,10 @@ def test_cursor_install_now_invokes_runner_without_index(
 
 
 # ── Antigravity Gemini API-key flow ─────────────────────────────────────────
-# Antigravity (Gemini-native, no provider family) drills in after the More row
-# expands the extended harness list and stores its key in the secret store +
-# the ``antigravity:`` config block. API-key-only menu (Set/Replace/Remove);
-# ``isolated_config`` clears ambient GEMINI_API_KEY / ANTIGRAVITY_API_KEY.
+# Antigravity (Gemini-native, no provider family) is row 7 on the overview (it
+# follows Pi) and stores its key in the secret store + the ``antigravity:``
+# config block. API-key-only menu (Set/Replace/Remove); ``isolated_config``
+# clears ambient GEMINI_API_KEY / ANTIGRAVITY_API_KEY.
 
 
 @pytest.fixture()
@@ -2338,9 +2363,9 @@ def test_antigravity_set_api_key_paste_writes_block_and_secret(
     Proves the api-key path: the secret lands in the store (never plaintext in
     config) and the config references it via ``keychain:antigravity``.
     """
-    # L1 7=More → expanded L1 7=Antigravity → antigravity menu 1=Set API key →
+    # L1 7=Antigravity → antigravity menu 1=Set API key →
     # paste key (AIza → no warn) → antigravity menu q=back → L1 q=quit.
-    stdin = "\n".join(["7", "7", "1", "AIza_test_key_123", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "1", "AIza_test_key_123", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2360,9 +2385,9 @@ def test_antigravity_adopt_env_api_key_writes_env_ref(
     at the live environment variable so the key never leaves the user's shell.
     """
     monkeypatch.setenv("GEMINI_API_KEY", "AIza_env_key_456")
-    # L1 7=More → expanded L1 7=Antigravity → 1=Set API key →
+    # L1 7=Antigravity → 1=Set API key →
     # "y" adopt detected $GEMINI_API_KEY → q back → q quit.
-    stdin = "\n".join(["7", "7", "1", "y", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "1", "y", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2381,9 +2406,9 @@ def test_antigravity_remove_api_key_drops_block_and_secret(
     with open(config_path, "w") as f:
         yaml.safe_dump({"antigravity": {"api_key_ref": "keychain:antigravity"}}, f)
 
-    # L1 7=More → expanded L1 7=Antigravity → antigravity menu (key set:
+    # L1 7=Antigravity → antigravity menu (key set:
     # 1=Replace 2=Remove 3=Back) → 2=Remove → q back → q quit.
-    stdin = "\n".join(["7", "7", "2", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "2", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2408,9 +2433,9 @@ def test_antigravity_remove_does_not_delete_foreign_keychain_secret(
     with open(config_path, "w") as f:
         yaml.safe_dump({"antigravity": {"api_key_ref": "keychain:shared-gemini"}}, f)
 
-    # L1 7=More → expanded L1 7=Antigravity → antigravity menu 2=Remove →
+    # L1 7=Antigravity → antigravity menu 2=Remove →
     # q back → q quit.
-    stdin = "\n".join(["7", "7", "2", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "2", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2428,9 +2453,9 @@ def test_antigravity_set_api_key_non_aiza_declined_is_not_stored(
     The soft prefix check warns and asks to store anyway; declining must leave
     both the secret store and the config untouched.
     """
-    # L1 7=More → expanded L1 7=Antigravity → 1=Set API key →
+    # L1 7=Antigravity → 1=Set API key →
     # paste non-AIza key → "n" decline warning → q back → q quit.
-    stdin = "\n".join(["7", "7", "1", "sk-not-a-gemini-key", "n", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "1", "sk-not-a-gemini-key", "n", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2461,20 +2486,24 @@ def _antigravity_sdk_absent(monkeypatch):
     )
 
 
-def test_antigravity_overview_surfaces_install_command_when_sdk_missing(
-    isolated_config, _antigravity_sdk_absent
+def test_antigravity_overview_install_command_is_selection_only(
+    isolated_config, _antigravity_sdk_absent, monkeypatch
 ) -> None:
-    """L1 overview: the Antigravity row names the extra install command when absent.
+    """With the antigravity extra absent, the Antigravity row's install command is its description.
 
-    The exact ``pip install "omnigent[antigravity]"`` is shown (escaped so the literal
-    brackets render). Without the SDK-detection branch this line never appears.
+    The exact ``pip install "omnigent[antigravity]"`` (brackets included) is the
+    selection-only hint — the selector's per-row description — not baked into the
+    always-visible row. Without the SDK-detection branch the hint never appears.
     """
-    result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input="7\nq\n")
-    assert result.exit_code == 0, result.output
-    out = result.output
-    assert "not installed — open to install" in out
-    # The literal command (brackets included) reaches the rendered output.
-    assert 'pip install "omnigent[antigravity]"' in out
+    from rich.text import Text
+
+    options, selectable, descriptions, _ = _capture_setup_overview(monkeypatch)
+    names = _overview_row_names(options, selectable)
+    antigravity = names.index("Antigravity")
+    assert (
+        'pip install "omnigent[antigravity]"' in Text.from_markup(descriptions[antigravity]).plain
+    )
+    assert "pip install" not in Text.from_markup(options[antigravity]).plain
 
 
 def test_antigravity_drillin_offers_install_when_sdk_missing(
@@ -2485,9 +2514,9 @@ def test_antigravity_drillin_offers_install_when_sdk_missing(
     The user picks "show the command" (choice 3), which prints the command and falls
     through to the key menu, then backs out.
     """
-    # L1 7=More → expanded L1 7=Antigravity → install offer 3=show command →
+    # L1 7=Antigravity → install offer 3=show command →
     # key menu q=back → L1 q.
-    stdin = "\n".join(["7", "7", "3", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "3", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
     out = result.output
@@ -2504,9 +2533,9 @@ def test_antigravity_key_settable_when_sdk_missing(
     gate key management on it. The user declines ("set the key anyway" = choice 2),
     then sets the key, which must persist as it does with the SDK present.
     """
-    # L1 7=More → expanded L1 7=Antigravity → install offer 2=set key anyway →
+    # L1 7=Antigravity → install offer 2=set key anyway →
     # key menu 1=Set → paste AIza key → key menu q=back → L1 q=quit.
-    stdin = "\n".join(["7", "7", "2", "1", "AIza_key_no_sdk", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "2", "1", "AIza_key_no_sdk", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 
@@ -2534,9 +2563,9 @@ def test_antigravity_install_now_invokes_runner_without_index(
     monkeypatch.setattr("omnigent.onboarding.antigravity_auth.shutil.which", lambda name: None)
     monkeypatch.setattr("omnigent.onboarding.antigravity_auth.subprocess.run", _run)
 
-    # L1 7=More → expanded L1 7=Antigravity → install offer 1=install now →
+    # L1 7=Antigravity → install offer 1=install now →
     # key menu q=back → L1 q.
-    stdin = "\n".join(["7", "7", "1", "q", "q"]) + "\n"
+    stdin = "\n".join(["7", "1", "q", "q"]) + "\n"
     result = CliRunner().invoke(cli, ["setup", "--no-internal-beta"], input=stdin)
     assert result.exit_code == 0, result.output
 

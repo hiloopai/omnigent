@@ -83,6 +83,7 @@ def _render_menu(
     status: str | None = None,
     max_visible: int | None = None,
     window_start: int = 0,
+    compact: bool = False,
 ) -> str:
     """Render the menu frame to an ANSI string for the termios redraw.
 
@@ -157,9 +158,12 @@ def _render_menu(
             if i + 1 >= len(options) or selectable[i + 1]:
                 render_console.print()
         elif i == selected:
-            # Highlighted choice: bold accent with the ❯ pointer.
+            # Highlighted choice: bold accent with the ❯ pointer. In compact
+            # mode the rows are single-line and dense, so add an underline to
+            # make the highlight unmistakable at a glance.
             last_choice = i
-            render_console.print(Text.from_markup(f"    [bold {ACCENT}]❯  {label}[/]"))
+            sel_style = f"bold underline {ACCENT}" if compact else f"bold {ACCENT}"
+            render_console.print(Text.from_markup(f"    [{sel_style}]❯  {label}[/]"))
         else:
             # Unselected choice: normal weight (readable), aligned under the
             # pointer so the column doesn't shift as the cursor moves.
@@ -301,6 +305,7 @@ def select(
     clear_on_exit: bool = False,
     status: str | None = None,
     max_visible: int | None = None,
+    compact: bool = False,
 ) -> int:
     """Show a theme-picker-styled arrow-key menu and return the choice.
 
@@ -345,6 +350,10 @@ def select(
         is longer, the menu shows a scrolling viewport that follows the
         cursor (with "N more" markers) so a long flat list fits one screen
         instead of overflowing and flickering. ``None`` renders every row.
+        No-op on the numbered fallback.
+    :param compact: When ``True`` (TTY only), underline the highlighted row in
+        addition to the accent pointer. Intended for dense, single-line menus
+        (the setup harness overview) where the pointer alone is easy to miss.
         No-op on the numbered fallback.
     :returns: The chosen zero-based index into *options* (always a
         selectable row), or ``-1`` when the user aborts — Esc / Ctrl-C /
@@ -397,6 +406,7 @@ def select(
             status=status,
             max_visible=max_visible,
             window_start=window_start[0],
+            compact=compact,
         )
         if prev_lines[0] > 0:
             sys.stdout.write(f"\033[{prev_lines[0]}A")
