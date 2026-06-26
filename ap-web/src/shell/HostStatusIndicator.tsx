@@ -50,7 +50,7 @@ function hostDisplay(status: HostStatus, pending: HostControlAction | null): Dis
 
   let statusText: string;
   if (!status.cliInstalled) statusText = "Omnigent CLI not found";
-  else if (stopping) statusText = "Stopping…";
+  else if (stopping) statusText = "Disconnecting…";
   else if (connecting) statusText = "Connecting…";
   else if (status.connected) statusText = "Connected";
   else if (status.error) statusText = status.error;
@@ -58,7 +58,7 @@ function hostDisplay(status: HostStatus, pending: HostControlAction | null): Dis
 
   return {
     tone,
-    hint: stopping ? "stopping…" : connecting ? "connecting…" : null,
+    hint: stopping ? "disconnecting…" : connecting ? "connecting…" : null,
     statusText,
     active: status.connected || status.process === "online",
   };
