@@ -59,12 +59,28 @@ _PASTE_COMMIT_TIMEOUT_S = 5.0
 # detected by the pane settling (no byte changes across consecutive captures).
 # This many stable polls in a row marks the input box ready.
 _SETTLE_STABLE_POLLS = 3
-# On a new session, Hermes initializes its MCP servers (omnigent, policy hook)
-# before the input prompt is active. The first paste can land during this
-# initialization window and be silently dropped. If the needle doesn't appear
-# after the first attempt, we re-settle (giving MCP time to finish loading) and
-# retry once. This budget caps the re-settle on the retry path.
+# On a NEW session, Hermes blocks its prompt_toolkit input loop while it cold-
+# starts the Omnigent MCP server (a heavyweight ``python -m`` subprocess). A
+# paste delivered during that window is silently dropped — the pane can look
+# "settled" (a static banner) even though no widget is capturing keys yet. A
+# dropped first message is doubly bad: it not only loses the turn, it permanently
+# off-by-ones the server's pending-input FIFO (see
+# :mod:`omnigent.runtime.pending_inputs` — the i-th persisted user row drains the
+# i-th queued web message), scrambling EVERY later message's reconciliation.
+#
+# The settle heuristic cannot tell "static banner" from "ready prompt", so we
+# confirm delivery against Hermes' OWN store instead: an accepted turn writes a
+# new ``messages`` row (Hermes flushes a row per agentic step), so a new row
+# appearing is the authoritative "message accepted" signal. If none appears we
+# re-deliver ONCE — safe against double-delivery precisely because the store
+# confirmed nothing landed — and otherwise raise so the turn fails cleanly (its
+# optimistic bubble rolls back) rather than silently desyncing the FIFO.
 _RETRY_SETTLE_S = 10.0
+# How long to wait for Hermes to persist a new ``messages`` row confirming it
+# accepted the injected turn. Generous: assistant rows stream within seconds of
+# acceptance, so a confirmation this slow means the keystrokes were dropped.
+_DELIVERY_CONFIRM_TIMEOUT_S = 12.0
+_DELIVERY_POLL_INTERVAL_S = 0.3
 
 
 def mint_hermes_session_id() -> str:
@@ -591,24 +607,88 @@ def _settle_pane(socket_path: str, tmux_target: str, *, timeout_s: float) -> Non
         previous = current
 
 
-def _paste_and_check_needle(
+def _state_db_path(bridge_dir: Path) -> Path | None:
+    """Resolve the Hermes ``state.db`` this session writes to, for delivery checks.
+
+    Prefers the per-session ``HERMES_HOME`` under *bridge_dir* (created by
+    :func:`write_policy_hook_config` and passed to the TUI as ``HERMES_HOME``),
+    then ``$HERMES_HOME``, then the default ``~/.hermes``. Returns the EXPECTED
+    path even if the file does not exist yet — on a fresh session Hermes creates
+    ``state.db`` lazily, and the delivery check treats a missing DB as
+    ``MAX(id) == 0`` so the first persisted row still registers as new.
+
+    :returns: The state DB path, or ``None`` when no plausible home is known (no
+        per-session home, no ``$HERMES_HOME``, no ``~/.hermes`` dir) — the caller
+        then skips delivery confirmation and falls back to best-effort delivery.
+    """
+    home = bridge_dir / _HERMES_HOME_SUBDIR
+    if home.is_dir():
+        return home / "state.db"
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        return Path(env_home) / "state.db"
+    default_home = Path.home() / ".hermes"
+    if default_home.is_dir():
+        return default_home / "state.db"
+    return None
+
+
+def _max_message_id(db_path: Path) -> int:
+    """Return ``MAX(messages.id)`` in the Hermes ``state.db``, or ``0`` on error.
+
+    A missing file, a not-yet-created ``messages`` table, or a transient
+    mid-checkpoint read error all collapse to ``0`` — the delivery check only
+    needs a monotonically-increasing high-water mark, and a freshly-created
+    session legitimately starts at ``0``.
+    """
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0)
+    except sqlite3.Error:
+        return 0
+    try:
+        row = con.execute("SELECT MAX(id) FROM messages").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except sqlite3.Error:
+        return 0
+    finally:
+        con.close()
+
+
+def _await_new_message(db_path: Path, baseline_id: int, timeout_s: float) -> bool:
+    """Poll until ``MAX(messages.id) > baseline_id`` or *timeout_s* elapses.
+
+    A new ``messages`` row is Hermes' own record that it accepted the injected
+    turn (it flushes a row per agentic step), so this is the authoritative
+    "message landed" signal — far more reliable than scraping the pane. Always
+    checks at least once, even with a zero timeout.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if _max_message_id(db_path) > baseline_id:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_DELIVERY_POLL_INTERVAL_S)
+
+
+def _deliver_once(
     socket_path: str,
     tmux_target: str,
     content: str,
     bridge_dir: Path,
     needle: str,
-) -> bool:
-    """Clear any draft, paste *content*, return True if *needle* appeared in pane.
+    *,
+    settle_timeout_s: float,
+) -> None:
+    """Settle, clear any draft, paste *content*, then submit with a single Enter.
 
-    Clears the input field (C-a + C-k), writes the content to a temp file,
-    and delivers it via ``load-buffer`` / ``paste-buffer -p`` (bracketed-paste
-    markers keep interior newlines as data). If *needle* is non-empty, polls
-    for up to :data:`_PASTE_COMMIT_TIMEOUT_S` seconds for the text to appear.
-
-    :returns: ``True`` when the needle is found, or when there is no needle
-        (blind-submit path — assume committed). ``False`` when a needle was
-        expected but never appeared, indicating the TUI was not ready.
+    Waits for the pane to settle, clears the input (C-a + C-k), delivers
+    *content* via ``load-buffer`` / ``paste-buffer -p`` (bracketed-paste markers
+    keep interior newlines as data), waits until *needle* is visibly committed
+    (so the trailing Enter isn't folded into the paste), then sends one Enter.
     """
+    _settle_pane(socket_path, tmux_target, timeout_s=settle_timeout_s)
+    # Clear any leftover draft: Home (C-a) + kill-to-end (C-k).
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "C-a")
     _run_tmux(socket_path, "send-keys", "-t", tmux_target, "C-k")
     with tempfile.NamedTemporaryFile(
@@ -632,14 +712,17 @@ def _paste_and_check_needle(
     finally:
         with contextlib.suppress(OSError):
             os.unlink(paste_path)
-    if not needle:
-        return True  # no usable needle — assume committed (blind-submit path)
-    deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if needle in _capture_pane(socket_path, tmux_target):
-            return True
-        time.sleep(_POLL_INTERVAL_S)
-    return False
+    # Wait until the paste is visibly committed before Enter. Submitting mid-paste
+    # folds the Enter in as a newline (rapid stdin bursts coalesce), leaving the
+    # message unsent. Poll for the text, then submit; blind-submit if no needle.
+    if needle:
+        deadline = time.monotonic() + _PASTE_COMMIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if needle in _capture_pane(socket_path, tmux_target):
+                break
+            time.sleep(_POLL_INTERVAL_S)
+    time.sleep(_PASTE_SETTLE_S)
+    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
 
 
 def inject_user_message(
@@ -652,20 +735,21 @@ def inject_user_message(
 
     Clears any leftover draft, pastes *content* (multi-line safe via
     ``load-buffer``/``paste-buffer -p`` so interior newlines stay data, not
-    submits), settles, then submits with a *single* Enter. Hermes' prompt_toolkit
-    input submits on Enter, so exactly one Enter is sent — a second would submit
-    an empty turn.
+    submits), settles, then submits with a *single* Enter.
 
-    On new sessions, Hermes initializes its MCP servers before the input prompt
-    is active. If the first paste doesn't commit (needle not visible), we re-settle
-    to give the TUI time to finish loading and retry once — this prevents the first
-    web-UI message from being silently dropped during startup.
+    On a NEW session Hermes blocks input while cold-starting its MCP server, so
+    the first paste can be silently dropped — and a dropped first message
+    permanently off-by-ones the server's pending-input FIFO, scrambling every
+    later turn. To prevent that, when Hermes' ``state.db`` is readable we confirm
+    the turn landed (a new ``messages`` row appears); if it didn't we re-deliver
+    ONCE (safe — the store proved nothing landed, so this can't double-submit) and
+    otherwise raise so the turn fails cleanly instead of desyncing the FIFO.
 
     :param bridge_dir: The hermes-native bridge dir holding ``tmux.json``.
     :param content: User text (non-empty).
     :param timeout_s: Per-readiness-gate timeout.
-    :raises RuntimeError: If the tmux target is never advertised or a tmux
-        command fails.
+    :raises RuntimeError: If the tmux target is never advertised, a tmux command
+        fails, or Hermes never confirms acceptance of the message.
     """
     if not content:
         raise RuntimeError("hermes-native injection requires non-empty content")
@@ -678,21 +762,34 @@ def inject_user_message(
         raise RuntimeError(
             "hermes terminal is no longer running (the TUI exited); restart the session"
         )
-    _settle_pane(socket_path, tmux_target, timeout_s=timeout_s)
     needle = _submit_needle(content)
-    # Wait until the paste is visibly committed before Enter. Submitting mid-paste
-    # folds the Enter in as a newline (rapid stdin bursts coalesce), leaving the
-    # message unsent. Poll for the text, then submit; blind-submit if no needle.
-    committed = _paste_and_check_needle(socket_path, tmux_target, content, bridge_dir, needle)
-    if not committed:
-        # The paste did not commit — the TUI was likely still initializing when
-        # we first attempted (e.g., MCP server startup on a fresh session). Re-
-        # settle to let the TUI finish loading, then retry once so the first
-        # web-UI message is not silently dropped on new sessions.
-        _settle_pane(socket_path, tmux_target, timeout_s=_RETRY_SETTLE_S)
-        _paste_and_check_needle(socket_path, tmux_target, content, bridge_dir, needle)
-    time.sleep(_PASTE_SETTLE_S)
-    _run_tmux(socket_path, "send-keys", "-t", tmux_target, "Enter")
+    # Snapshot the store high-water mark BEFORE delivery so a new row afterwards
+    # is unambiguous proof Hermes accepted this turn.
+    db_path = _state_db_path(bridge_dir)
+    baseline_id = _max_message_id(db_path) if db_path is not None else None
+
+    _deliver_once(
+        socket_path, tmux_target, content, bridge_dir, needle, settle_timeout_s=timeout_s
+    )
+
+    if db_path is None:
+        # No readable store to confirm against — best-effort single delivery,
+        # preserving prior behavior for setups without a per-session HERMES_HOME.
+        return
+    if _await_new_message(db_path, baseline_id or 0, _DELIVERY_CONFIRM_TIMEOUT_S):
+        return
+    # The first delivery did not land (the TUI was still initializing). Re-deliver
+    # once — the store confirmed no row was written, so there is no double-submit
+    # risk — giving the pane a longer settle to let MCP startup finish.
+    _deliver_once(
+        socket_path, tmux_target, content, bridge_dir, needle, settle_timeout_s=_RETRY_SETTLE_S
+    )
+    if _await_new_message(db_path, baseline_id or 0, _DELIVERY_CONFIRM_TIMEOUT_S):
+        return
+    raise RuntimeError(
+        "hermes did not accept the message (the TUI may still be initializing); "
+        "no new transcript row appeared after two delivery attempts"
+    )
 
 
 def inject_interrupt(bridge_dir: Path, *, timeout_s: float = _TMUX_READY_TIMEOUT_S) -> None:
