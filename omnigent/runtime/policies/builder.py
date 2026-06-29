@@ -114,6 +114,25 @@ def _needs_subtree_usage(specs: list[PolicySpec]) -> bool:
     )
 
 
+def _normalize_usage_for_engine(usage: dict[str, float]) -> dict[str, float]:
+    """
+    Normalize a usage dict for injection into the policy engine.
+
+    Removes display-only fields (``by_model``) and converts the
+    enforcement-cost field (``policy_cost_usd``) to the engine's
+    canonical ``total_cost_usd`` key. Both operations are idempotent:
+    if a field is absent, the operation is a no-op.
+
+    :param usage: The usage dict to normalize (modified in-place).
+    :returns: The normalized dict (same object, for chaining).
+    """
+    usage.pop("by_model", None)
+    policy_cost = usage.pop("policy_cost_usd", None)
+    if policy_cost is not None:
+        usage["total_cost_usd"] = policy_cost
+    return usage
+
+
 def _subtree_usage_seed(
     conversation_id: str,
     conversation_store: ConversationStore,
@@ -133,13 +152,7 @@ def _subtree_usage_seed(
         ``total_cost_usd`` is the enforcement total.
     """
     usage = load_session_usage(conversation_id, conversation_store)
-    # ``by_model`` is a display-only breakdown; drop it so the engine's
-    # subtree usage context carries only the flat numeric counters.
-    usage.pop("by_model", None)
-    policy_cost = usage.pop("policy_cost_usd", None)
-    if policy_cost is not None:
-        usage["total_cost_usd"] = policy_cost
-    return usage
+    return _normalize_usage_for_engine(usage)
 
 
 def _resolve_session_owner_cached(
@@ -824,13 +837,7 @@ def _policy_usage_seed(
     if conv is None:
         return {}
     usage = load_session_usage(conv.root_conversation_id, conversation_store)
-    # ``by_model`` is a display-only breakdown; drop it so the engine's usage
-    # context carries only the flat numeric counters the gate reads.
-    usage.pop("by_model", None)
-    policy_cost = usage.pop("policy_cost_usd", None)
-    if policy_cost is not None:
-        usage["total_cost_usd"] = policy_cost
-    return usage
+    return _normalize_usage_for_engine(usage)
 
 
 def _load_tree_conversations(

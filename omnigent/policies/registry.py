@@ -121,6 +121,7 @@ def load_registry(
                 name=name,
                 description=raw.get("description", ""),
                 params_schema=raw.get("params_schema"),
+                internal_only=raw.get("internal_only", False),
             )
             _registry.append(entry)
             _registry_by_handler[entry.handler] = entry
