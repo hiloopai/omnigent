@@ -87,6 +87,7 @@ def mock_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda provider: _FAKE_CATALOG.get(provider, {}),
     )
 
+
 # ── get_all_providers ──────────────────────────────────────
 
 
