@@ -73,6 +73,7 @@ from typing import Any
 
 from omnigent.policies.schema import (
     SESSION_COST_ASK_APPROVED_STATE_KEY,
+    SESSION_COST_UNPRICED_APPROVED_KEY,
     USER_DAILY_ASK_APPROVED_STATE_KEY,
     PolicyCallable,
     PolicyEvent,
@@ -81,17 +82,32 @@ from omnigent.policies.schema import (
 
 _ALLOW: PolicyResponse = {"result": "ALLOW"}
 
-# DENY response emitted when the session has consumed tokens on a model with
-# no catalog pricing. The gate cannot enforce a budget it cannot measure, so
-# it fails CLOSED rather than silently treating unknown spend as $0.
-_UNPRICED_DENY: PolicyResponse = {
-    "result": "DENY",
+# session_state key recording that the user has acknowledged and approved
+# continuing a session whose active model has no catalog pricing. Routed to
+# the ROOT conversation (like SESSION_COST_ASK_APPROVED_STATE_KEY) so a
+# single approval on the parent covers the whole spawn tree.
+_UNPRICED_APPROVED_KEY = SESSION_COST_UNPRICED_APPROVED_KEY
+
+# ASK response emitted when the session has consumed tokens on a model with
+# no catalog pricing and the user has not yet acknowledged it. The gate
+# cannot enforce a budget it cannot measure — asking rather than denying lets
+# the operator or user make an informed choice, while still preventing silent
+# pass-through at $0.
+_UNPRICED_ASK: PolicyResponse = {
+    "result": "ASK",
     "reason": (
-        "Blocked by the cost-budget policy: the active model has no catalog "
-        "pricing so cumulative spend cannot be measured. Switch to a priced "
-        "model to continue, or ask an administrator to add this model to the "
-        "pricing catalog."
+        "The active model has no catalog pricing so cumulative spend cannot be "
+        "tracked. Continuing will allow untracked spend that counts against "
+        "neither the cap nor the warning thresholds. Switch to a priced model "
+        "to restore budget enforcement, or approve to continue without it."
     ),
+    "state_updates": [
+        {
+            "key": _UNPRICED_APPROVED_KEY,
+            "action": "set",
+            "value": True,
+        }
+    ],
 }
 
 
@@ -483,7 +499,9 @@ def cost_budget(
             return _ALLOW
         context = event.get("context") or {}
         if _usage_is_unpriced(context.get("usage") or {}):
-            return _UNPRICED_DENY
+            if not (event.get("session_state") or {}).get(_UNPRICED_APPROVED_KEY):
+                return _UNPRICED_ASK
+            return _ALLOW
         cost = _session_cost_usd(event)
         if cfg.hard_cap_enabled and cost >= max_cost_usd:
             if _model_blocked_over_budget(
@@ -656,7 +674,9 @@ def user_daily_cost_budget(
             return _ALLOW
         context = event.get("context") or {}
         if _usage_is_unpriced(context.get("usage") or {}):
-            return _UNPRICED_DENY
+            if not (event.get("session_state") or {}).get(_UNPRICED_APPROVED_KEY):
+                return _UNPRICED_ASK
+            return _ALLOW
         cost = _user_daily_cost_usd(event)
         owner = _user_daily_owner(event)
         if cfg.hard_cap_enabled and cost >= max_cost_usd:
@@ -798,7 +818,9 @@ def subagent_cost_budget(
             return _ALLOW
         context = event.get("context") or {}
         if _usage_is_unpriced(context.get("subtree_usage") or {}):
-            return _UNPRICED_DENY
+            if not (event.get("session_state") or {}).get(_UNPRICED_APPROVED_KEY):
+                return _UNPRICED_ASK
+            return _ALLOW
         cost = _subtree_cost_usd(event)
         # Check hard limit if max_cost_usd is set.
         if max_cost_usd is not None and cfg.hard_cap_enabled and cost >= max_cost_usd:
