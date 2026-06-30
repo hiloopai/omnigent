@@ -193,6 +193,34 @@ def test_switch_agent_in_place_carries_history(
     )
     assert body_2["status"] == "completed", f"recall turn failed: {body_2.get('error')}"
     text = final_assistant_text(body_2).upper()
+
+    # TEMP DIAGNOSTIC (remove before merge): dump every request the mock saw
+    # so we can see the recall call's model + whether the recall token made
+    # it into the user input, and how many calls hit the target.
+    if using_mock_llm:
+        captured = httpx.get(f"{mock_llm_server_url}/mock/requests", timeout=10).json()
+        reqs = captured.get("requests", [])
+        print(f"\n=== MOCK REQUESTS ({len(reqs)}) marker={marker} token={recall_token} ===")
+        for _i, _r in enumerate(reqs):
+            _model = _r.get("model") if isinstance(_r, dict) else None
+            _ut: list[str] = []
+            for _k in ("input", "messages"):
+                for _it in (_r.get(_k) or []) if isinstance(_r, dict) else []:
+                    if isinstance(_it, dict) and _it.get("role") == "user":
+                        _c = _it.get("content")
+                        if isinstance(_c, str):
+                            _ut.append(_c)
+                        elif isinstance(_c, list):
+                            _ut.extend(
+                                str(_b.get("text", "")) for _b in _c if isinstance(_b, dict)
+                            )
+            _joined = " ".join(_ut)
+            print(
+                f"[{_i}] model={_model!r} top_keys={sorted(_r.keys()) if isinstance(_r, dict) else _r} "
+                f"has_token={recall_token in _joined} has_marker={marker in _joined} "
+                f"user={_joined[:240]!r}"
+            )
+
     assert marker in text, (
         f"switched agent did not recall {marker!r} (got {text!r}) — the prior "
         "transcript was not carried into the new agent on switch"
