@@ -12678,7 +12678,11 @@ async def _handle_advise_models_mcp(
     caps = get_caps()
     routing_client = caps.routing_client
     if routing_client is None:
-        return _mcp_tool_result(rpc_id, json.dumps({"router_on": False, "recommendations": []}))
+        return _mcp_tool_result(
+            rpc_id,
+            "Intelligent model routing is not configured on this server. "
+            "Proceed with sys_session_send using your own model judgment.",
+        )
 
     from omnigent.model_catalog import spec_harness
     from omnigent.server.smart_routing import infer_tiers
