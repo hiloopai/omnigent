@@ -260,6 +260,8 @@ class PolicyEngine:
                 "policy.read_only": read_only,
             },
         ) as evaluate_span:
+            if self._conversation_id:
+                evaluate_span.set_attribute("session.id", self._conversation_id)
             # The content under evaluation (tool args / prompt) is recorded
             # only when content capture is on (redacted + capped).
             telemetry.record_message_payload(

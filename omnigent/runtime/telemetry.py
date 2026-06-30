@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -83,6 +84,23 @@ def should_capture_content() -> bool:
     :returns: ``True`` when content capture is enabled.
     """
     return _capture_content
+
+
+def telemetry_enabled() -> bool:
+    """
+    Return whether telemetry is enabled for this process.
+
+    Master opt-in controlled by ``OMNIGENT_TELEMETRY_ENABLED`` (off by
+    default). When it is unset/false, :func:`init` is a no-op and every
+    instrumentor and manual-span helper short-circuits — a default
+    install installs no instrumentation, creates no spans, and emits no
+    telemetry, so users who never opt in pay nothing. Read directly from
+    the environment (not cached) so it is correct no matter the order in
+    which instrumentation entry points run relative to :func:`init`.
+
+    :returns: ``True`` when ``OMNIGENT_TELEMETRY_ENABLED`` is truthy.
+    """
+    return _env_bool("OMNIGENT_TELEMETRY_ENABLED")
 
 
 # Max characters of a serialized payload to attach to a span. Bodies can be
@@ -194,10 +212,46 @@ def _fastapi_instrumentation_enabled() -> bool:
 
     :returns: ``True`` if FastAPI instrumentation should be installed.
     """
+    if not telemetry_enabled():
+        return False
     explicit = os.environ.get("OMNIGENT_OTEL_FASTAPI_INSTRUMENTATION")
     if explicit is not None:
         return explicit.strip().lower() in ("true", "1", "yes")
     return bool(os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip())
+
+
+# Session id as it appears in a request path: ``/v1/sessions/<conv_…>/...``
+# (runner-internal conversations use the ``agy_conv_`` prefix). Used to stamp
+# ``session.id`` onto the auto-created FastAPI server span.
+_SESSION_ID_IN_PATH = re.compile(r"/sessions/((?:agy_)?conv_[0-9a-f]+)")
+
+
+def _fastapi_session_id_hook(span: Any, scope: Mapping[str, Any]) -> None:
+    """
+    FastAPI server-request hook: stamp ``session.id`` from the request path.
+
+    Runs on every server span ``FastAPIInstrumentor`` creates. When the path
+    is a session-scoped route it tags the span with the Omnigent session
+    (conversation) id, so server and runner request spans — POST ``/events``,
+    the SSE stream, and the tunneled server→runner hops — share the
+    ``session.id`` grouping key. This is also what links the *decoupled* JSONL
+    forwarder (which re-POSTs into ``/events`` under its own trace) back to a
+    session: its server-side span carries the id even though it cannot share
+    the originating request's trace context.
+
+    Best-effort and defensive — telemetry must never break request handling.
+
+    :param span: The server span started by ``FastAPIInstrumentor``.
+    :param scope: The ASGI connection scope; ``scope["path"]`` is the route.
+    """
+    try:
+        if span is None or not span.is_recording():
+            return
+        match = _SESSION_ID_IN_PATH.search(scope.get("path") or "")
+        if match:
+            span.set_attribute("session.id", match.group(1))
+    except Exception:  # pragma: no cover - telemetry must never break requests
+        pass
 
 
 def instrument_fastapi_app(app: FastAPI) -> None:
@@ -217,7 +271,7 @@ def instrument_fastapi_app(app: FastAPI) -> None:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-        FastAPIInstrumentor.instrument_app(app)
+        FastAPIInstrumentor.instrument_app(app, server_request_hook=_fastapi_session_id_hook)
     except Exception:
         _logger.exception("failed to initialize FastAPI OpenTelemetry instrumentation")
 
@@ -269,6 +323,8 @@ def instrument_httpx_client(client: Any) -> None:
     :param client: The ``httpx.AsyncClient`` (or sync ``Client``) to
         instrument in place.
     """
+    if not telemetry_enabled():
+        return
     try:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
@@ -294,6 +350,8 @@ def instrument_sqlalchemy_engine(engine: Any) -> None:
     :param engine: The SQLAlchemy :class:`~sqlalchemy.engine.Engine` to
         instrument.
     """
+    if not telemetry_enabled():
+        return
     try:
         from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 
@@ -583,6 +641,11 @@ def consume_frame_span(
         ``{"host.request_id": "req_1"}``.
     :returns: A context manager yielding the started span.
     """
+    if not telemetry_enabled():
+        from opentelemetry.trace import INVALID_SPAN
+
+        yield INVALID_SPAN
+        return
     from opentelemetry import trace as otel_trace
 
     parent = extract_trace_context(carrier)
@@ -621,6 +684,11 @@ def span(
     :param attributes: Optional span attributes to set at start.
     :returns: A context manager yielding the started span.
     """
+    if not telemetry_enabled():
+        from opentelemetry.trace import INVALID_SPAN
+
+        yield INVALID_SPAN
+        return
     from opentelemetry import trace as otel_trace
 
     tracer = otel_trace.get_tracer("omnigent")
@@ -889,6 +957,12 @@ def init(service_name: str | None = None) -> None:
     """
     Initialize OpenTelemetry tracing for the omnigent runtime.
 
+    Gated by the ``OMNIGENT_TELEMETRY_ENABLED`` master opt-in (off by
+    default): when it is unset/false this is a no-op — no provider is
+    installed, no instrumentation is wired, and no spans are created, so
+    a default install incurs zero telemetry cost. Set it truthy to opt
+    in; ``OTEL_EXPORTER_OTLP_ENDPOINT`` then selects the export target.
+
     Safe to call multiple times; the second and subsequent calls
     refresh the content-capture flag but do not re-register providers.
 
@@ -915,6 +989,12 @@ def init(service_name: str | None = None) -> None:
       default OTel no-op provider discards spans silently.
     """
     global _capture_content, _initialized
+
+    if not telemetry_enabled():
+        # Master opt-in off (the default): stay fully inert — no provider, no
+        # OTEL_SERVICE_NAME mutation, no httpx/metrics/logs instrumentation, no
+        # spans. Only operators who set OMNIGENT_TELEMETRY_ENABLED pay any cost.
+        return
 
     _capture_content = _env_bool("OMNIGENT_OTEL_CAPTURE_CONTENT")
 

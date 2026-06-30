@@ -33,6 +33,18 @@ _RESP_ID = f"resp_{_RESP_HEX}"
 # ── Fixtures ────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _opt_in_telemetry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Telemetry is opt-in (``OMNIGENT_TELEMETRY_ENABLED``, off by default).
+    This module exercises telemetry behavior, so opt in for every test;
+    the opt-out test clears it explicitly.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    monkeypatch.setenv("OMNIGENT_TELEMETRY_ENABLED", "true")
+
+
 @pytest.fixture
 def in_memory_exporter(monkeypatch: pytest.MonkeyPatch) -> Iterator[InMemorySpanExporter]:
     """
@@ -479,6 +491,85 @@ def test_init_respects_capture_content_flag(
     assert telemetry.should_capture_content() is False
 
 
+def test_init_disabled_by_default_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Telemetry is opt-in: with ``OMNIGENT_TELEMETRY_ENABLED`` unset,
+    ``init`` is a no-op even when an OTLP endpoint is configured — no
+    provider is installed, so a default install pays nothing.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    """
+    monkeypatch.delenv("OMNIGENT_TELEMETRY_ENABLED", raising=False)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
+    monkeypatch.setattr(telemetry, "_initialized", False)
+
+    assert telemetry.telemetry_enabled() is False
+    before = otel_trace.get_tracer_provider()
+    telemetry.init()
+    assert otel_trace.get_tracer_provider() is before
+
+
+def test_fastapi_session_id_hook_stamps_session_id(
+    in_memory_exporter: InMemorySpanExporter,
+) -> None:
+    """
+    The FastAPI server-request hook tags the server span with the
+    Omnigent session id parsed from a ``/sessions/<conv_…>/`` path, so
+    every session-scoped request span is findable by session.
+
+    :param in_memory_exporter: In-memory span exporter fixture.
+    """
+    tracer = otel_trace.get_tracer("test")
+    span = tracer.start_span("POST /v1/sessions/{id}/events")
+    telemetry._fastapi_session_id_hook(span, {"path": "/v1/sessions/conv_deadbeef/events"})
+    span.end()
+
+    exported = in_memory_exporter.get_finished_spans()
+    assert exported[-1].attributes is not None
+    assert exported[-1].attributes.get("session.id") == "conv_deadbeef"
+
+
+def test_fastapi_session_id_hook_ignores_non_session_paths(
+    in_memory_exporter: InMemorySpanExporter,
+) -> None:
+    """
+    The hook leaves spans for non-session routes untouched.
+
+    :param in_memory_exporter: In-memory span exporter fixture.
+    """
+    tracer = otel_trace.get_tracer("test")
+    span = tracer.start_span("GET /v1/info")
+    telemetry._fastapi_session_id_hook(span, {"path": "/v1/info"})
+    span.end()
+
+    exported = in_memory_exporter.get_finished_spans()
+    assert "session.id" not in (exported[-1].attributes or {})
+
+
+def test_tracing_context_stamps_session_id_on_agent_span(
+    in_memory_exporter: InMemorySpanExporter,
+) -> None:
+    """
+    Spans created by a session-scoped ``TracingContext`` carry the
+    ``session.id`` attribute, so agent-turn spans — which can root their
+    own trace — stay groupable by session in the backend.
+
+    :param in_memory_exporter: In-memory span exporter fixture.
+    """
+    from omnigent.inner.tracing import TracingContext
+
+    tctx = TracingContext(session_id="conv_abc123")
+    agent_span = tctx.start_agent_span("my-agent", "hello")
+    tctx.end_agent_span(agent_span, response="hi")
+
+    exported = in_memory_exporter.get_finished_spans()
+    agent_spans = [s for s in exported if s.name == "agent:my-agent"]
+    assert agent_spans, "expected an agent span to be exported"
+    assert agent_spans[-1].attributes.get("session.id") == "conv_abc123"
+
+
 def test_init_sets_service_name_from_argument(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -553,7 +644,7 @@ def _stub_fastapi_instrumentor(monkeypatch: pytest.MonkeyPatch) -> list[FastAPI]
     calls: list[FastAPI] = []
     monkeypatch.setattr(
         "opentelemetry.instrumentation.fastapi.FastAPIInstrumentor.instrument_app",
-        lambda app: calls.append(app),
+        lambda app, **kwargs: calls.append(app),
     )
     return calls
 

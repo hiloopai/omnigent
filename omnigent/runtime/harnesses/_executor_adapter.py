@@ -333,7 +333,7 @@ class ExecutorAdapter(HarnessApp):
         # traces by response ID without a mapping table.
         tracing = is_tracing_enabled()
         if tracing and self._tracing_ctx is None:
-            self._tracing_ctx = TracingContext()
+            self._tracing_ctx = TracingContext(session_id=self._session_key)
         tctx = self._tracing_ctx if tracing else None
         agent_span = None
         # Active tool span for correlating ToolCallRequest → ToolCallComplete.

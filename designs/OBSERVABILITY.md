@@ -287,12 +287,31 @@ All standard OpenTelemetry env vars; nothing backend-specific in code.
 
 | Variable | Dev value | Effect |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Enables OTLP export; `init()` auto-flips MLflow OTLP exporter |
+| `OMNIGENT_TELEMETRY_ENABLED` | `true` | **Master opt-in; off by default.** When unset/false, `init()` is a no-op and no instrumentor installs — zero telemetry cost. Required for any row below to take effect. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | Once opted in, enables OTLP export and selects the collector |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` (default) | `grpc` or `http/protobuf` |
 | `OTEL_SERVICE_NAME` | per component | Service identity in Jaeger |
 | `OTEL_TRACES_SAMPLER` | `parentbased_always_on` (dev) | Always sample locally; ratio-based in prod |
 | `OMNIGENT_OTEL_FASTAPI_INSTRUMENTATION` | `true` | Server/runner HTTP spans + extract |
 | `OMNIGENT_OTEL_CAPTURE_CONTENT` | `true` (dev only) | Include payloads on spans; **off in prod** (PII) |
+
+Telemetry is **opt-in**: nothing is instrumented and no spans are created unless
+`OMNIGENT_TELEMETRY_ENABLED` is truthy, so a default install is never burdened with
+telemetry it didn't ask for. Opt in first, then point `OTEL_EXPORTER_OTLP_ENDPOINT` at a
+backend.
+
+**Session correlation (`session.id`).** Every span that originates from a session is
+tagged with the Omnigent session (conversation) id (`conv_…`) under the `session.id`
+attribute: the FastAPI server span (parsed from the `/sessions/<conv_…>/` request path —
+covers REST/SSE on **both** server and runner), the agent/LLM/tool/policy spans (from the
+runner's `TracingContext`), the in-process `policy.evaluate` span, and `terminal.attach`.
+This matters because an agent turn can root **its own** trace (the response-id-seeded
+root) and the response path (the JSONL forwarder → SSE) is **decoupled from any request**,
+so there is no shared request context there. `session.id` is therefore a **cross-trace
+grouping key**: it lets the backend gather every span of a session even when they do not
+share a `trace_id` — which raw W3C propagation alone cannot do across those decoupled
+boundaries. The host control-plane frames carry no session id by design (a daemon control
+action is not part of a user request) and rely on trace propagation to their parent span.
 
 ---
 
@@ -344,7 +363,8 @@ separately, but the instrumentation sites are shared so both can be added togeth
 ### 10.1 Local loop
 
 1. Start Jaeger all-in-one (§3).
-2. `export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`,
+2. `export OMNIGENT_TELEMETRY_ENABLED=true` (master opt-in), then
+   `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317`,
    `OMNIGENT_OTEL_FASTAPI_INSTRUMENTATION=true`, `OMNIGENT_OTEL_CAPTURE_CONTENT=true`.
 3. Start server + host daemon; run a turn from the TUI.
 4. Open `http://localhost:16686`, pick service `omni-tui`, open the trace.
