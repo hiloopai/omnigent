@@ -455,11 +455,14 @@ class ToolManager:
         # Model awareness pairs with the dispatch grant: the per-worker
         # listing exists to pick a valid ``args.model`` for send.
         self._tools[SysListModelsTool.name()] = SysListModelsTool(spec=self._spec)
-        # Advise-models pairs with the dispatch grant. Always registered
-        # when tools.agents is declared — the server's MCP intercept
-        # handles the router_on:false case when routing is off, so the
-        # schema is safe to advertise unconditionally.
-        self._tools[SysAdviseModelsTool.name()] = SysAdviseModelsTool()
+        # Advise-models is registered only when smart routing is enabled
+        # (OMNIGENT_SMART_ROUTING=1). The runner shares the same process
+        # env as the server in embedded mode; in distributed deployments
+        # the env var must be set on both processes.
+        import os
+
+        if os.environ.get("OMNIGENT_SMART_ROUTING") == "1":
+            self._tools[SysAdviseModelsTool.name()] = SysAdviseModelsTool()
 
         # create: spawning OUTSIDE the declared list (existing agents
         # by id, or custom bundles via config_path) requires the
