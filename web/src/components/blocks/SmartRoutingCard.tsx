@@ -10,7 +10,7 @@ import { useMemo } from "react";
 import { CodeBlock, CodeBlockHeader, CodeBlockTitle } from "@/components/ai-elements/code-block";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ModelTierPill } from "@/components/CostRoutingControl";
+import { shortModelName } from "@/components/CostRoutingControl";
 import type { ToolState } from "@/lib/renderItems";
 import { cn } from "@/lib/utils";
 import { TOOL_SURFACE_WIDTH_CLASS } from "./toolSurface";
@@ -187,7 +187,9 @@ export function SmartRoutingCard({ arguments: args, output, state }: SmartRoutin
                 )}
                 <span className="ml-auto shrink-0">
                   {rec !== null ? (
-                    <ModelTierPill model={rec.model} tier={rec.tier} />
+                    <span className="inline-flex items-center whitespace-nowrap rounded-full border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium leading-none text-foreground">
+                      {shortModelName(rec.model)}
+                    </span>
                   ) : judging ? (
                     <Shimmer as="span" className="text-xs">
                       {`${ROUTING_VERBS[i % ROUTING_VERBS.length]}…`}

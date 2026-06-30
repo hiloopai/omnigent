@@ -13056,13 +13056,6 @@ async def _handle_mcp_tools_call(
     if spec is None:
         return _mcp_error_response(rpc_id, -32000, f"Agent not found: {conv.agent_id!r}")
 
-    # ── Server-side sys_advise_models intercept ──────────────────────────
-    # The advisor runs server-side (RuntimeCaps.routing_client lives
-    # here); intercept before the runner forward.
-    if namespaced_name in ("sys_advise_models", "mcp__omnigent__sys_advise_models"):
-        return await _handle_advise_models_mcp(rpc_id, conv, arguments, agent_store)
-    # ─────────────────────────────────────────────────────────────────────
-
     # Build the policy engine once — used for both TOOL_CALL (first call
     # only) and TOOL_RESULT (both paths). Engine construction reads
     # session-policy specs and labels from the DB, so keep it off-loop too.
@@ -13233,6 +13226,12 @@ async def _handle_mcp_tools_call(
         # PII-redacted args), use them instead of the originals.
         if call_result.data is not None:
             arguments = call_result.data
+
+    # ── Server-side sys_advise_models intercept ──────────────────────────
+    # After policy evaluation (DENY/ASK handled above); arguments may have
+    # been transformed. The advisor runs server-side where routing_client lives.
+    if namespaced_name in ("sys_advise_models", "mcp__omnigent__sys_advise_models"):
+        return await _handle_advise_models_mcp(rpc_id, conv, arguments, agent_store)
 
     # ── Execute on the runner via WS tunnel ──────────────────────────
     # The runner owns stdio subprocess spawning (correct machine, cwd,
