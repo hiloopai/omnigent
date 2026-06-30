@@ -2619,8 +2619,8 @@ def display_cost_approval_popup(
     checkpoint. The popup script resolves the **same** elicitation Future
     (via the same resolve endpoint the web card uses), so whichever
     surface answers first wins and the other clears. The popup reads AP
-    routing (base URL + auth headers) from this bridge's
-    ``permission_hook.json`` so no token lands on the command line.
+    routing (base URL + auth headers) from *config_file* so no token lands
+    on the command line.
 
     Fire-and-forget by design: ``tmux display-popup`` blocks its tmux
     client until the popup closes, so it is spawned **detached**
@@ -2630,16 +2630,15 @@ def display_cost_approval_popup(
     Claude-native resolver for the harness-agnostic
     :func:`omnigent.native_cost_popup.launch_cost_popup`: it reads the
     pane's tmux socket/target from this bridge's ``tmux.json`` and points
-    the popup at this bridge's ``permission_hook.json`` for Omnigent routing
-    (base URL + auth headers, so no token lands on the command line), then
-    delegates. The launcher pops the modal on every attached client and
-    skips silently when none is attached (e.g. the Terminal tab is closed)
-    — the web ``ApprovalCard`` remains the answer surface.
+    the popup at *config_file* for Omnigent routing (base URL + auth
+    headers, so no token lands on the command line), then delegates. The
+    launcher pops the modal on every attached client and skips silently when
+    none is attached (e.g. the Terminal tab is closed) — the web
+    ``ApprovalCard`` remains the answer surface.
 
     :param bridge_dir: Bridge directory path, e.g.
-        ``/tmp/omnigent/claude-native/<digest>``. Supplies both the
-        tmux target (``tmux.json``) and the AP-routing config
-        (``permission_hook.json``).
+        ``/tmp/omnigent/claude-native/<digest>``. Supplies the tmux target
+        (``tmux.json``); the AP-routing config comes from *config_file*.
     :param session_id: Omnigent session id that owns the elicitation, e.g.
         ``"conv_abc123"``. Used in the resolve URL the popup POSTs to.
     :param elicitation_id: Outstanding elicitation correlation id, e.g.
