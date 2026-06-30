@@ -25,7 +25,6 @@ import {
 import type { Agent, McpServerSummary } from "@/hooks/useAgents";
 import { useSession } from "@/hooks/useSession";
 import {
-  isCostRoutingSession,
   parseCostRoutingVerdict,
   verdictRelativeTime,
 } from "@/components/CostRoutingControl";
@@ -202,8 +201,10 @@ function IntelligentRoutingSection({ sessionId }: { sessionId: string }) {
 
   // Children never render — even a recorded verdict can't unhide them.
   if (session?.parentSessionId) return null;
-  if (!isCostRoutingSession(session) && verdict === null) return null;
-  // Only an explicit "off" disables routing; unset defers to the spec (active).
+  // Only show when routing is actually on for this session (or a verdict exists).
+  const routingOn =
+    session?.costControlModeOverride === "on" || mode === "on";
+  if (!routingOn && verdict === null) return null;
   const stateLabel = mode === "off" ? "Off" : "On";
   const verdictTime = verdict === null ? null : verdictRelativeTime(verdict.turnAnchor);
 

@@ -750,7 +750,6 @@ describe("AgentInfoContent restart-with-model trigger", () => {
 function sessionWithLabels(
   id: string,
   labels: Record<string, string>,
-  // The gate keys on the snapshot's agentName (isCostRoutingSession).
   agentName = "polly",
 ): Session {
   return {
@@ -765,6 +764,8 @@ function sessionWithLabels(
     permissionLevel: null,
     parentSessionId: null,
     subAgentName: null,
+    // Routing section only shows when toggle is on or a verdict exists.
+    costControlModeOverride: "on",
   };
 }
 
