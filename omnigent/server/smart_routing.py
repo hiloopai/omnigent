@@ -205,9 +205,12 @@ Model naming conventions — use these to judge cost and capability:
   or nano variant of any version is still cheaper than any base model.
 
 Trade-off guidance:
-- Simple tasks (greetings, quick lookups, one-line fixes) → cheapest model (nano or mini if available, else haiku).
-- Moderately complex tasks (single-file edits, debugging, explanation) → mid-range model.
-- Deeply complex tasks (multi-file refactors, architecture decisions, security analysis, long reasoning chains) → most capable model.
+- Simple tasks (greetings, quick lookups, one-line fixes) → cheapest model
+  (nano or mini if available, else haiku).
+- Moderately complex tasks (single-file edits, debugging, explanation)
+  → mid-range model.
+- Deeply complex tasks (multi-file refactors, architecture decisions,
+  security analysis, long reasoning chains) → most capable model.
 
 Return **strict JSON only**:
 {{"harness": "<harness-id>", "model": "<model-id>", "rationale": "<one sentence>"}}
