@@ -466,11 +466,15 @@ async def test_serve_tunnel_once_sends_bearer_header(
         :param additional_headers: Optional handshake headers.
         :param close_timeout: WebSocket close-handshake timeout.
         :param max_size: Maximum inbound WebSocket message size.
+        :param ping_interval: Protocol keepalive ping interval (seconds).
+        :param ping_timeout: Protocol keepalive PONG timeout (seconds).
         """
 
         additional_headers: dict[str, str] | None
         close_timeout: float
         max_size: int
+        ping_interval: float
+        ping_timeout: float
 
     captured: dict[str, str | _ConnectKwargs] = {}
 
