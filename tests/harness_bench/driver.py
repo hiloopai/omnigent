@@ -82,7 +82,11 @@ def infra_failure_reason(result: TurnResult) -> str | None:
         return None
     for code in ("403", "401"):
         if code in text:
-            return f"gateway auth failed ({code} Invalid/Forbidden token); re-login the profile"
+            return (
+                f"gateway auth failed ({code} Invalid/Forbidden token); "
+                "re-login the profile, or clear a stale DATABRICKS_BEARER / "
+                "DATABRICKS_TOKEN env var that overrides profile auth"
+            )
     if "already processing" in text:
         return "session busy from a prior turn (sequencing, not a capability gap)"
     if "unexpected status" in text:
