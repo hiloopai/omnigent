@@ -222,8 +222,7 @@ def _codex_auth_unavailable_reason() -> str | None:
     try:
         launch = resolve_native_codex_launch(model=None)
         routes_through_provider = (
-            launch.profile is not None
-            or codex_session_meta_model_provider(launch) != "openai"
+            launch.profile is not None or codex_session_meta_model_provider(launch) != "openai"
         )
     except Exception:  # noqa: BLE001 - readiness must never raise; fail onto auth.json.
         _logger.debug("codex readiness: launch resolve failed; using auth.json", exc_info=True)
