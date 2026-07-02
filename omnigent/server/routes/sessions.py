@@ -84,7 +84,7 @@ from omnigent.entities.conversation import (
 )
 from omnigent.entities.permission import SessionPermission
 from omnigent.entities.session_resources import session_resource_view_to_dict
-from omnigent.errors import ErrorCode, OmnigentError
+from omnigent.errors import ElicitationDeclinedError, ErrorCode, OmnigentError
 from omnigent.harness_plugins import (
     CLAUDE_NATIVE_CODING_AGENT,
     CODEX_NATIVE_CODING_AGENT,
@@ -4212,6 +4212,13 @@ async def _hold_native_ask_gate(
         tool_name=tool_name if isinstance(tool_name, str) else None,
         tool_input=tool_input if isinstance(tool_input, dict) else None,
     )
+    # Explicit user decline → raise so callers can abort the turn rather
+    # than feeding a DENY message to the LLM and letting it continue.
+    if verdict is not None and verdict.action == "decline":
+        raise ElicitationDeclinedError(
+            result.reason or "",
+            policy_name=result.deciding_policy,
+        )
     approved = verdict is not None and verdict.action == "accept"
     if approved:
         # POLICIES.md §7.2: writes accumulated by the ASKing policy
@@ -10974,15 +10981,22 @@ async def _evaluate_input_policy(
     # deciding policy's writes only on accept (POLICIES.md §7.2). Accept ->
     # ALLOW (fall through to forward the message); decline / timeout ->
     # DENY (fail-closed).
-    approved = await _hold_native_ask_gate(
-        request,
-        session_id=session_id,
-        phase=Phase.REQUEST,
-        data=body.data,
-        engine=engine,
-        result=result,
-        conversation_store=conversation_store,
-    )
+    try:
+        approved = await _hold_native_ask_gate(
+            request,
+            session_id=session_id,
+            phase=Phase.REQUEST,
+            data=body.data,
+            engine=engine,
+            result=result,
+            conversation_store=conversation_store,
+        )
+    except ElicitationDeclinedError as exc:
+        return {
+            "verdict": "deny",
+            "reason": exc.args[0] or "Denied by policy",
+            "abort": True,
+        }
     if approved:
         return None
     return {
@@ -16272,16 +16286,29 @@ def create_sessions_router(
                         Phase.LLM_REQUEST,
                         Phase.REQUEST,
                     ):
-                        approved = await _hold_native_ask_gate(
-                            request,
-                            session_id=session_id,
-                            phase=phase,
-                            data=data,
-                            engine=engine,
-                            result=result,
-                            conversation_store=conversation_store,
-                            elicitation_id=hook_elicitation_id,
-                        )
+                        try:
+                            approved = await _hold_native_ask_gate(
+                                request,
+                                session_id=session_id,
+                                phase=phase,
+                                data=data,
+                                engine=engine,
+                                result=result,
+                                conversation_store=conversation_store,
+                                elicitation_id=hook_elicitation_id,
+                            )
+                        except ElicitationDeclinedError as exc:
+                            # Explicit user decline — signal the harness to
+                            # abort the turn rather than let it continue.
+                            verdict_body = {
+                                "result": "POLICY_ACTION_DENY",
+                                "reason": exc.args[0] or "Approval was declined.",
+                                "abort": True,
+                            }
+                            return Response(
+                                content=json.dumps(verdict_body),
+                                media_type="application/json",
+                            )
                         verdict_body: dict[str, Any] = (
                             {"result": "POLICY_ACTION_ALLOW"}
                             if approved

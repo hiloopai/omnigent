@@ -44,6 +44,7 @@ from typing import Any
 
 from fastapi import Response
 
+from omnigent.errors import ElicitationDeclinedError
 from omnigent.inner.executor import (
     CompactionComplete,
     Executor,
@@ -457,6 +458,21 @@ class ExecutorAdapter(HarnessApp):
                             )
                             agent_span = None
                         raise RuntimeError(f"inner executor error: {event.message}")
+        except ElicitationDeclinedError:
+            # User explicitly declined an elicitation — abort the turn cleanly
+            # (cancelled, not failed) so the LLM does not receive a DENY message
+            # and continue. The finally block still runs for cleanup.
+            _logger.info(
+                "elicitation explicitly declined for response %s — aborting turn",
+                ctx.response_id,
+            )
+            if tctx is not None and agent_span is not None:
+                from omnigent.runtime.telemetry import record_cancellation
+
+                record_cancellation(agent_span)
+                tctx.end_agent_span(agent_span, response=None)
+                agent_span = None
+            ctx.cancelled.set()
         except BaseException:
             # End agent span on unhandled exceptions so it's not
             # left open (which would leak on the OTel provider).
@@ -734,6 +750,11 @@ class ExecutorAdapter(HarnessApp):
             content_preview=f"{tool_name}({preview})",
         )
         result = await ctx.elicit(elicitation_id, params)
+        if result.action == "decline":
+            raise ElicitationDeclinedError(
+                f"{label} permission for {tool_name!r} explicitly declined",
+                policy_name=policy_name,
+            )
         return result.action == "accept"
 
     async def _stable_policy_evaluator(
