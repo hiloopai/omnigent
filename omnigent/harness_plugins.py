@@ -29,6 +29,15 @@ from omnigent._wrapper_labels import (
     UI_MODE_TERMINAL_VALUE,
     WRAPPER_LABEL_KEY,
 )
+from omnigent.harness_capabilities import (
+    AuthModel,
+    EffortFamily,
+    Elicitation,
+    HarnessCapabilities,
+    IntegrationMode,
+    ModelFamily,
+    Resume,
+)
 from omnigent.harness_install_spec import HarnessInstallSpec
 
 _logger = logging.getLogger(__name__)
@@ -74,6 +83,9 @@ class HarnessContribution:
     spawn_env_builders: dict[str, str] = field(default_factory=dict)
     missing_install_package: dict[str, str] = field(default_factory=dict)
     harness_labels: dict[str, str] = field(default_factory=dict)
+    # Declared feature set per harness id ("what can this harness do?"). Sparse
+    # is allowed — a harness with no entry simply has no declared capabilities.
+    capabilities: dict[str, HarnessCapabilities] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -185,6 +197,203 @@ HERMES_NATIVE_CODING_AGENT = NativeCodingAgent(
     wrapper_label=HERMES_NATIVE_WRAPPER_VALUE,
     terminal_name="hermes",
 )
+
+
+# Declared capabilities for the built-in harnesses. Each value is backed by the
+# module that implements it; the derivable axes (model_family, subagents) are
+# asserted against their source in tests/test_harness_capabilities.py so the
+# table cannot silently drift. See designs/harness-modular-registry-proposal.md.
+_C = HarnessCapabilities
+_IM = IntegrationMode
+_EL = Elicitation
+_RS = Resume
+_EF = EffortFamily
+_MF = ModelFamily
+_AU = AuthModel
+
+_BUILTIN_CAPABILITIES: dict[str, HarnessCapabilities] = {
+    # Native-CLI harnesses (wrap a resident vendor TUI/server).
+    "claude-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.HOOK,
+        _RS.WARM_REATTACH,
+        _EF.ANTHROPIC,
+        _MF.CLAUDE,
+        _AU.OMNIGENT_CREDENTIAL,
+        True,
+    ),
+    "codex-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.JSONRPC,
+        _RS.WARM_REATTACH,
+        _EF.OPENAI,
+        _MF.GPT,
+        _AU.OMNIGENT_CREDENTIAL,
+        True,
+    ),
+    "pi-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.NONE,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.SESSION_SCOPED_CONFIG,
+        False,
+    ),
+    "cursor-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.APPROVAL_MIRROR,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    # kiro_native_permissions.py: "TUI ACP recorder -> web elicitation".
+    "kiro-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.APPROVAL_MIRROR,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    "antigravity-native": _C(
+        _IM.NATIVE_TUI, _EL.NONE, _RS.WARM_REATTACH, _EF.GEMINI, _MF.GEMINI, _AU.OWN_AUTH, False
+    ),
+    "goose-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.APPROVAL_MIRROR,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    "qwen-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.APPROVAL_MIRROR,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    "kimi-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.HOOK,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.SESSION_SCOPED_CONFIG,
+        False,
+    ),
+    "opencode-native": _C(
+        _IM.NATIVE_SERVER,
+        _EL.SSE_PERMISSION,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        True,
+    ),
+    "hermes-native": _C(
+        _IM.NATIVE_TUI,
+        _EL.APPROVAL_MIRROR,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    # SDK / subprocess harnesses (run the vendor model directly).
+    "claude-sdk": _C(
+        _IM.SDK_IN_PROCESS,
+        _EL.NONE,
+        _RS.COLD_ONLY,
+        _EF.ANTHROPIC,
+        _MF.CLAUDE,
+        _AU.OMNIGENT_CREDENTIAL,
+        False,
+    ),
+    "codex": _C(
+        _IM.CLI_SUBPROCESS,
+        _EL.JSONRPC,
+        _RS.WARM_REATTACH,
+        _EF.OPENAI,
+        _MF.GPT,
+        _AU.OMNIGENT_CREDENTIAL,
+        False,
+    ),
+    "pi": _C(
+        _IM.CLI_SUBPROCESS,
+        _EL.NONE,
+        _RS.COLD_ONLY,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OMNIGENT_CREDENTIAL,
+        False,
+    ),
+    "openai-agents": _C(
+        _IM.SDK_IN_PROCESS,
+        _EL.NONE,
+        _RS.COLD_ONLY,
+        _EF.OPENAI,
+        _MF.MULTI,
+        _AU.OMNIGENT_CREDENTIAL,
+        False,
+    ),
+    "cursor": _C(
+        _IM.SDK_IN_PROCESS, _EL.NONE, _RS.WARM_REATTACH, _EF.NONE, _MF.MULTI, _AU.OWN_AUTH, False
+    ),
+    "antigravity": _C(
+        _IM.SDK_IN_PROCESS, _EL.NONE, _RS.COLD_ONLY, _EF.GEMINI, _MF.GEMINI, _AU.OWN_AUTH, False
+    ),
+    "goose": _C(
+        _IM.ACP_SUBPROCESS,
+        _EL.SSE_PERMISSION,
+        _RS.COLD_ONLY,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    "qwen": _C(
+        _IM.ACP_SUBPROCESS,
+        _EL.SSE_PERMISSION,
+        _RS.COLD_ONLY,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OWN_AUTH,
+        False,
+    ),
+    "kimi": _C(
+        _IM.CLI_SUBPROCESS,
+        _EL.NONE,
+        _RS.WARM_REATTACH,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.SESSION_SCOPED_CONFIG,
+        False,
+    ),
+    "hermes": _C(
+        _IM.CLI_SUBPROCESS, _EL.HOOK, _RS.COLD_ONLY, _EF.NONE, _MF.MULTI, _AU.OWN_AUTH, False
+    ),
+    "copilot": _C(
+        _IM.SDK_IN_PROCESS, _EL.NONE, _RS.COLD_ONLY, _EF.COPILOT, _MF.MULTI, _AU.OWN_AUTH, False
+    ),
+    # open-responses is resolved via an alternate path; conservative defaults.
+    "open-responses": _C(
+        _IM.SDK_IN_PROCESS,
+        _EL.NONE,
+        _RS.COLD_ONLY,
+        _EF.NONE,
+        _MF.MULTI,
+        _AU.OMNIGENT_CREDENTIAL,
+        False,
+    ),
+}
 
 
 _BUILTIN_CONTRIBUTION = HarnessContribution(
@@ -318,6 +527,7 @@ _BUILTIN_CONTRIBUTION = HarnessContribution(
         "openai-agents": "OpenAI Agents SDK",
         "pi": "Pi",
     },
+    capabilities=_BUILTIN_CAPABILITIES,
 )
 
 _state: HarnessPluginState | None = None
@@ -561,14 +771,36 @@ def harness_labels() -> dict[str, str]:
     return _merge_dict("harness_labels")
 
 
-def harness_catalog() -> list[dict[str, str]]:
-    """Return stable JSON-serializable harness catalog rows."""
+def harness_capabilities() -> dict[str, HarnessCapabilities]:
+    """Return the declared capability record per harness id.
+
+    Merged across contributions; sparse (a harness need not declare
+    capabilities). This is the single source of truth for "what can this
+    harness do?".
+    """
+    return _merge_dict("capabilities")
+
+
+def harness_catalog() -> list[dict[str, Any]]:
+    """Return stable JSON-serializable harness catalog rows.
+
+    Each row carries ``id`` and ``label``; rows for harnesses with declared
+    capabilities also carry a ``capabilities`` object (see
+    :meth:`HarnessCapabilities.as_dict`), so the ``/v1/harnesses`` catalog can
+    surface the feature matrix to clients.
+    """
     labels = harness_labels()
-    return [
-        {"id": harness, "label": labels[harness]}
-        for harness in sorted(labels, key=lambda key: labels[key].lower())
-        if harness in valid_harnesses()
-    ]
+    capabilities = harness_capabilities()
+    rows: list[dict[str, Any]] = []
+    for harness in sorted(labels, key=lambda key: labels[key].lower()):
+        if harness not in valid_harnesses():
+            continue
+        row: dict[str, Any] = {"id": harness, "label": labels[harness]}
+        capability = capabilities.get(harness)
+        if capability is not None:
+            row["capabilities"] = capability.as_dict()
+        rows.append(row)
+    return rows
 
 
 def load_object(import_path: str) -> Any:
