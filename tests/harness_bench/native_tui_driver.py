@@ -50,6 +50,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -300,17 +301,20 @@ class NativeTuiDriver:
         ).raise_for_status()
 
     def _drive_turn(self, prompt: str, *, count_deltas: bool = False) -> TurnResult:
-        """Send *prompt* and read this turn's outcome from the SSE stream.
+        """Send *prompt*; read the terminal + delta count from the stream and
+        the reply text from the *new* assistant item.
 
-        The turn is driven **entirely from the stream**, not from item
-        polling. This is load-bearing: the driver reuses one session across
-        probes, so polling for "an assistant item" returns a *prior* turn's
-        stale reply and races the current turn (the bug two live smokes
-        surfaced as a false streaming DRIFT — deltas arrive, but the stale
-        item ended the read before they were counted). Subscribing to the
-        stream first, then posting, then reading to ``response.completed``
-        scopes every signal to *this* turn: delta count, delta text, and the
-        terminal state.
+        Two sources, each for what it reliably provides:
+
+        - **Stream** (subscribe-first, background thread): the delta count and
+          the terminal event, scoped to this turn. Subscribing before posting
+          is required — the stream is not replayed.
+        - **Item poll**: the assistant reply text. A short reply may arrive as
+          a single ``response.output_item.done`` with no text deltas, so
+          delta-accumulated text is unreliable for basic turns — the persisted
+          item is authoritative. The driver reuses one session across probes,
+          so the poll must ignore items that predate this turn: it records the
+          assistant-item count *before* posting and waits for a NEW one.
         """
         assert self._client is not None
         result = TurnResult()
@@ -327,31 +331,61 @@ class NativeTuiDriver:
                     for line in resp.iter_lines():
                         if line.startswith("event:"):
                             events.append(line[len("event:") :].strip())
-                        elif line.startswith("data:") and events and events[-1] == _DELTA_EVENT:
-                            # Accumulate the delta text so result.text reflects
-                            # THIS turn (item polling would read a prior turn).
-                            result.text += _delta_text(line)
-                        if events and events[-1] in _TERMINAL_EVENTS:
-                            return
+                            if events[-1] in _TERMINAL_EVENTS:
+                                return
             except httpx.HTTPError as exc:
                 result.error = repr(exc)
 
+        baseline = self._assistant_item_count()
         reader = threading.Thread(target=_read)
         reader.start()
         ready.wait(timeout=10.0)  # subscribe before posting so no delta is lost
         self._post_message(prompt)
-        reader.join(timeout=_TURN_TIMEOUT_S)
+        text = self._poll_new_assistant_text(baseline)
+        reader.join(timeout=10.0)
 
         result.text_delta_count = sum(1 for e in events if e == _DELTA_EVENT)
-        if _COMPLETED_EVENT in events:
+        result.text = text or ""
+        if text is not None:
             result.completed = True
-        elif not events:
-            result.timed_out = True
+        elif _COMPLETED_EVENT in events:
+            # Terminal reached but no new assistant item surfaced — treat as a
+            # completed-but-empty turn rather than a hang.
+            result.completed = True
         else:
-            # Stream ended on failed / no terminal within timeout.
-            result.failed = _FAILED_EVENT in events
-            result.timed_out = not result.failed
+            result.timed_out = True
         return result
+
+    def _assistant_item_count(self) -> int:
+        """Current number of assistant items in the session (pre-turn baseline)."""
+        assert self._client is not None
+        resp = self._client.get(f"/v1/sessions/{self._session_id}/items", params={"order": "asc"})
+        if resp.status_code != 200:
+            return 0
+        return sum(1 for it in resp.json().get("data", []) if it.get("role") == "assistant")
+
+    def _poll_new_assistant_text(
+        self, baseline: int, timeout: float = _TURN_TIMEOUT_S
+    ) -> str | None:
+        """Poll until a NEW assistant item (beyond *baseline*) appears; return its text.
+
+        Scoping to items past the pre-turn baseline is what keeps a reused
+        session from returning a prior turn's stale reply.
+        """
+        assert self._client is not None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            resp = self._client.get(
+                f"/v1/sessions/{self._session_id}/items", params={"order": "asc"}
+            )
+            if resp.status_code == 200:
+                assistants = [
+                    it for it in resp.json().get("data", []) if it.get("role") == "assistant"
+                ]
+                if len(assistants) > baseline:
+                    return _assistant_text(assistants[-1])
+            time.sleep(_POLL_INTERVAL_S)
+        return None
 
     def _drive_interrupt_turn(self) -> TurnResult:
         """Start a long turn, interrupt it once text streams, detect the cancel.
@@ -403,14 +437,13 @@ class NativeTuiDriver:
         return result
 
 
-def _delta_text(data_line: str) -> str:
-    """Extract the delta text from a ``data:`` SSE line for an output_text.delta."""
-    import json
-
-    try:
-        payload = json.loads(data_line[len("data:") :].strip())
-    except json.JSONDecodeError:
+def _assistant_text(item: dict[str, Any]) -> str:
+    """Concatenate assistant output_text blocks from a session item."""
+    content = item.get("content")
+    if not isinstance(content, list):
         return ""
-    if isinstance(payload, dict):
-        return str(payload.get("delta", "") or "")
-    return ""
+    return " ".join(
+        block["text"]
+        for block in content
+        if isinstance(block, dict) and isinstance(block.get("text"), str)
+    )
