@@ -168,14 +168,19 @@ Redeploy to apply. For Google Workspace, also set
   ~0.5 s backoff and running turns resume; a tunnel-proxied request caught
   mid-flight at the cut fails once. Browser SSE streams and terminal tabs
   reconnect the same way.
-- **Requests spread across instances.** The server keeps its runner
-  registry and live-event fan-out in process memory, and Vercel pins each
+- **Requests spread across instances.** The server keeps its runner/host
+  registries and live-event fan-out in process memory, and Vercel pins each
   WebSocket to one instance while routing other requests freely — including
-  to brand-new cold instances that answer 503 while booting. Under light
-  traffic one warm instance serves everything and this works; under bursty
-  load or mid-redeploy, requests can land on an instance that can't see
-  your runner's tunnel and fail until the tunnels cycle. There is no
-  single-instance pin on Vercel (unlike Modal's `max_containers=1`).
+  to brand-new cold instances that answer 503 while booting. With one warm
+  instance everything works; once a second instance is warm (bursty
+  traffic, mid-redeploy), requests landing on the wrong instance fail —
+  most visibly, host-tunnel features (the workspace folder picker, host
+  launches) return **409 "host is offline"** even though the host is
+  connected. Retrying rides it out (~1-in-N odds per attempt at N warm
+  instances), and instances converge back to one after ~5 quiet minutes.
+  There is no single-instance pin on Vercel (unlike Modal's
+  `max_containers=1`); this is the target's fundamental ceiling and why
+  it's rated demo-grade.
 - **No persistent disk.** Postgres is required (no SQLite lite tier), the
   cookie secret must be pinned via env, and artifacts **must** live in an
   S3-compatible bucket.
