@@ -204,6 +204,49 @@ async def test_full_server_async_shims_delegate_to_sync(monkeypatch: pytest.Monk
     assert any(c.startswith("tool:") and "True" in c for c in calls)
 
 
+async def test_provisioning_failure_skips_and_tears_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A driver that raises in __aenter__ yields a skip AND is torn down.
+
+    Provisioning spawns a server + daemon before the step that can fail (an
+    own-auth native whose terminal never wires up), so the failure path must
+    call __aexit__ or those subprocesses leak for the rest of a multi-harness
+    run. Asserts both: the harness is a capability-neutral skip, and teardown ran.
+    """
+    import tests.harness_bench.bench as bench_mod
+    from tests.harness_bench.verdict import Verdict
+
+    torn_down: list[bool] = []
+
+    class _FailingDriver:
+        transport = "stub"
+
+        def __init__(self, profile: BenchProfile, *, databricks_profile: str) -> None:
+            pass
+
+        @staticmethod
+        def unavailable(profile: BenchProfile, *, databricks_profile: str | None) -> str | None:
+            return None
+
+        async def __aenter__(self):
+            # Simulates _wire_native_forwarder raising after the server/daemon
+            # are already up.
+            raise RuntimeError("native forwarder did not wire up within 90.0s")
+
+        async def __aexit__(self, *exc: object) -> None:
+            torn_down.append(True)
+
+    profile = BenchProfile(
+        harness="stub-native", model="m", env_prefix="HARNESS_STUB_NATIVE_", marker="X"
+    )
+    monkeypatch.setattr(bench_mod, "resolve_driver_class", lambda p, *, override: _FailingDriver)
+
+    report = await run_harness(profile, databricks_profile="oss", live=True)
+
+    assert report.skipped_reason is not None and "provisioning failed" in report.skipped_reason
+    assert all(c.observed is Verdict.SKIPPED for c in report.cells)
+    assert torn_down == [True], "provisioning-failure path must tear down the driver"
+
+
 # ── native-tui transport (offline) ──────────────────────────────
 
 

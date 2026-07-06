@@ -153,6 +153,10 @@ def native_vendor(harness: str) -> NativeVendor | None:
     caps = harness_capabilities().get(harness)
     if caps is None or caps.integration_mode is not IntegrationMode.NATIVE_TUI:
         return None
+    # agent_name and terminal_name are convention (``<harness>-ui`` and the
+    # vendor CLI name), which holds for every in-repo native. A community
+    # plugin whose registered terminal/agent name diverges would need an
+    # override map here, mirroring the manifest's _NATIVE_CLI_BINARY.
     return NativeVendor(
         harness=harness,
         agent_name=f"{harness}-ui",
