@@ -6941,7 +6941,9 @@ async def test_replay_dead_letters_on_startup_reposts_proven_undelivered(
     posted: list[dict[str, object]] = []
 
     class _Client:
-        async def post(self, url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        async def post(
+            self, url: str, *, json: dict[str, object], timeout: float
+        ) -> httpx.Response:
             posted.append({"url": url, "json": json, "timeout": timeout})
             return httpx.Response(200, request=httpx.Request("POST", url))
 
@@ -6979,7 +6981,9 @@ async def test_replay_dead_letters_on_startup_skips_ambiguous(
     called = False
 
     class _Client:
-        async def post(self, url: str, *, json: dict[str, object], timeout: float) -> httpx.Response:
+        async def post(
+            self, url: str, *, json: dict[str, object], timeout: float
+        ) -> httpx.Response:
             nonlocal called
             called = True
             return httpx.Response(200, request=httpx.Request("POST", url))

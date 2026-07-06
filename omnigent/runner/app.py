@@ -464,9 +464,7 @@ async def _claude_forwarder_start_at_end_for_heal(
     if _read_forward_state(bridge_dir) is not None:
         return False
 
-    workspace = Path(
-        os.environ.get("OMNIGENT_RUNNER_WORKSPACE", str(Path.cwd()))
-    ).resolve()
+    workspace = Path(os.environ.get("OMNIGENT_RUNNER_WORKSPACE", str(Path.cwd()))).resolve()
 
     try:
         resp = await server_client.get(
