@@ -5552,6 +5552,7 @@ def session(ctx: click.Context) -> None:
     Examples:
       omnigent session export --id conv_abc123
       omnigent session export --id conv_abc123 --output transcript.jsonl
+      omnigent session export --id conv_abc123 --server https://myserver.com
     """
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -5571,16 +5572,17 @@ def session(ctx: click.Context) -> None:
     "output",
     default=None,
     metavar="FILE",
-    help=("Output file path.  Defaults to <SESSION_ID>.jsonl in the current directory."),
+    help="Output file path.  Defaults to <SESSION_ID>.jsonl in the current directory.",
 )
 @click.option(
-    "--database-uri",
-    "database_uri",
+    "--server",
     default=None,
-    metavar="URI",
-    help=("SQLAlchemy database URI for the session store.  [default: local omnigent database]"),
+    help=(
+        "Omnigent server URL. "
+        "Defaults to the configured server, or a local server already running."
+    ),
 )
-def session_export(session_id: str, output: str | None, database_uri: str | None) -> None:
+def session_export(session_id: str, output: str | None, server: str | None) -> None:
     """Export a session transcript to a portable JSONL file.
 
     Each line of the output is a JSON object.  The first line carries
@@ -5593,46 +5595,52 @@ def session_export(session_id: str, output: str | None, database_uri: str | None
     Examples:
       omnigent session export --id conv_abc123
       omnigent session export --id conv_abc123 --output my_session.jsonl
-      omnigent session export --id conv_abc123 --database-uri sqlite:////path/to/chat.db
+      omnigent session export --id conv_abc123 --server https://myserver.com
     """
-    from dataclasses import asdict
+    import httpx
 
-    from omnigent.stores.conversation_store.sqlalchemy_store import (
-        SqlAlchemyConversationStore,
-    )
+    cfg = _load_effective_config()
+    base_url = _resolve_attach_server(server, cfg.get("server"))
+    if base_url is None:
+        startup = ensure_local_omnigent_server()
+        base_url = startup.url
 
-    db_uri = database_uri or _default_db_uri()
-    store = SqlAlchemyConversationStore(db_uri)
-
-    conv = store.get_conversation(session_id)
-    if conv is None:
-        raise click.ClickException(f"Session {session_id!r} not found.")
-
+    base_url = base_url.rstrip("/")
     out_path = Path(output) if output else Path(f"{session_id}.jsonl")
 
-    n_items = 0
-    with out_path.open("w", encoding="utf-8") as fh:
-        # First line: session metadata so importers can recreate the
-        # conversation row before replaying items.
-        meta_record = {"record_type": "session_meta", **asdict(conv)}
-        fh.write(json.dumps(meta_record, default=str) + "\n")
+    with httpx.Client(base_url=base_url, timeout=30.0) as client:
+        # Fetch session metadata (items fetched separately via pagination).
+        resp = client.get(
+            f"/v1/sessions/{session_id}",
+            params={"include_items": "false", "include_liveness": "false"},
+        )
+        if resp.status_code == 404:
+            raise click.ClickException(f"Session {session_id!r} not found.")
+        resp.raise_for_status()
+        session_data = resp.json()
 
-        # Remaining lines: items in ascending position order, paginated
-        # so very large sessions don't require loading everything at once.
-        after: str | None = None
-        while True:
-            page = store.list_items(session_id, limit=500, after=after, order="asc")
-            for item in page.data:
-                item_record = {
-                    "record_type": "item",
-                    "created_at": item.created_at,
-                    **item.to_api_dict(),
-                }
-                fh.write(json.dumps(item_record, default=str) + "\n")
-                n_items += 1
-            if not page.has_more:
-                break
-            after = page.last_id
+        n_items = 0
+        with out_path.open("w", encoding="utf-8") as fh:
+            # First line: session metadata.
+            meta_record = {"record_type": "session_meta", **session_data}
+            fh.write(json.dumps(meta_record) + "\n")
+
+            # Remaining lines: items in ascending order, paginated.
+            after: str | None = None
+            while True:
+                params: dict[str, str | int] = {"limit": 500, "order": "asc"}
+                if after:
+                    params["after"] = after
+                items_resp = client.get(f"/v1/sessions/{session_id}/items", params=params)
+                items_resp.raise_for_status()
+                page = items_resp.json()
+                for item in page["data"]:
+                    item_record = {"record_type": "item", **item}
+                    fh.write(json.dumps(item_record) + "\n")
+                    n_items += 1
+                if not page.get("has_more"):
+                    break
+                after = page.get("last_id")
 
     click.echo(f"Exported {n_items} item(s) from {session_id} to {out_path}")
 
