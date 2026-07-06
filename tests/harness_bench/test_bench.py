@@ -212,9 +212,6 @@ async def test_provisioning_failure_skips_and_tears_down(monkeypatch: pytest.Mon
     call __aexit__ or those subprocesses leak for the rest of a multi-harness
     run. Asserts both: the harness is a capability-neutral skip, and teardown ran.
     """
-    import tests.harness_bench.bench as bench_mod
-    from tests.harness_bench.verdict import Verdict
-
     torn_down: list[bool] = []
 
     class _FailingDriver:
@@ -238,7 +235,10 @@ async def test_provisioning_failure_skips_and_tears_down(monkeypatch: pytest.Mon
     profile = BenchProfile(
         harness="stub-native", model="m", env_prefix="HARNESS_STUB_NATIVE_", marker="X"
     )
-    monkeypatch.setattr(bench_mod, "resolve_driver_class", lambda p, *, override: _FailingDriver)
+    monkeypatch.setattr(
+        "tests.harness_bench.bench.resolve_driver_class",
+        lambda p, *, override: _FailingDriver,
+    )
 
     report = await run_harness(profile, databricks_profile="oss", live=True)
 
