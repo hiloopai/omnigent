@@ -299,13 +299,16 @@ function UiFontFamilyControl() {
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
-      <div className="flex flex-col">
+      {/* Take the remaining width (and let the longer description wrap within
+          this column) so the input stays inline instead of dropping to its own
+          row — matches the font-size row's alignment. */}
+      <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-sm font-medium">Font family</span>
         <span className="text-sm text-muted-foreground">
           Use any font installed on this device. Leave blank for the system default.
         </span>
       </div>
-      <div role="group" aria-label="Font family" className="flex items-center gap-2">
+      <div role="group" aria-label="Font family" className="flex shrink-0 items-center gap-2">
         <Input
           type="text"
           aria-label="UI font family"

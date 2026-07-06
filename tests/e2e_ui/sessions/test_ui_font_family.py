@@ -42,9 +42,7 @@ def _open_appearance(page: Page, base_url: str) -> None:
     expect(page.get_by_role("group", name="Font family")).to_be_visible(timeout=30_000)
 
 
-def test_ui_font_family_applies_and_persists(
-    page: Page, seeded_session: tuple[str, str]
-) -> None:
+def test_ui_font_family_applies_and_persists(page: Page, seeded_session: tuple[str, str]) -> None:
     """Typing a family updates the applied property + value live and survives reload.
 
     A fresh context has no stored preference → empty field, no ``--ui-font-family``
