@@ -67,6 +67,10 @@ class _RichLiveSink:
     every cell ``·`` with the reason as a trailing note.
     """
 
+    # This sink paints the full glyph grid to the terminal, so the CLI can skip
+    # re-printing it in the stdout report (see __main__._grid_already_shown).
+    drew_grid = True
+
     def __init__(self, console) -> None:
         from rich.live import Live
 

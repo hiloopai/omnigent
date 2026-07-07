@@ -100,6 +100,10 @@ class LineSink:
     unchanged. ``write`` defaults to stderr (the report goes to stdout).
     """
 
+    # Per-line progress does not paint the grid, so the stdout report still
+    # prints it in full (see the rich sink's ``drew_grid = True``).
+    drew_grid = False
+
     def __init__(self, write) -> None:  # write: Callable[[str], None]
         self._write = write
 

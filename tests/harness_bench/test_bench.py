@@ -161,6 +161,45 @@ async def test_offline_render_produces_matrix() -> None:
     assert by_harness["claude-native"]["resolved_transport"] == "native-tui"
 
 
+def test_grid_already_shown_only_for_grid_drawing_sink() -> None:
+    """_grid_already_shown is True only for a sink that painted the grid."""
+    from tests.harness_bench.__main__ import _grid_already_shown
+    from tests.harness_bench.events import LineSink
+
+    assert _grid_already_shown(None) is False
+    assert _grid_already_shown(LineSink(lambda _m: None)) is False
+
+    class _GridSink:
+        drew_grid = True
+
+    assert _grid_already_shown(_GridSink()) is True
+
+
+async def test_render_table_grid_false_drops_grid_keeps_footer() -> None:
+    """grid=False omits the heading + glyph rows but keeps the legend/notes.
+
+    This is what the CLI emits when the rich live table already painted the grid
+    on the same terminal: the report should add the per-cell explanations, not
+    reprint the grid.
+    """
+    from tests.harness_bench.report import render_table
+
+    matrix = await run_bench(_OFFICIAL, live=False)
+    full = render_table(matrix, declared=True, grid=True)
+    footer = render_table(matrix, declared=True, grid=False)
+
+    # The full render has the heading + a harness row; the footer-only render
+    # has neither, but both carry the legend.
+    assert "Harness capability matrix" in full
+    assert "claude-sdk" in full
+    assert "Harness capability matrix" not in footer
+    assert "claude-sdk" not in footer
+    assert "Legend:" in footer
+    # The offline note is suppressed, so a declared render's footer is just the
+    # legend -- no dangling "Notes:" header.
+    assert footer.strip().startswith("Legend:")
+
+
 # ── Progress events / rich / parallel / report (offline) ─────────
 
 

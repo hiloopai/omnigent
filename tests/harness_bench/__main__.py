@@ -206,7 +206,12 @@ def main(argv: list[str] | None = None) -> int:
         # Default: terminal table. Color only when stdout is a real TTY and
         # not suppressed, so piping to a file / pager stays plain.
         color = sys.stdout.isatty() and not args.no_color
-        output = render_table(matrix, color=color, declared=declared)
+        # If the rich live table already painted the grid to this same terminal,
+        # drop the grid from the stdout report (keep the legend + notes) so the
+        # matrix is not printed twice. When stdout is redirected, print it in
+        # full -- the file needs the grid the on-screen table did not capture.
+        grid = not (_grid_already_shown(sink) and sys.stdout.isatty())
+        output = render_table(matrix, color=color, declared=declared, grid=grid)
     print(output, end="")
 
     if args.report:
@@ -214,6 +219,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # A drift is a non-zero exit so CI / scripts notice without parsing output.
     return 1 if matrix.has_drift else 0
+
+
+def _grid_already_shown(sink) -> bool:
+    """Whether the progress sink already painted the glyph grid to the terminal.
+
+    True only for the rich live table (which sets ``drew_grid = True``); the
+    plain :class:`LineSink` and a silent run do not, so their report prints the
+    grid in full.
+    """
+    return bool(getattr(sink, "drew_grid", False))
 
 
 def _select_progress_sink(rich_flag: bool | None):

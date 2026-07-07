@@ -82,7 +82,9 @@ def _cell_glyph_for_grid(cell: CellResult, declared: bool = False) -> str:
     return cell.verdict.glyph
 
 
-def render_table(matrix: BenchMatrix, *, color: bool = False, declared: bool = False) -> str:
+def render_table(
+    matrix: BenchMatrix, *, color: bool = False, declared: bool = False, grid: bool = True
+) -> str:
     """Render *matrix* as an aligned column grid for terminal reading.
 
     :param color: When true, colorize each glyph with ANSI (green supported,
@@ -91,6 +93,10 @@ def render_table(matrix: BenchMatrix, *, color: bool = False, declared: bool = F
     :param declared: When true (offline mode), render each cell's *declared*
         verdict glyph instead of the observed/reconciled one, so the dry
         matrix shows the capabilities the profile claims rather than ``·``.
+    :param grid: When false, omit the heading + glyph grid and emit only the
+        footer (legend, drift, notes, skips). The CLI uses this when the rich
+        live table already painted the grid to the same terminal, so the report
+        adds the per-cell explanations without re-printing the grid.
     """
     titles = [p.title for p in ALL_PROBES]
     names = [p.name for p in ALL_PROBES]
@@ -133,8 +139,13 @@ def render_table(matrix: BenchMatrix, *, color: bool = False, declared: bool = F
         ]
         lines.append("  ".join(row))
 
-    heading = "Harness capability matrix" + (" (declared, not observed)" if declared else "")
-    out = [heading, "", *lines, "", _legend()]
+    if grid:
+        heading = "Harness capability matrix" + (" (declared, not observed)" if declared else "")
+        out = [heading, "", *lines, "", _legend()]
+    else:
+        # The rich live table already showed the grid on this terminal; emit
+        # only the footer so we add the legend + explanations, not a duplicate.
+        out = [_legend()]
 
     drift = _drift_lines(matrix)
     if drift:

@@ -56,6 +56,11 @@ with the declared matrix).
 Each row is labelled with the transport that actually ran it, e.g.
 `claude-sdk [full-server]`, `kimi-native [native]`.
 
+Under `--rich`, the live table (on stderr) already shows the grid, so the
+stdout report drops the grid and prints only the legend + notes -- no duplicate
+table. When stdout is redirected to a file, the report keeps the full grid so
+the file is self-contained.
+
 ## Transport selection
 
 A profile's `transport` field is the harness *family* marker, not the literal
