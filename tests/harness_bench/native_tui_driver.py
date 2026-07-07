@@ -654,6 +654,14 @@ class NativeTuiDriver:
 
         # Turn end: output finished (or, on a deny, the blocked tool left the
         # turn to complete without producing the tool item).
+        #
+        # Live finding: on this transport a deny-turn tool call is NOT gated —
+        # the bench's native terminal-ensure launch does not thread ap_server_url
+        # into build_hook_settings, so the evaluate-policy PreToolUse hook is
+        # silently omitted and no response.policy_denied ever fires. The probe
+        # then SKIPs (tool ran, no deny) rather than reporting a false verdict.
+        # Wiring that hook on the bench launch path is the follow-up that turns
+        # native Policy DENY from `·` into a real verdict.
         result.completed = _OUTPUT_DONE_EVENT in events or bool(result.tool_calls)
         return result
 
