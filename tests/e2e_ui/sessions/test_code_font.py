@@ -67,7 +67,9 @@ def _stored_size(page: Page) -> str | None:
 def _open_appearance(page: Page, base_url: str) -> None:
     """Navigate to the Settings Appearance section and wait for the code control."""
     page.goto(f"{base_url}/settings/appearance")
-    expect(page.get_by_role("group", name="Code font size")).to_be_visible(timeout=30_000)
+    expect(page.get_by_role("group", name="Code font size", exact=True)).to_be_visible(
+        timeout=30_000
+    )
 
 
 def _open_monaco(page: Page, base_url: str, session_id: str) -> Locator:
