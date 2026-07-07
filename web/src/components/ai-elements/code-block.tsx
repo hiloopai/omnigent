@@ -22,6 +22,12 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  readCodeThemeDark,
+  readCodeThemeLight,
+  subscribeCodeThemes,
+  useCodeThemeRevision,
+} from "@/lib/codeThemePreferences";
 import type { BundledLanguage, BundledTheme, HighlighterGeneric, ThemedToken } from "shiki";
 import { createHighlighter } from "shiki";
 
@@ -138,25 +144,35 @@ const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
 const getTokensCacheKey = (code: string, language: BundledLanguage) => {
   const start = code.slice(0, 100);
   const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
+  const light = readCodeThemeLight();
+  const dark = readCodeThemeDark();
+  return `${language}:${light}:${dark}:${code.length}:${start}:${end}`;
 };
 
 const getHighlighter = (
   language: BundledLanguage,
 ): Promise<HighlighterGeneric<BundledLanguage, BundledTheme>> => {
-  const cached = highlighterCache.get(language);
+  const light = readCodeThemeLight();
+  const dark = readCodeThemeDark();
+  const cacheKey = `${language}:${light}:${dark}`;
+  const cached = highlighterCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
   const highlighterPromise = createHighlighter({
     langs: [language],
-    themes: ["github-light", "github-dark"],
+    themes: [light, dark],
   });
 
-  highlighterCache.set(language, highlighterPromise);
+  highlighterCache.set(cacheKey, highlighterPromise);
   return highlighterPromise;
 };
+
+subscribeCodeThemes(() => {
+  highlighterCache.clear();
+  tokensCache.clear();
+});
 
 // Create raw tokens for immediate display while highlighting loads
 const createRawTokens = (code: string): TokenizedCode => ({
@@ -207,8 +223,8 @@ export const highlightCode = (
       const result = highlighter.codeToTokens(code, {
         lang: langToUse,
         themes: {
-          dark: "github-dark",
-          light: "github-light",
+          dark: readCodeThemeDark(),
+          light: readCodeThemeLight(),
         },
       });
 
@@ -364,22 +380,28 @@ export const CodeBlockContent = ({
   language: BundledLanguage;
   showLineNumbers?: boolean;
 }) => {
+  const themeRevision = useCodeThemeRevision();
+
   // Memoized raw tokens for immediate display
   const rawTokens = useMemo(() => createRawTokens(code), [code]);
 
   // Synchronous cache lookup — avoids setState in effect for cached results
-  const syncTokens = useMemo(
-    () => highlightCode(code, language) ?? rawTokens,
-    [code, language, rawTokens],
-  );
+  const syncTokens = useMemo(() => {
+    void themeRevision;
+    return highlightCode(code, language) ?? rawTokens;
+  }, [code, language, rawTokens, themeRevision]);
 
   // Async highlighting result (populated after shiki loads)
   const [asyncTokens, setAsyncTokens] = useState<TokenizedCode | null>(null);
-  const asyncKeyRef = useRef({ code, language });
+  const asyncKeyRef = useRef({ code, language, themeRevision });
 
   // Invalidate stale async tokens synchronously during render
-  if (asyncKeyRef.current.code !== code || asyncKeyRef.current.language !== language) {
-    asyncKeyRef.current = { code, language };
+  if (
+    asyncKeyRef.current.code !== code ||
+    asyncKeyRef.current.language !== language ||
+    asyncKeyRef.current.themeRevision !== themeRevision
+  ) {
+    asyncKeyRef.current = { code, language, themeRevision };
     setAsyncTokens(null);
   }
 
@@ -395,7 +417,7 @@ export const CodeBlockContent = ({
     return () => {
       cancelled = true;
     };
-  }, [code, language]);
+  }, [code, language, themeRevision]);
 
   const tokenized = asyncTokens ?? syncTokens;
 

@@ -6,10 +6,11 @@
 //      network-restricted deployments, so @monaco-editor/react's default
 //      CDN AMD loader would fail; loader.config({ monaco }) points it at the
 //      bundled ESM instance instead.
-//   2. Drive tokenization and theming from Shiki (github-light/github-dark)
-//      via @shikijs/monaco so editor colors match the read-only Shiki views
-//      and chat code blocks. Monaco's own Monarch tokenizers and language
-//      services are left unused.
+//   2. Drive tokenization and theming from Shiki via @shikijs/monaco so editor
+//      colors match the read-only Shiki views and chat code blocks. The active
+//      light/dark syntax themes come from codeThemePreferences (user-chosen,
+//      independent of the UI palette). Monaco's own Monarch tokenizers and
+//      language services are left unused.
 //
 // Importing this module is the trigger that sets MonacoEnvironment and points
 // @monaco-editor/react at the bundled instance. It lives behind the lazy
@@ -33,10 +34,13 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api.js";
 // missing worker). This keeps grammars out while still giving real editor UX.
 import "monaco-editor/esm/vs/editor/edcore.main.js";
 import type { ResolvedThemeMode } from "@/components/theme/themeMode";
+import {
+  readCodeThemeDark,
+  readCodeThemeLight,
+  subscribeCodeThemes,
+} from "@/lib/codeThemePreferences";
 
-// Shiki theme ids registered into Monaco; identical to the read-only viewer.
-const LIGHT_THEME = "github-light";
-const DARK_THEME = "github-dark";
+let registeredThemes: { light: string; dark: string } | null = null;
 
 // Monaco reads this global to construct its workers. The global is declared by
 // monaco's own types (editor.api.d.ts), so no augmentation is needed. Set once
@@ -76,22 +80,20 @@ export { monaco };
 export type MonacoModule = typeof monaco;
 
 /**
- * Create the Shiki highlighter (github light + dark) once and register its
- * themes with Monaco. Idempotent — repeated calls return the same promise, so
- * every editor instance shares one highlighter.
+ * Create the Shiki highlighter (selected light + dark themes) once and register
+ * its themes with Monaco. Idempotent — repeated calls return the same promise,
+ * so every editor instance shares one highlighter.
  *
  * @returns The shared Shiki highlighter instance, ready to tokenize.
  */
 export function ensureMonacoReady(): Promise<ShikiHighlighter> {
   if (!readyPromise) {
     readyPromise = createHighlighter({
-      themes: [LIGHT_THEME, DARK_THEME],
+      themes: [readCodeThemeLight(), readCodeThemeDark()],
       langs: [],
     })
-      .then((hl) => {
-        // Registers the github themes under their ids so the editor's `theme`
-        // option and monaco.editor.setTheme resolve them.
-        shikiToMonaco(hl, monaco);
+      .then(async (hl) => {
+        await syncMonacoThemes(hl);
         return hl;
       })
       .catch((err: unknown) => {
@@ -101,6 +103,29 @@ export function ensureMonacoReady(): Promise<ShikiHighlighter> {
       });
   }
   return readyPromise;
+}
+
+async function syncMonacoThemes(hl: ShikiHighlighter): Promise<void> {
+  const light = readCodeThemeLight();
+  const dark = readCodeThemeDark();
+  if (registeredThemes?.light === light && registeredThemes?.dark === dark) {
+    return;
+  }
+  await Promise.all([hl.loadTheme(light), hl.loadTheme(dark)]);
+  shikiToMonaco(hl, monaco);
+  registeredThemes = { light, dark };
+  monaco.editor.setTheme(resolvedThemeToMonaco(resolveDocumentTheme()));
+}
+
+function resolveDocumentTheme(): ResolvedThemeMode {
+  if (typeof document === "undefined") return "light";
+  return document.documentElement.classList.contains("dark") ? "dark" : "light";
+}
+
+if (typeof window !== "undefined") {
+  subscribeCodeThemes(() => {
+    void ensureMonacoReady().then((hl) => syncMonacoThemes(hl));
+  });
 }
 
 /**
@@ -150,5 +175,5 @@ export function monacoLanguageId(lang: BundledLanguage | "text"): string {
  * @returns The registered Monaco theme id, e.g. `"github-dark"`.
  */
 export function resolvedThemeToMonaco(resolved: ResolvedThemeMode): string {
-  return resolved === "dark" ? DARK_THEME : LIGHT_THEME;
+  return resolved === "dark" ? readCodeThemeDark() : readCodeThemeLight();
 }

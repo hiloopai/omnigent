@@ -38,6 +38,13 @@ import { PageScroll } from "@/components/PageScroll";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -72,6 +79,15 @@ import {
   writeUiFontFamily,
   writeUiFontSizePx,
 } from "@/lib/uiFontPreferences";
+import {
+  CODE_THEME_ALLOWLIST,
+  type CodeThemeId,
+  codeThemeLabel,
+  readCodeThemeDark,
+  readCodeThemeLight,
+  writeCodeThemeDark,
+  writeCodeThemeLight,
+} from "@/lib/codeThemePreferences";
 import { useIsEmbedded } from "@/lib/embedded";
 import { type CliStatus, getCliStatus, isElectronShell, resetCliPath } from "@/lib/nativeBridge";
 import { cn } from "@/lib/utils";
@@ -123,6 +139,82 @@ export function SettingsPage() {
       {section === "archived" && <ArchivedSection />}
       {section === "cli" && isElectronShell() && <LocalCliSection />}
     </PageScroll>
+  );
+}
+
+/**
+ * Syntax-highlighting theme pickers for Shiki read-only blocks and Monaco.
+ * Light and dark choices are independent from the UI palette: the active syntax
+ * theme follows whichever mode is resolved.
+ */
+function SyntaxThemeControls() {
+  const [lightTheme, setLightTheme] = useState<CodeThemeId>(() => readCodeThemeLight());
+  const [darkTheme, setDarkTheme] = useState<CodeThemeId>(() => readCodeThemeDark());
+
+  const onLightChange = useCallback((value: string) => {
+    const next = value as CodeThemeId;
+    setLightTheme(next);
+    writeCodeThemeLight(next);
+  }, []);
+
+  const onDarkChange = useCallback((value: string) => {
+    const next = value as CodeThemeId;
+    setDarkTheme(next);
+    writeCodeThemeDark(next);
+  }, []);
+
+  return (
+    <>
+      <SyntaxThemeRow
+        label="Light syntax theme"
+        description="Colors for code blocks and editors when the UI is in light mode."
+        testId="code-theme-light"
+        value={lightTheme}
+        onChange={onLightChange}
+      />
+      <SyntaxThemeRow
+        label="Dark syntax theme"
+        description="Colors for code blocks and editors when the UI is in dark mode."
+        testId="code-theme-dark"
+        value={darkTheme}
+        onChange={onDarkChange}
+      />
+    </>
+  );
+}
+
+function SyntaxThemeRow({
+  label,
+  description,
+  testId,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  testId: string;
+  value: CodeThemeId;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <span className="text-sm font-medium">{label}</span>
+        <span className="text-sm text-muted-foreground">{description}</span>
+      </div>
+      <Select value={value} onValueChange={onChange}>
+        <SelectTrigger className="h-9 w-56 shrink-0" data-testid={testId}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {CODE_THEME_ALLOWLIST.map((id) => (
+            <SelectItem key={id} value={id}>
+              {codeThemeLabel(id)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
   );
 }
 
@@ -198,6 +290,8 @@ function AppearanceSection() {
         <UiFontSizeControl />
 
         <UiFontFamilyControl />
+
+        <SyntaxThemeControls />
       </div>
     </Section>
   );

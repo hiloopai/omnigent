@@ -167,6 +167,14 @@ describe("SettingsPage", () => {
     expect(screen.getByTestId("ui-font-family-reset")).not.toBeDisabled();
   });
 
+  it("persists a chosen dark syntax theme from the Appearance dropdown", async () => {
+    localStorage.clear();
+    renderPage("/settings/appearance");
+    fireEvent.click(screen.getByTestId("code-theme-dark"));
+    fireEvent.click(await screen.findByRole("option", { name: "Dracula" }));
+    expect(localStorage.getItem("omnigent:code-theme-dark")).toBe(JSON.stringify("dracula"));
+  });
+
   it("reset restores the system default font family", () => {
     localStorage.setItem("omnigent:ui-font-family", JSON.stringify("Georgia"));
     renderPage("/settings/appearance");

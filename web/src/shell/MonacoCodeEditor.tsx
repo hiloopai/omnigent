@@ -20,6 +20,7 @@ import { Editor, type EditorProps, type OnChange, type OnMount } from "@monaco-e
 import { useTheme } from "next-themes";
 import { AlertTriangleIcon, MessageSquareOffIcon } from "lucide-react";
 import { normalizeResolvedTheme } from "@/components/theme/themeMode";
+import { useCodeThemeRevision } from "@/lib/codeThemePreferences";
 import type { Comment } from "@/hooks/useComments";
 import { useCanEdit } from "@/hooks/usePermissions";
 import { detectLang, type ActiveSelection, type SaveStatus } from "./codeViewerHelpers";
@@ -31,6 +32,7 @@ import { useEditorAutoSave } from "./useEditorAutoSave";
 import {
   ensureLanguage,
   ensureMonacoReady,
+  monaco,
   monacoLanguageId,
   resolvedThemeToMonaco,
 } from "./monacoSetup";
@@ -196,9 +198,13 @@ function MonacoCodeEditorInner({
 }: InnerProps) {
   const lang = detectLang(path);
   const { resolvedTheme } = useTheme();
-  const monacoTheme = resolvedThemeToMonaco(normalizeResolvedTheme(resolvedTheme));
+  const themeRevision = useCodeThemeRevision();
+  const monacoTheme = useMemo(() => {
+    void themeRevision;
+    return resolvedThemeToMonaco(normalizeResolvedTheme(resolvedTheme));
+  }, [resolvedTheme, themeRevision]);
 
-  // Gate rendering until Shiki has registered the github themes + this file's
+  // Gate rendering until Shiki has registered the selected themes + this file's
   // grammar, so the editor never flashes Monaco's default 'vs' theme.
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -222,6 +228,11 @@ function MonacoCodeEditorInner({
       cancelled = true;
     };
   }, [lang]);
+
+  useEffect(() => {
+    if (!ready) return;
+    monaco.editor.setTheme(monacoTheme);
+  }, [monacoTheme, ready]);
 
   const editorInstanceRef = useRef<CodeEditorInstance | null>(null);
   // True once the editor instance exists; gates the comment-layer wiring.

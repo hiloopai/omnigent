@@ -29,6 +29,9 @@ import {
   SearchIcon,
   XIcon,
 } from "lucide-react";
+import { useTheme } from "next-themes";
+import { normalizeResolvedTheme } from "@/components/theme/themeMode";
+import { codeThemeBackgroundForMode, useCodeThemeRevision } from "@/lib/codeThemePreferences";
 import { useChatStore } from "@/store/chatStore";
 import { nativeCodingAgentForHarness } from "@/lib/nativeCodingAgents";
 import type { BundledLanguage, ThemedToken } from "shiki";
@@ -277,6 +280,12 @@ export function CodeViewer({
   pendingBodyRef,
 }: CodeViewerProps) {
   const canEdit = useCanEdit(conversationId);
+  const { resolvedTheme } = useTheme();
+  const themeRevision = useCodeThemeRevision();
+  const codeBackground = useMemo(() => {
+    void themeRevision;
+    return codeThemeBackgroundForMode(normalizeResolvedTheme(resolvedTheme));
+  }, [resolvedTheme, themeRevision]);
 
   const [tokenLines, setTokenLines] = useState<ThemedToken[][] | null>(null);
 
@@ -348,7 +357,7 @@ export function CodeViewer({
     return () => {
       cancelled = true;
     };
-  }, [content, lang, viewMode, showMonaco]);
+  }, [content, lang, viewMode, showMonaco, themeRevision]);
 
   // Scroll to the line containing the active selection when it changes
   // (e.g. user clicked a comment in the panel).
@@ -723,8 +732,11 @@ export function CodeViewer({
         </div>
       )}
 
-      {/* GitHub Light/Dark backgrounds match the shiki themes used by highlightCode */}
-      <div ref={codeContainerRef} className="font-mono text-xs bg-white dark:bg-[#0d1117]">
+      <div
+        ref={codeContainerRef}
+        className="font-mono text-xs"
+        style={{ backgroundColor: codeBackground }}
+      >
         {rawLines.map((rawLine, idx) => {
           const lineNum = idx + 1;
           const isMatchLine =

@@ -10,12 +10,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DiffEditor, type DiffEditorProps, type DiffOnMount } from "@monaco-editor/react";
 import { useTheme } from "next-themes";
 import { normalizeResolvedTheme } from "@/components/theme/themeMode";
+import { useCodeThemeRevision } from "@/lib/codeThemePreferences";
 import type { Comment } from "@/hooks/useComments";
 import { useCanEdit } from "@/hooks/usePermissions";
 import { detectLang, type ActiveSelection } from "./codeViewerHelpers";
 import {
   ensureLanguage,
   ensureMonacoReady,
+  monaco,
   monacoLanguageId,
   resolvedThemeToMonaco,
 } from "./monacoSetup";
@@ -65,9 +67,13 @@ export function MonacoDiffViewer({
   const canEdit = useCanEdit(conversationId);
   const lang = detectLang(path);
   const { resolvedTheme } = useTheme();
-  const monacoTheme = resolvedThemeToMonaco(normalizeResolvedTheme(resolvedTheme));
+  const themeRevision = useCodeThemeRevision();
+  const monacoTheme = useMemo(() => {
+    void themeRevision;
+    return resolvedThemeToMonaco(normalizeResolvedTheme(resolvedTheme));
+  }, [resolvedTheme, themeRevision]);
 
-  // Gate rendering until Shiki has registered the github themes + this file's
+  // Gate rendering until Shiki has registered the selected themes + this file's
   // grammar (so the diff never flashes Monaco's default 'vs' theme); surface an
   // error rather than an unhandled rejection + permanent spinner on failure.
   const [ready, setReady] = useState(false);
@@ -90,6 +96,11 @@ export function MonacoDiffViewer({
       cancelled = true;
     };
   }, [lang]);
+
+  useEffect(() => {
+    if (!ready) return;
+    monaco.editor.setTheme(monacoTheme);
+  }, [monacoTheme, ready]);
 
   // The modified-side code editor, obtained from the diff editor on mount.
   const modifiedEditorRef = useRef<CodeEditorInstance | null>(null);
