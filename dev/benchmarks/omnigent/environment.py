@@ -3,12 +3,12 @@
 :class:`BenchEnvironment` is an async context manager that stands up a real
 Omnigent ``server`` with no Databricks credentials. Two modes:
 
-- ``with_runner=False`` (v1 default): server + SQLite DB only. Enough for the
+- ``with_runner=False`` (default): server + SQLite DB only. Enough for the
   HTTP/API journeys, which never drive an agent turn.
-- ``with_runner=True`` (phase 2): additionally spawns a zero-latency mock LLM
-  and a sibling ``runner``, routes the server-side prompt-policy classifier at
-  the mock (via ``--config``), and sets an ALLOW fallback — everything a
-  full-stack agent-turn journey needs.
+- ``with_runner=True``: additionally spawns a zero-latency mock LLM and a
+  sibling ``runner``, routes the server-side prompt-policy classifier at the
+  mock (via ``--config``), and sets an ALLOW fallback — everything the
+  full-turn journeys need.
 
 A full env is a strict superset of the HTTP-only env, so both modes share one
 class; the runner mode is gated behind the flag rather than forked into a
@@ -21,6 +21,7 @@ compat helpers (so subprocesses import this worktree) and
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import os
 import signal
@@ -53,6 +54,15 @@ _HEALTH_TIMEOUT_S = 90.0
 _MOCK_TIMEOUT_S = 15.0
 _POLL_INTERVAL_S = 0.2
 _TURN_TIMEOUT_S = 180.0
+
+# Terminal SSE events — if one arrives before any delta, the turn produced no
+# streamed text (a failure for the TTFT journey).
+_STREAM_TERMINAL_EVENTS = frozenset(
+    {"response.completed", "response.failed", "response.cancelled"}
+)
+# The server persists an interrupted turn as a synthetic user message whose
+# text contains this marker (see tests/e2e/test_cancel_history.py).
+_CANCELLATION_MARKER = "interrupted"
 
 # Default full-turn agent (with_runner=True). The mock ignores the model for
 # routing (its "default" queue serves any request), but the key is baked into
@@ -325,9 +335,16 @@ class BenchEnvironment:
             payload["match"] = match
         await self._mock_post("/mock/configure", payload)
 
-    async def set_mock_fallback(self, text: str, *, key: str = "default") -> None:
-        """Set a reset-surviving fallback response for a mock queue *key*."""
-        await self._mock_post("/mock/set_fallback", {"key": key, "text": text})
+    async def set_mock_fallback(
+        self, text: str, *, key: str = "default", stream: bool = False
+    ) -> None:
+        """Set a reset-surviving fallback response for a mock queue *key*.
+
+        :param stream: When ``True`` the fallback emits per-word
+            ``output_text.delta`` events before completing — needed for the
+            time-to-first-token journey to observe streamed deltas.
+        """
+        await self._mock_post("/mock/set_fallback", {"key": key, "text": text, "stream": stream})
 
     # ── agent + session primitives ───────────────────────────
 
@@ -467,3 +484,162 @@ class BenchEnvironment:
                 return
             await asyncio.sleep(_POLL_INTERVAL_S)
         raise RuntimeError(f"turn did not settle within {timeout}s (session {session_id})")
+
+    async def _wait_idle(self, session_id: str, *, timeout: float = _TURN_TIMEOUT_S) -> None:
+        """Poll until the session is ``idle`` (a prior turn has settled)."""
+        assert self.client is not None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            snap = await self.client.get(f"/v1/sessions/{session_id}")
+            snap.raise_for_status()
+            if snap.json().get("status") == "idle":
+                return
+            await asyncio.sleep(_POLL_INTERVAL_S)
+        raise RuntimeError(f"session did not reach idle within {timeout}s ({session_id})")
+
+    async def time_to_first_delta(
+        self, session_id: str, text: str, *, timeout: float = _TURN_TIMEOUT_S
+    ) -> None:
+        """Post a turn and return once the first output-text delta streams back.
+
+        The session SSE stream (``GET …/stream``) is separate from the message
+        POST, so we subscribe first (as a concurrent task), post the turn, then
+        return when the first ``response.output_text.delta`` event arrives. This
+        times omnigent's streaming-pipeline overhead to first token — with the
+        zero-latency mock there is no model latency in the number.
+
+        :raises RuntimeError: If not in runner mode, or no delta / a terminal
+            event arrives within *timeout*.
+        """
+        assert self.client is not None
+        if not self.with_runner:
+            raise RuntimeError("time_to_first_delta requires with_runner=True")
+
+        connected = asyncio.Event()
+        first_delta = asyncio.Event()
+        outcome: dict[str, str] = {}
+
+        async def _read_stream() -> None:
+            try:
+                async with self.client.stream(  # type: ignore[union-attr]
+                    "GET", f"/v1/sessions/{session_id}/stream", timeout=timeout
+                ) as resp:
+                    # Any first line means the SSE connection is live (the server
+                    # emits a heartbeat on connect). Signalling here lets us post
+                    # the turn only once subscribed — without a blind sleep that
+                    # would otherwise inflate the measured time-to-first-delta.
+                    connected.set()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("event:"):
+                            continue
+                        etype = line[len("event:") :].strip()
+                        if etype == "response.output_text.delta":
+                            first_delta.set()
+                            return
+                        if etype in _STREAM_TERMINAL_EVENTS:
+                            outcome["terminal"] = etype
+                            first_delta.set()
+                            return
+            except httpx.HTTPError as exc:
+                outcome["error"] = repr(exc)
+                connected.set()
+                first_delta.set()
+
+        # Ensure any prior turn has settled so the fresh subscription's first
+        # terminal event can't be the previous turn completing (which would
+        # otherwise race ahead of this turn's delta).
+        await self._wait_idle(session_id, timeout=timeout)
+
+        reader = asyncio.create_task(_read_stream())
+        try:
+            # Wait until the stream is actually connected (not a fixed sleep) so
+            # the measured window is post → first delta, not subscription setup.
+            await asyncio.wait_for(connected.wait(), timeout=timeout)
+            posted = await self.client.post(
+                f"/v1/sessions/{session_id}/events",
+                json={
+                    "type": "message",
+                    "data": {"role": "user", "content": [{"type": "input_text", "text": text}]},
+                },
+            )
+            posted.raise_for_status()
+            try:
+                await asyncio.wait_for(first_delta.wait(), timeout=timeout)
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"no output_text.delta within {timeout}s (session {session_id})"
+                ) from exc
+            if "error" in outcome:
+                raise RuntimeError(f"stream error: {outcome['error']}")
+            if "terminal" in outcome:
+                raise RuntimeError(
+                    f"turn reached {outcome['terminal']} before any delta (session {session_id})"
+                )
+        finally:
+            reader.cancel()
+
+    async def drive_and_interrupt(
+        self, session_id: str, *, timeout: float = _TURN_TIMEOUT_S
+    ) -> None:
+        """Drive a gated turn, interrupt it mid-flight, return when cancelled.
+
+        The caller configures a ``block=True`` mock response first (see
+        :meth:`configure_mock`), so the turn parks in ``running`` on the
+        executor's LLM call. We post an ``interrupt`` once running, wait for the
+        server's cancellation marker, then release the gate so the runner
+        unwinds cleanly. Times the server → runner → executor cancel path.
+
+        :raises RuntimeError: If not in runner mode, or the interrupt is not
+            honored within *timeout*.
+        """
+        assert self.client is not None
+        if not self.with_runner:
+            raise RuntimeError("drive_and_interrupt requires with_runner=True")
+        body = {
+            "type": "message",
+            "data": {"role": "user", "content": [{"type": "input_text", "text": "Interrupt me."}]},
+        }
+        posted = await self.client.post(f"/v1/sessions/{session_id}/events", json=body)
+        posted.raise_for_status()
+
+        deadline = time.monotonic() + timeout
+        interrupted = False
+        try:
+            while time.monotonic() < deadline:
+                snap = (await self.client.get(f"/v1/sessions/{session_id}")).json()
+                status = snap.get("status")
+                items = snap.get("items", [])
+                if status in ("running", "waiting") and not interrupted:
+                    await self.client.post(
+                        f"/v1/sessions/{session_id}/events", json={"type": "interrupt"}
+                    )
+                    interrupted = True
+                if _has_cancellation_marker(items):
+                    return
+                if status == "idle" and interrupted:
+                    if _has_cancellation_marker(items):
+                        return
+                    raise RuntimeError("turn settled without a cancellation marker")
+                await asyncio.sleep(_POLL_INTERVAL_S)
+            raise RuntimeError(f"interrupt not honored within {timeout}s (session {session_id})")
+        finally:
+            # Always release the gate so the blocked runner turn unwinds and
+            # teardown doesn't hang, even if the interrupt path errored above.
+            with contextlib.suppress(httpx.HTTPError):
+                await self._mock_post("/gate/release", {})
+
+
+def _has_cancellation_marker(items: list[dict[str, object]]) -> bool:
+    """Whether items include the synthetic 'interrupted' user message."""
+    for raw in items:
+        data = raw.get("data", raw)
+        if not isinstance(data, dict):
+            continue
+        if raw.get("type") == "message" and data.get("role") == "user":
+            content = data.get("content") or []
+            if isinstance(content, list) and any(
+                isinstance(b, dict) and _CANCELLATION_MARKER in str(b.get("text", ""))
+                for b in content
+            ):
+                return True
+    return False

@@ -48,10 +48,10 @@ from dev.benchmarks.omnigent.measure import (
 )
 from dev.benchmarks.omnigent.schema import build_report
 
-# Full-turn journeys (runner + mock LLM) are phase 2; v1 is HTTP-only, so no
-# journey needs a runner. Kept here as the single switch to flip in phase 2.
-_WITH_RUNNER = False
-_HARNESS = "http-only"
+# Harness label stamped in the report: HTTP/DB journeys drive no agent turn;
+# runner journeys drive turns through the in-process openai-agents SDK harness.
+_HTTP_HARNESS = "http-only"
+_RUNNER_HARNESS = "openai-agents"
 
 
 def _backend_of(database_uri: str | None) -> str:
@@ -106,7 +106,13 @@ async def run_benchmark(args: argparse.Namespace) -> tuple[dict[str, object], bo
     passed = True
     backend = _backend_of(args.database_uri)
 
-    async with BenchEnvironment(with_runner=_WITH_RUNNER, database_uri=args.database_uri) as env:
+    # Any full-turn journey needs the runner + mock LLM. A full env is a
+    # superset — HTTP journeys still run against it — so a mixed selection just
+    # boots with_runner=True. The harness label reflects what drove the turns.
+    with_runner = any(j.needs_runner for j in journeys)
+    harness = _RUNNER_HARNESS if with_runner else _HTTP_HARNESS
+
+    async with BenchEnvironment(with_runner=with_runner, database_uri=args.database_uri) as env:
         for journey in journeys:
             console.print(f"\n[bold]Benchmarking[/bold] {journey.name} [dim]({backend})[/dim]")
             kind, results = await _run_journey(journey, env, args)
@@ -129,7 +135,7 @@ async def run_benchmark(args: argparse.Namespace) -> tuple[dict[str, object], bo
         "concurrency": args.concurrency,
         "runs": args.runs,
         "warmup": args.warmup,
-        "with_runner": _WITH_RUNNER,
+        "with_runner": with_runner,
         "backend": backend,
     }
     generated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -137,7 +143,7 @@ async def run_benchmark(args: argparse.Namespace) -> tuple[dict[str, object], bo
         journey_results,
         generated_at=generated_at,
         config=config,
-        harness=_HARNESS,
+        harness=harness,
     )
     return report, passed
 

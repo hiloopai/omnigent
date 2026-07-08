@@ -6,8 +6,9 @@ MLflow's `dev/benchmarks/gateway/` workflow.
 
 The harness boots a real `omnigent server`, drives the selected journeys under
 load, prints latency/throughput tables, and writes a versioned JSON report.
-**It benchmarks the HTTP/API surface only** — no runner, no LLM — so runs are
-fast and low-noise.
+Two families: **HTTP/API journeys** (server + DB, no runner/LLM — fast and
+low-noise) and **full-turn journeys** (a real agent turn through the runner +
+a zero-latency mock LLM). See *Journeys* below.
 
 By default the server boots a fresh, empty SQLite DB, which gives best-case
 numbers that don't move with load. For meaningful results, point it at a
@@ -45,7 +46,9 @@ latency run), `--requests N` / `--concurrency N` (throughput), `--runs N`,
 `--warmup N`, `--output FILE`, `--min-rps` / `--max-p50-ms` / `--max-p99-ms`
 (CI thresholds).
 
-## Journeys (all pure HTTP, runner-free)
+## Journeys
+
+### HTTP/API (server + DB, runner-free)
 
 | Journey | Operation timed | Stressed by |
 | --- | --- | --- |
@@ -58,8 +61,31 @@ latency run), `--requests N` / `--concurrency N` (throughput), `--runs N`,
 Read journeys target a **pre-seeded** session when the DB has a corpus; against
 an empty DB they self-seed a small fallback session over HTTP (the
 `external_conversation_item` event — appends items without starting a task), so
-they still work with no runner or LLM. Add a journey by registering a `Journey`
-in `journeys.py`.
+they still work with no runner or LLM.
+
+### Full-turn (runner + mock LLM)
+
+These drive a real agent turn end-to-end — `POST …/events` → server → **runner**
+→ in-process executor → mock LLM → stream back → `idle`. Selecting any of them
+boots `BenchEnvironment(with_runner=True)` automatically.
+
+| Journey | Operation timed |
+| --- | --- |
+| `session_cold_start` | Create+bind a fresh session and drive its first turn to `idle` (runner spawn + executor construction + turn) |
+| `warm_turn` | Drive a turn on an already-warm session — steady-state dispatch overhead |
+| `time_to_first_token` | Post a turn; time to the first streamed `output_text` delta |
+| `interrupt` | Interrupt a running (gated) turn; time to cancellation |
+
+**Only measure what we control.** Full-turn journeys always use the
+**`openai-agents`** SDK harness, which runs **in-process** (a call into the
+`agents` library + an HTTP call to the mock LLM) — no vendor binary, no external
+process. Native harnesses (e.g. `claude-native`) launch the real vendor CLI
+into a tmux pane, whose startup we don't control, so they're deliberately
+excluded. The mock LLM is zero-latency, so every number is omnigent
+dispatch/streaming/cancel overhead, not model latency.
+
+Add a journey by registering a `Journey` in `journeys.py` (set `needs_runner`
+for full-turn journeys).
 
 ## Seeding a realistic corpus
 
@@ -178,16 +204,16 @@ corpus / `sample_output.json`.
 
 ## Follow-ups
 
-- **Phase 2 — full-stack agent-turn journeys.** `environment.py` already
-  implements a `with_runner=True` mode that additionally spawns a zero-latency
-  mock LLM (`tests/server/integration/mock_llm_server.py`) and a sibling
-  `runner`, and routes the server-side policy classifier at the mock. Phase 2
-  is additive: flip `_WITH_RUNNER = True` in `run.py` and register full-turn
-  journeys (create-session-and-drive-a-turn, tool-calling, streaming,
-  interrupt, multi-turn). The shared framework (`measure.py`, `schema.py`, the
-  `Journey` runners) is reused unchanged. The `with_runner=True` path is written
-  but unexercised until phase 2 adds a full-turn smoke test.
-- **Simulated provider latency.** The mock LLM returns at ~zero latency (right
-  for measuring app overhead). A fixed per-response delay knob would let phase-2
-  turns model end-user wall-clock; it's a one-field change threaded through
-  `mock_llm_server.py` behind the `configure_mock` seam.
+- **Excluded journeys** (agent-behaviour-dependent, deliberately not measured):
+  multi-turn and tool-calling turns (dominated by the agent's own choices) and
+  large-history turns (the O(N) `history_to_input_items` conversion is real app
+  work but only fires on a cold runner cache, so isolating it entangles with
+  cold-start cost).
+- **CI matrix.** Runner journeys are backend-agnostic (they exercise runner
+  dispatch, not big DB reads), so the nightly workflow can run them on the
+  SQLite leg only rather than both — wire a runner `--journeys` set into
+  `benchmark.yml` when desired.
+- **Simulated provider latency.** The mock LLM returns at ~zero latency, which
+  is what isolates omnigent overhead. A fixed per-response delay knob would let
+  turns model end-user wall-clock instead; it's a small change behind the
+  `configure_mock` / `set_mock_fallback` seam if that's ever wanted.

@@ -147,6 +147,37 @@ async def test_benchmark_smoke_threshold_failure_exits_nonzero() -> None:
     assert not passed
 
 
+# ── runner (full-turn) journeys ──────────────────────────────
+
+_RUNNER_JOURNEYS = ["session_cold_start", "warm_turn", "time_to_first_token", "interrupt"]
+
+
+@pytest.mark.timeout(300)
+async def test_benchmark_smoke_runner_journeys() -> None:
+    """Run each full-turn journey once through server + runner + mock LLM.
+
+    First exercise of the ``with_runner=True`` path end-to-end. Tiny counts —
+    each cold-start iteration spawns a runner, so this is the slow smoke.
+    """
+    report, passed = await bench_run.run_benchmark(
+        _smoke_args(journeys=_RUNNER_JOURNEYS, iterations=1, warmup=1)
+    )
+
+    assert passed
+    # A runner journey was selected → env booted with_runner, harness stamped.
+    assert _d(report["config"])["with_runner"] is True
+    assert report["harness"] == "openai-agents"
+
+    journeys = _d(report["journeys"])
+    for name in _RUNNER_JOURNEYS:
+        assert ALL_JOURNEYS[name].needs_runner
+        block = _d(journeys[name])
+        run_rows = cast(list[dict[str, object]], block["runs"])
+        assert run_rows, f"{name} produced no runs"
+        # Zero failures — a failure here means the full-turn path broke.
+        assert run_rows[0]["n_failures"] == 0, f"{name}: {run_rows[0]['failures']}"
+
+
 # ── seeder (direct store, no server) ─────────────────────────
 
 

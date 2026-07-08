@@ -61,6 +61,9 @@ class Journey:
     :param concurrency_safe: Whether many ``measure`` calls may run at once
         against a shared setup (true for read-only / independent-write HTTP
         journeys).
+    :param needs_runner: Whether this journey drives a full agent turn and so
+        requires ``BenchEnvironment(with_runner=True)`` (mock LLM + runner).
+        HTTP/DB journeys leave this ``False``.
     :param description: Human-readable one-liner for ``--list``.
     """
 
@@ -70,6 +73,7 @@ class Journey:
     setup: Callable[[BenchEnvironment], Awaitable[JourneyContext]] | None = None
     teardown: Callable[[BenchEnvironment, JourneyContext], Awaitable[None]] | None = None
     concurrency_safe: bool = False
+    needs_runner: bool = False
     description: str = ""
 
     async def run_setup(self, env: BenchEnvironment) -> JourneyContext:
@@ -245,6 +249,84 @@ async def _measure_load_history(env: BenchEnvironment, ctx: JourneyContext) -> N
     resp.raise_for_status()
 
 
+# ── runner (full-turn) journeys ──────────────────────────────
+#
+# These drive a real agent turn through the runner + mock LLM (with_runner=True,
+# openai-agents). The mock is zero-latency, so every number is omnigent dispatch
+# / streaming / cancel overhead, not model latency. Short deterministic replies.
+
+# A multi-word reply so the streaming path emits several output_text deltas.
+_TURN_REPLY = "Hello there, this is a mock benchmark reply."
+_TURN_PROMPT = "Say hello."
+
+
+async def _setup_turn_agent(env: BenchEnvironment, *, stream: bool = False) -> str:
+    """Register the agent + a reset-surviving reply; return the agent id.
+
+    The fallback survives per-call queue exhaustion, so every turn in the run
+    gets the same reply regardless of how many turns consume the queue. When
+    *stream* is set the reply emits per-word deltas (for the TTFT journey).
+    """
+    name = await env.ensure_agent()
+    await env.set_mock_fallback(_TURN_REPLY, stream=stream)
+    return await env.agent_id(name)
+
+
+async def _setup_warm_session(env: BenchEnvironment) -> str:
+    """Create+bind a session and drive one warm-up turn; return the session id.
+
+    The warm-up pays the cold-start cost (runner spawn + executor construction)
+    so the measured op times only steady-state per-turn overhead.
+    """
+    agent_id = await _setup_turn_agent(env)
+    session_id = await env.create_bound_session(agent_id)
+    await env.drive_turn(session_id, _TURN_PROMPT)
+    return session_id
+
+
+async def _setup_streaming_session(env: BenchEnvironment) -> str:
+    """Warm session whose mock reply streams deltas — for the TTFT journey."""
+    agent_id = await _setup_turn_agent(env, stream=True)
+    session_id = await env.create_bound_session(agent_id)
+    await env.drive_turn(session_id, _TURN_PROMPT)
+    return session_id
+
+
+async def _setup_interrupt_session(env: BenchEnvironment) -> str:
+    """Create+bind a session for the interrupt journey; return the session id.
+
+    Configures a ``block=True`` mock response so each turn parks in ``running``
+    until the gate is released — giving the interrupt something to cancel
+    mid-flight, deterministically.
+    """
+    name = await env.ensure_agent()
+    agent_id = await env.agent_id(name)
+    session_id = await env.create_bound_session(agent_id)
+    await env.configure_mock([{"text": _TURN_REPLY, "block": True}])
+    return session_id
+
+
+async def _measure_session_cold_start(env: BenchEnvironment, ctx: JourneyContext) -> None:
+    agent_id = cast(str, ctx)  # _setup_turn_agent
+    session_id = await env.create_bound_session(agent_id)
+    await env.drive_turn(session_id, _TURN_PROMPT)
+
+
+async def _measure_warm_turn(env: BenchEnvironment, ctx: JourneyContext) -> None:
+    session_id = cast(str, ctx)  # _setup_warm_session
+    await env.drive_turn(session_id, _TURN_PROMPT)
+
+
+async def _measure_time_to_first_token(env: BenchEnvironment, ctx: JourneyContext) -> None:
+    session_id = cast(str, ctx)  # _setup_warm_session
+    await env.time_to_first_delta(session_id, _TURN_PROMPT)
+
+
+async def _measure_interrupt(env: BenchEnvironment, ctx: JourneyContext) -> None:
+    session_id = cast(str, ctx)  # _setup_interrupt_session
+    await env.drive_and_interrupt(session_id)
+
+
 # ── registry ─────────────────────────────────────────────────
 
 ALL_JOURNEYS: dict[str, Journey] = {
@@ -287,6 +369,39 @@ ALL_JOURNEYS: dict[str, Journey] = {
             measure=_measure_search_sessions,
             concurrency_safe=True,
             description="GET /v1/sessions?search_query= — unindexed LIKE over titles + items.",
+        ),
+        # Runner (full-turn) journeys — with_runner=True, openai-agents, mock LLM.
+        Journey(
+            name="session_cold_start",
+            kind="latency",
+            measure=_measure_session_cold_start,
+            setup=_setup_turn_agent,
+            needs_runner=True,
+            description="Create+bind a fresh session and drive its first turn to idle.",
+        ),
+        Journey(
+            name="warm_turn",
+            kind="latency",
+            measure=_measure_warm_turn,
+            setup=_setup_warm_session,
+            needs_runner=True,
+            description="Drive a turn on an already-warm session (steady-state overhead).",
+        ),
+        Journey(
+            name="time_to_first_token",
+            kind="latency",
+            measure=_measure_time_to_first_token,
+            setup=_setup_streaming_session,
+            needs_runner=True,
+            description="Post a turn; time to the first streamed output_text delta.",
+        ),
+        Journey(
+            name="interrupt",
+            kind="latency",
+            measure=_measure_interrupt,
+            setup=_setup_interrupt_session,
+            needs_runner=True,
+            description="Interrupt a running (gated) turn; time to cancellation.",
         ),
     )
 }
