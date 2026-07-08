@@ -90,10 +90,6 @@ async def test_session_new_client_mode_generates_and_sends_id() -> None:
         )
     )
 
-    async def fake_rpc(method, params, timeout=30.0):
-        # Client-generated id echoed back; server returns no id of its own.
-        return {"result": {}}
-
     sent: dict = {}
 
     async def capture_rpc(method, params, timeout=30.0):

@@ -385,6 +385,7 @@ class AcpExecutor(Executor):
                 if line:
                     logger.debug("acp[%s] stderr: %s", self._config.name, line)
         except asyncio.CancelledError:
+            # Expected: close() cancels this reader task on teardown.
             pass
         except Exception as exc:  # noqa: BLE001
             logger.debug("acp[%s] stderr reader stopped: %s", self._config.name, exc)
@@ -429,6 +430,7 @@ class AcpExecutor(Executor):
                 else:
                     await self._queue.put(msg)
         except (asyncio.CancelledError, EOFError):
+            # Expected during shutdown / after the subprocess closes stdout.
             pass
         except Exception as exc:
             logger.exception("acp[%s] stdout reader error: %s", self._config.name, exc)

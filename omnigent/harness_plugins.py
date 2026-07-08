@@ -931,9 +931,7 @@ def harness_catalog() -> list[dict[str, Any]]:
                 acp_row["capabilities"] = acp_capability.as_dict()
             rows.append(acp_row)
     except Exception:  # noqa: BLE001 — a malformed acp: block must never break the catalog
-        import logging
-
-        logging.getLogger(__name__).debug("acp catalog rows skipped", exc_info=True)
+        _logger.debug("acp catalog rows skipped", exc_info=True)
     return rows
 
 

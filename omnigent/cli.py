@@ -10172,9 +10172,7 @@ def _add_acp_agent() -> str | None:
     model = (prompt_text("Model (optional — Enter to skip)", default="") or "").strip() or None
 
     entries = list(acp_agents())
-    entries.append(
-        AcpAgentEntry(slug=slugify(name), name=name, command=command, model=model)
-    )
+    entries.append(AcpAgentEntry(slug=slugify(name), name=name, command=command, model=model))
     _save_global_config(acp_agents_settings(entries))
     return f"✓ Added {name}"
 
@@ -11477,26 +11475,6 @@ def _run_configure_harnesses_interactive() -> None:
                     (_GOOSE, "Goose", "Not configured", "warn", "Open to run `goose configure`."),
                 )
 
-        # Custom ACP agents — any user-configured ACP-agent command. Not gated on
-        # a binary (each agent owns its own install); "configured" = ≥1 registered.
-        from omnigent.onboarding.acp_auth import acp_config_summary
-
-        acp_summary = acp_config_summary()
-        if acp_summary.configured:
-            rows.append(
-                (_ACP, "Custom ACP agent", f"{acp_summary.count} configured", "ready", "")
-            )
-        else:
-            rows.append(
-                (
-                    _ACP,
-                    "Custom ACP agent",
-                    "None configured",
-                    "warn",
-                    "Add any ACP agent (gemini, qwen, goose, …).",
-                )
-            )
-
         # Copilot — GitHub token (github-copilot-sdk extra is soft).
         if copilot_github_token_configured(config) or any(
             os.environ.get(v) for v in COPILOT_TOKEN_ENV_VARS
@@ -11550,6 +11528,25 @@ def _run_configure_harnesses_interactive() -> None:
             kimi_spec = harness_install_spec(KIMI_KEY)
             kimi_hint = (kimi_spec.install_hint if kimi_spec else None) or "see Kimi Code docs"
             rows.append((_KIMI, "Kimi Code", "Not installed", "missing", _install_hint(kimi_hint)))
+
+        # Custom ACP agents — the generic `acp` harness driving any user-configured
+        # ACP-agent command. Listed last as the catch-all. Not gated on a binary
+        # (each agent owns its own install); "configured" = ≥1 registered.
+        from omnigent.onboarding.acp_auth import acp_config_summary
+
+        acp_summary = acp_config_summary()
+        if acp_summary.configured:
+            rows.append((_ACP, "Custom ACP agent", f"{acp_summary.count} configured", "ready", ""))
+        else:
+            rows.append(
+                (
+                    _ACP,
+                    "Custom ACP agent",
+                    "None configured",
+                    "warn",
+                    "Add any ACP agent (gemini, qwen, goose, …).",
+                )
+            )
         return rows
 
     while True:

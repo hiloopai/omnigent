@@ -1638,7 +1638,7 @@ def _overview_row_names(options: list[str], selectable: list[bool]) -> list[str]
 def test_overview_lists_all_harnesses_in_priority_order(isolated_config, monkeypatch) -> None:
     """The overview shows every harness on one compact row, in 0.3 priority order.
 
-    No "More" folding: all twelve harnesses are visible at once, followed by
+    No "More" folding: all thirteen harnesses are visible at once, followed by
     Quit. A regression that hides a harness, reorders the core six, or
     reintroduces a collapse row fails here. The menu also opts into the compact
     top-level rendering.
@@ -1659,6 +1659,7 @@ def test_overview_lists_all_harnesses_in_priority_order(isolated_config, monkeyp
         "Copilot",
         "Kiro",
         "Kimi Code",
+        "Custom ACP agent",
         "Quit",
     ]
     assert _overview_row_names(options, selectable) == expected
@@ -1827,6 +1828,7 @@ def test_overview_truncates_long_status_for_narrow_terminal(isolated_config, mon
         ("10", "_manage_copilot_harness"),
         ("11", "_manage_kiro_harness"),
         ("12", "_manage_kimi_harness"),
+        ("13", "_manage_acp_harness"),
     ],
 )
 def test_overview_dispatches_to_correct_manager(
