@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.harness_bench.full_server_driver import FullServerDriver
-from tests.harness_bench.profile import resolve_profile
+from omnigent.harness_bench.full_server_driver import FullServerDriver
+from omnigent.harness_bench.profile import resolve_profile
 
 
 @pytest.fixture

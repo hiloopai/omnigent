@@ -8,20 +8,20 @@ table is for.
 
 Only usable on a TTY with ``rich`` installed. :func:`rich_sink_or_none`
 returns ``None`` when either precondition is missing, so the CLI falls back to
-the plain :class:`~tests.harness_bench.events.LineSink`.
+the plain :class:`~omnigent.harness_bench.events.LineSink`.
 """
 
 from __future__ import annotations
 
-from tests.harness_bench.events import (
+from omnigent.harness_bench.events import (
     BenchEvent,
     HarnessSkipped,
     HarnessStarted,
     ProbeFinished,
     ProbeStarted,
 )
-from tests.harness_bench.probes import ALL_PROBES
-from tests.harness_bench.verdict import Verdict
+from omnigent.harness_bench.probes import ALL_PROBES
+from omnigent.harness_bench.verdict import Verdict
 
 # Cell state → what the table shows. Verdicts reuse the report glyphs; the two
 # transient states (pending/running) are bench-live only.
@@ -60,7 +60,7 @@ def rich_sink_or_none(*, force: bool = False):
 
 
 class _RichLiveSink:
-    """A :class:`~tests.harness_bench.events.ProgressSink` backed by ``rich.Live``.
+    """A :class:`~omnigent.harness_bench.events.ProgressSink` backed by ``rich.Live``.
 
     Holds a ``{harness: {dimension: cell-markup}}`` grid and re-renders a table
     on every event. Rows appear as harnesses start; a whole-harness skip marks

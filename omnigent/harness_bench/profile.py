@@ -7,7 +7,7 @@ verdict for each dimension (the spreadsheet cell, as data).
 
 The bench never hard-codes a harness anywhere else — probes and drivers
 are harness-agnostic. Adding an official harness means adding a profile
-to :mod:`tests.harness_bench.manifest`; a community / out-of-repo harness
+to :mod:`omnigent.harness_bench.manifest`; a community / out-of-repo harness
 ships its own profile and is selected by name via :func:`resolve_profile`.
 """
 
@@ -17,7 +17,7 @@ import importlib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from tests.harness_bench.verdict import Verdict
+from omnigent.harness_bench.verdict import Verdict
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class BenchProfile:
         e.g. ``"codex"``. ``None`` for pure-Python harnesses. Used to skip
         the live layer when the binary is absent.
     :param transport: Transport class name selecting a driver in
-        :mod:`tests.harness_bench.driver`, e.g. ``"sdk-inproc"``. A
+        :mod:`omnigent.harness_bench.driver`, e.g. ``"sdk-inproc"``. A
         harness on an unknown transport degrades its transport-dependent
         probes to ``SKIPPED``.
     :param owner: Static matrix column — who owns this harness.
@@ -76,7 +76,7 @@ def resolve_profile(name: str) -> BenchProfile:
 
     Resolution chain:
 
-    1. An official harness in :mod:`tests.harness_bench.manifest`.
+    1. An official harness in :mod:`omnigent.harness_bench.manifest`.
     2. A community harness that ships a profile: *name* is a dotted path
        to either a ``BenchProfile`` instance or a zero-arg
        ``bench_profile()`` factory (e.g.
@@ -84,7 +84,7 @@ def resolve_profile(name: str) -> BenchProfile:
     3. Any harness registered in the omnigent registry (in-repo or an
        entry-point plugin), resolved by name / alias — the profile is
        derived from the capability model (see
-       :func:`tests.harness_bench.manifest._registry_profile`). This is what
+       :func:`omnigent.harness_bench.manifest._registry_profile`). This is what
        lets ``--harness acp`` or ``--harness rovo`` run with no bench edit.
 
     This keeps the official list a convenience index, not a gate: any
@@ -96,7 +96,7 @@ def resolve_profile(name: str) -> BenchProfile:
     :raises KeyError: If *name* is not a registered harness nor an importable
         profile reference.
     """
-    from tests.harness_bench.manifest import OFFICIAL_PROFILES, _registry_profile
+    from omnigent.harness_bench.manifest import OFFICIAL_PROFILES, _registry_profile
 
     if name in OFFICIAL_PROFILES:
         return OFFICIAL_PROFILES[name]

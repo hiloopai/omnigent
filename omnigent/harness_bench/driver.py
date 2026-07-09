@@ -25,9 +25,9 @@ from typing import Any
 
 import httpx
 
+from omnigent.harness_bench.cli_probe import cli_unavailable_reason
+from omnigent.harness_bench.profile import BenchProfile
 from omnigent.runtime.harnesses.process_manager import HarnessProcessManager
-from tests.e2e._harness_probes import cli_unavailable_reason
-from tests.harness_bench.profile import BenchProfile
 
 
 class ProvisioningError(RuntimeError):

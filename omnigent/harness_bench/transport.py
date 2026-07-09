@@ -3,17 +3,17 @@
 A probe measures one capability dimension by calling a small set of
 *semantic* methods on a driver — ``run_basic_turn``, ``run_streaming_turn``,
 ``run_tool_turn``, ``run_interrupt_turn`` — each returning a
-:class:`~tests.harness_bench.driver.TurnResult`. The driver owns the
+:class:`~omnigent.harness_bench.driver.TurnResult`. The driver owns the
 *mechanism* (how a tool call is provoked, how a deny is enforced, how deltas
 are observed); the probe owns the *interpretation* (what verdict the result
 implies). This split is what lets one probe run over transports that reach
 the same capability by different means:
 
-- ``sdk-inproc`` (:class:`~tests.harness_bench.driver.SdkInprocDriver`)
+- ``sdk-inproc`` (:class:`~omnigent.harness_bench.driver.SdkInprocDriver`)
   drives a harness wrap subprocess directly, with request-level tools and
   verdict-posted policy.
 - ``full-server``
-  (:class:`~tests.harness_bench.full_server_driver.FullServerDriver`) drives
+  (:class:`~omnigent.harness_bench.full_server_driver.FullServerDriver`) drives
   a real server+runner, with a builtin tool and a spec-baked policy.
 
 A kwargs-carrying ``run_turn`` could not bridge these: e.g. streaming is only
@@ -38,8 +38,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from tests.harness_bench.driver import TurnResult
-from tests.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.driver import TurnResult
+from omnigent.harness_bench.profile import BenchProfile
 
 
 class Driver(Protocol):
@@ -93,9 +93,9 @@ def driver_registry() -> dict[str, type]:
     Imported lazily so the transport module stays cheap to import (the
     full-server driver pulls in server/runner spawn helpers).
     """
-    from tests.harness_bench.driver import SdkInprocDriver
-    from tests.harness_bench.full_server_driver import FullServerDriver
-    from tests.harness_bench.native_tui_driver import NativeTuiDriver
+    from omnigent.harness_bench.driver import SdkInprocDriver
+    from omnigent.harness_bench.full_server_driver import FullServerDriver
+    from omnigent.harness_bench.native_tui_driver import NativeTuiDriver
 
     return {
         SdkInprocDriver.transport: SdkInprocDriver,

@@ -9,16 +9,16 @@ against a self-declared profile to surface drift. Design and rationale:
 
 ```bash
 # List official harnesses (name, resolved transport, model).
-python -m tests.harness_bench --list
+python -m omnigent.harness_bench --list
 
 # Offline (declared) matrix -- no turns, no creds.
-python -m tests.harness_bench
+python -m omnigent.harness_bench
 
 # Live probe one harness against a gateway profile.
-python -m tests.harness_bench --harness codex --profile my-profile
+python -m omnigent.harness_bench --harness codex --profile my-profile
 
 # Live probe every official harness, several at a time, with a live table.
-python -m tests.harness_bench --profile my-profile --jobs 4 --rich
+python -m omnigent.harness_bench --profile my-profile --jobs 4 --rich
 ```
 
 A non-zero exit means a `DRIFT` cell was found (observed behavior disagrees
@@ -66,7 +66,7 @@ the file is self-contained.
 A live `--rich` run of the four SDK harnesses on the `oss` profile:
 
 ```console
-$ uv run --no-sync python -m tests.harness_bench --profile oss --rich \
+$ uv run --no-sync python -m omnigent.harness_bench --profile oss --rich \
     --harness claude-sdk --harness codex --harness pi --harness openai-agents
 
                               Harness capability matrix (live)
@@ -158,8 +158,9 @@ so they show `·` on `sdk-inproc` and `native-tui`:
 
 ## Add a harness
 
-- **Official SDK:** add a `BenchProfile` to `manifest.py` (base fields come
-  from `_harness_probes.HARNESS_PROBES`). No probe or driver edits.
+- **Official SDK:** add an `SdkSeed` to `seed.py` (the single source of truth the
+  e2e matrix also rebuilds from); `manifest.py` turns it into a `BenchProfile`.
+  No probe or driver edits.
 - **Native:** nothing to add -- every harness the capability model marks
   `NATIVE_TUI` (in-repo or a community plugin) is auto-derived into the matrix
   and drivable by name; `native_vendor()` derives what the driver needs.

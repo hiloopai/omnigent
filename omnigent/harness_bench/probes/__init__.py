@@ -7,13 +7,13 @@ here to add a dimension. Order is the report's column order:
 
 from __future__ import annotations
 
-from tests.harness_bench.probes.base import CapabilityProbe
-from tests.harness_bench.probes.basic_turn import BasicTurnProbe
-from tests.harness_bench.probes.interrupt import InterruptProbe
-from tests.harness_bench.probes.model_override import ModelOverrideProbe
-from tests.harness_bench.probes.policy_deny import PolicyDenyProbe
-from tests.harness_bench.probes.streaming import StreamingProbe
-from tests.harness_bench.probes.tool_calling import ToolCallingProbe
+from omnigent.harness_bench.probes.base import CapabilityProbe
+from omnigent.harness_bench.probes.basic_turn import BasicTurnProbe
+from omnigent.harness_bench.probes.interrupt import InterruptProbe
+from omnigent.harness_bench.probes.model_override import ModelOverrideProbe
+from omnigent.harness_bench.probes.policy_deny import PolicyDenyProbe
+from omnigent.harness_bench.probes.streaming import StreamingProbe
+from omnigent.harness_bench.probes.tool_calling import ToolCallingProbe
 
 # Order is the report's column order AND the run order. basic_turn is first
 # (the prerequisite short-circuit). interrupt is LAST because cancelling a

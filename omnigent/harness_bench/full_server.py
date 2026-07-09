@@ -1,14 +1,14 @@
 """Shared full-server infrastructure: spawn a real Omnigent server + runner.
 
-Split from :mod:`tests.harness_bench.full_server_driver` so the *server
+Split from :mod:`omnigent.harness_bench.full_server_driver` so the *server
 lifecycle* (spawning the server/runner, minting a bearer, registering bench
 agents + sessions) lives apart from the *driver* that runs probes against it.
 Two consumers use this:
 
-- :class:`~tests.harness_bench.full_server_driver.FullServerDriver` — one
+- :class:`~omnigent.harness_bench.full_server_driver.FullServerDriver` — one
   harness per :class:`SharedFullServer` (solo run), or several harnesses on one
   shared server (parallel run; see ``bench.run_bench``).
-- :mod:`tests.harness_bench.native_tui_driver` reuses the lower-level spawn
+- :mod:`omnigent.harness_bench.native_tui_driver` reuses the lower-level spawn
   helpers (:func:`spawn_omnigent_server`, :func:`_mint_bearer`,
   :func:`_find_free_port`) for its own server + host-daemon topology.
 """
@@ -22,6 +22,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import time
 import uuid
@@ -31,18 +32,15 @@ from typing import Any
 import httpx
 import yaml
 
+from omnigent.harness_bench.creds_lookup import lookup_databricks_host
+from omnigent.harness_bench.profile import BenchProfile
 from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN, token_bound_runner_id
-from tests._helpers.compat import (
-    apply_runner_env,
-    apply_server_env,
-    compat_runner_cwd,
-    compat_server_cwd,
-    runner_executable,
-    server_executable,
-)
-from tests.e2e.helpers import lookup_databricks_host
-from tests.harness_bench.profile import BenchProfile
 
+# Repo root when running from a source checkout (``.../omnigent/harness_bench/
+# full_server.py`` -> parents[2]). Prepended to the spawned server's PYTHONPATH
+# so it imports the working copy. In an installed wheel this points at
+# site-packages, where omnigent already resolves, so the prepend is a harmless
+# no-op.
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
 _HEALTH_TIMEOUT_S = 90.0
 _POLL_INTERVAL_S = 0.2
@@ -95,7 +93,7 @@ def spawn_omnigent_server(
     artifact_dir.mkdir(exist_ok=True)
     log = tmp / "server.log"
     args = [
-        server_executable(),
+        sys.executable,
         "-m",
         "omnigent.cli",
         "server",
@@ -109,7 +107,6 @@ def spawn_omnigent_server(
     return subprocess.Popen(
         args,
         env={**base_env, "OMNIGENT_RUNNER_TUNNEL_TOKEN": binding_token},
-        cwd=compat_server_cwd(),
         stdout=log.open("wb"),
         stderr=subprocess.STDOUT,
     )
@@ -120,19 +117,16 @@ def _spawn_bench_runner(
 ) -> subprocess.Popen[bytes]:
     """Spawn a bench runner bound to *base_url* (the full-server execution sandbox)."""
     log = tmp / "runner.log"
-    runner_env = apply_runner_env(
-        {
-            **base_env,
-            "OMNIGENT_RUNNER_ID": runner_id,
-            "OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN": binding_token,
-            "OMNIGENT_RUNNER_PARENT_PID": str(os.getpid()),
-            "RUNNER_SERVER_URL": base_url,
-        }
-    )
+    runner_env = {
+        **base_env,
+        "OMNIGENT_RUNNER_ID": runner_id,
+        "OMNIGENT_RUNNER_TUNNEL_BINDING_TOKEN": binding_token,
+        "OMNIGENT_RUNNER_PARENT_PID": str(os.getpid()),
+        "RUNNER_SERVER_URL": base_url,
+    }
     return subprocess.Popen(
-        [runner_executable(), "-m", "omnigent.runner._entry"],
+        [sys.executable, "-m", "omnigent.runner._entry"],
         env=runner_env,
-        cwd=compat_runner_cwd(),
         stdout=log.open("wb"),
         stderr=subprocess.STDOUT,
     )
@@ -257,7 +251,11 @@ class SharedFullServer:
             "OPENAI_BASE_URL": f"{host}/serving-endpoints",
             "DATABRICKS_CONFIG_PROFILE": self._db_profile,
         }
-        apply_server_env(base_env, _REPO_ROOT)
+        # Prepend the repo root so a source-checkout run imports the working
+        # copy; harmless in an installed wheel (where it points at site-packages).
+        base_env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH", "")) if p
+        )
         self._proc = spawn_omnigent_server(self._tmp, port, base_env, binding_token)
         self._runner = _spawn_bench_runner(
             self._tmp, base_env, self.runner_id, binding_token, self.base_url

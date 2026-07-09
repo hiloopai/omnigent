@@ -12,12 +12,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tests.harness_bench.driver import TurnResult
-from tests.harness_bench.native_tui_driver import NativeTuiDriver, native_vendor
-from tests.harness_bench.probes.policy_deny import PolicyDenyProbe
-from tests.harness_bench.probes.tool_calling import ToolCallingProbe
-from tests.harness_bench.profile import BenchProfile
-from tests.harness_bench.verdict import Verdict
+from omnigent.harness_bench.driver import TurnResult
+from omnigent.harness_bench.native_tui_driver import NativeTuiDriver, native_vendor
+from omnigent.harness_bench.probes.policy_deny import PolicyDenyProbe
+from omnigent.harness_bench.probes.tool_calling import ToolCallingProbe
+from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.verdict import Verdict
 
 
 class _FakeResponse:
@@ -233,8 +233,8 @@ async def test_probes_read_native_tool_result_as_supported() -> None:
 
 def test_format_matches_server_wire_name() -> None:
     """The driver keys on the exact wire name the server publishes."""
+    from omnigent.harness_bench.native_tui_driver import _POLICY_DENIED_EVENT
     from omnigent.server.routes.sessions import _format_sse
-    from tests.harness_bench.native_tui_driver import _POLICY_DENIED_EVENT
 
     sse = _format_sse(_POLICY_DENIED_EVENT, {"type": _POLICY_DENIED_EVENT})
     # The reader parses `event: <name>`; assert the driver's key is that name.

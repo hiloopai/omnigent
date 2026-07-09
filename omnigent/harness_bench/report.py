@@ -19,9 +19,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from tests.harness_bench.bench import BenchMatrix, CellResult, HarnessReport
-from tests.harness_bench.probes import ALL_PROBES
-from tests.harness_bench.verdict import Verdict
+from omnigent.harness_bench.bench import BenchMatrix, CellResult, HarnessReport
+from omnigent.harness_bench.probes import ALL_PROBES
+from omnigent.harness_bench.verdict import Verdict
 
 # ANSI colors per verdict, applied only when writing to a TTY.
 _ANSI: dict[Verdict, str] = {

@@ -128,7 +128,7 @@ list" to "discover"; probes, profiles, and reports are untouched.
 Three layers plus a report step.
 
 ```
-tests/harness_bench/
+omnigent/harness_bench/   # ships in the wheel; `omni bench` runs it
   profile.py         # BenchProfile: per-harness self-declared facts
   manifest.py        # registry of official BenchProfiles (the spreadsheet as data)
   verdict.py         # Verdict enum, ProbeResult, priority (P0/P1)
@@ -164,7 +164,7 @@ tests/harness_bench/
   server, exactly like the existing e2e tests
   (`/v1/sessions` + `send_user_message_to_session` +
   `poll_session_until_terminal` + `final_assistant_text`).
-- **Report.** `python -m tests.harness_bench --harness codex` prints one
+- **Report.** `python -m omnigent.harness_bench --harness codex` prints one
   harness's matrix; no filter regenerates the whole sheet with a `DRIFT` column
   diffing declared vs observed.
 
@@ -333,16 +333,16 @@ The MVP and most of phase-2 are landed. What exists on `main` today:
 
 ```
 # Offline: the declared matrix, no creds, every harness. Fast.
-python -m tests.harness_bench
+python -m omnigent.harness_bench
 
 # Live: probe one harness against a gateway profile.
-python -m tests.harness_bench --harness codex-native --profile oss
+python -m omnigent.harness_bench --harness codex-native --profile oss
 
 # Live: probe every official harness (SDK + native) sequentially.
-python -m tests.harness_bench --profile oss
+python -m omnigent.harness_bench --profile oss
 
 # A community harness that ships its own BenchProfile.
-python -m tests.harness_bench --harness mypkg.harness:PROFILE --profile oss
+python -m omnigent.harness_bench --harness mypkg.harness:PROFILE --profile oss
 ```
 
 **You do not need to live-probe every harness on every host — and you cannot.**
@@ -409,7 +409,7 @@ the **default** for SDK harnesses — a plain live run proves Tool calling and
 Policy DENY out of the box:
 
 ```
-python -m tests.harness_bench --harness claude-sdk --profile oss
+python -m omnigent.harness_bench --harness claude-sdk --profile oss
 ```
 
 Live-verified: `claude-sdk` completes the full matrix on `full-server` —

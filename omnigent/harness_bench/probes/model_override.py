@@ -17,12 +17,12 @@ gateway to reject unknown ids promptly.
 
 from __future__ import annotations
 
+from omnigent.harness_bench.driver import infra_failure_reason
+from omnigent.harness_bench.probes.base import CapabilityProbe
+from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.transport import Driver
+from omnigent.harness_bench.verdict import Applicability, Priority, ProbeResult, Verdict
 from omnigent.model_override import model_family_mismatch, validate_model_override
-from tests.harness_bench.driver import infra_failure_reason
-from tests.harness_bench.probes.base import CapabilityProbe
-from tests.harness_bench.profile import BenchProfile
-from tests.harness_bench.transport import Driver
-from tests.harness_bench.verdict import Applicability, Priority, ProbeResult, Verdict
 
 
 class ModelOverrideProbe(CapabilityProbe):

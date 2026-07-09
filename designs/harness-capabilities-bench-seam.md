@@ -1,6 +1,6 @@
 # Seam: harness capabilities → harness bench
 
-**Audience:** whoever wires the harness bench (`tests/harness_bench/`, the
+**Audience:** whoever wires the harness bench (`omnigent/harness_bench/`, the
 `#1787 → #1790 → #1792` stack) to consume the declarative capability model.
 **Status:** capability model is PR #1847 (open, base `main`). This note is the
 contract for the follow-up that makes the bench derive from it. No bench code
@@ -11,7 +11,7 @@ has been changed yet.
 ## The one-sentence idea
 
 The bench today hand-maintains a "declared support matrix" in
-`tests/harness_bench/manifest.py` (`_P0_ALL_SUPPORTED` verdicts + `_STATIC`
+`omnigent/harness_bench/manifest.py` (`_P0_ALL_SUPPORTED` verdicts + `_STATIC`
 columns). That is a *second copy* of "what each harness supports". PR #1847 adds
 the *first, canonical* copy — `harness_capabilities()`. **Make the manifest
 derive from `harness_capabilities()` and delete the hand-typed dicts**, so there

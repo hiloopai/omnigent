@@ -16,8 +16,8 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from tests.harness_bench.driver import ProvisioningError
-from tests.harness_bench.events import (
+from omnigent.harness_bench.driver import ProvisioningError
+from omnigent.harness_bench.events import (
     HarnessFinished,
     HarnessSkipped,
     HarnessStarted,
@@ -26,11 +26,11 @@ from tests.harness_bench.events import (
     ProbeStarted,
     ProgressSink,
 )
-from tests.harness_bench.full_server import SharedFullServer
-from tests.harness_bench.probes import ALL_PROBES, CapabilityProbe
-from tests.harness_bench.profile import BenchProfile
-from tests.harness_bench.transport import resolve_driver_class, resolve_transport_name
-from tests.harness_bench.verdict import Applicability, Priority, ProbeResult, Verdict, reconcile
+from omnigent.harness_bench.full_server import SharedFullServer
+from omnigent.harness_bench.probes import ALL_PROBES, CapabilityProbe
+from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.transport import resolve_driver_class, resolve_transport_name
+from omnigent.harness_bench.verdict import Applicability, Priority, ProbeResult, Verdict, reconcile
 
 _logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ def _as_sink(progress: Progress | ProgressSink | None) -> ProgressSink | None:
     """Normalize the ``progress`` argument to a :class:`ProgressSink`.
 
     Accepts a structured sink (used as-is), a plain line callback (adapted to a
-    :class:`~tests.harness_bench.events.LineSink`), or ``None`` (silent).
+    :class:`~omnigent.harness_bench.events.LineSink`), or ``None`` (silent).
     """
     if progress is None:
         return None
@@ -199,7 +199,7 @@ async def run_harness(
     :param progress: A :class:`ProgressSink` (structured events), a plain
         per-line callback (adapted), or ``None`` (silent).
     :param shared_full_server: An optional shared
-        :class:`~tests.harness_bench.full_server_driver.SharedFullServer` to
+        :class:`~omnigent.harness_bench.full_server_driver.SharedFullServer` to
         register this harness on, instead of the driver spawning its own
         server+runner. Only used when the resolved driver is the full-server
         driver; ignored otherwise.

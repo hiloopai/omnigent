@@ -1,6 +1,6 @@
 """Full-server transport driver (phase-2).
 
-Unlike :class:`tests.harness_bench.driver.SdkInprocDriver` (which drives a
+Unlike :class:`omnigent.harness_bench.driver.SdkInprocDriver` (which drives a
 harness wrap subprocess directly), this driver spins up a REAL Omnigent
 ``server`` + ``runner`` pair, registers an agent, and drives turns through
 the full session path — so policy enforcement and server-dispatched tools
@@ -35,16 +35,16 @@ from typing import Any
 
 import httpx
 
-from tests.e2e._harness_probes import cli_unavailable_reason
-from tests.e2e.helpers import lookup_databricks_host
-from tests.harness_bench.driver import TurnResult
-from tests.harness_bench.full_server import (
+from omnigent.harness_bench.cli_probe import cli_unavailable_reason
+from omnigent.harness_bench.creds_lookup import lookup_databricks_host
+from omnigent.harness_bench.driver import TurnResult
+from omnigent.harness_bench.full_server import (
     _DENY_REASON,
     _POLL_INTERVAL_S,
     _TOOL_NAME,
     SharedFullServer,
 )
-from tests.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.profile import BenchProfile
 
 _TOOL_PROMPT = f"List the files using the {_TOOL_NAME} tool, then tell me how many there are."
 

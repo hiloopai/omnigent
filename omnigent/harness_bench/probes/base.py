@@ -3,7 +3,7 @@
 A probe measures one dimension of the support matrix against one harness.
 Probes are harness-agnostic: they call the transport driver's small
 surface and return a :class:`ProbeResult`. Adding a dimension means adding
-a probe module and listing it in :data:`tests.harness_bench.probes.ALL_PROBES`
+a probe module and listing it in :data:`omnigent.harness_bench.probes.ALL_PROBES`
 — no per-harness code anywhere.
 """
 
@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import abc
 
-from tests.harness_bench.profile import BenchProfile
-from tests.harness_bench.transport import Driver
-from tests.harness_bench.verdict import Applicability, Priority, ProbeResult
+from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.transport import Driver
+from omnigent.harness_bench.verdict import Applicability, Priority, ProbeResult
 
 
 class CapabilityProbe(abc.ABC):

@@ -452,6 +452,15 @@ known-first-party = ["omnigent"]
 # files have a backlog of unused-arg, blind-except, and bugbear issues
 # that were invisible before. Graduate each subpath out of this list
 # as it's cleaned up.
+# The harness bench (moved from tests/harness_bench/ so `omni bench` can ship
+# it) carries the same test-adjacent patterns the tests/** block waives: probes
+# take a uniform ``(driver, profile)`` signature where some don't read
+# ``profile`` (ARG002), and the orchestrator + drivers intercept broad
+# exceptions to turn a provisioning/probe failure into a capability-neutral SKIP
+# (BLE001) rather than aborting the whole matrix.
+"omnigent/harness_bench/**/*.py" = [
+    "ARG001", "ARG002", "ARG004", "ARG005", "BLE001",
+]
 "omnigent/llms/**/*.py" = [
     "ARG001", "ARG002", "BLE001", "B008", "RUF012",
 ]

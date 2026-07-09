@@ -3,13 +3,14 @@
 Each profile's descriptive columns and *declared* verdicts derive from the
 canonical capability model (:func:`omnigent.harness_plugins.harness_capabilities`),
 so there is a single source of truth for "what each harness supports". The
-base fields (model, env_prefix, marker, cli_binary) are reused from
-``tests.e2e._harness_probes.HARNESS_PROBES`` — a harness added to the e2e
-parametrize matrix flows into the bench without a second copy.
+base fields (model, env_prefix, marker, cli_binary) come from
+:data:`omnigent.harness_bench.seed.SDK_SEEDS` — the single source of truth the
+e2e parametrize matrix (``tests.e2e._harness_probes``) also rebuilds from, so a
+harness added once flows into both without a second copy.
 
 The declared matrix is the harness's *published capability*; the bench's
 probes measure live behavior. When they disagree,
-:func:`tests.harness_bench.verdict.reconcile` flags ``DRIFT`` — which means a
+:func:`omnigent.harness_bench.verdict.reconcile` flags ``DRIFT`` — which means a
 harness's capability declaration is false. That makes the capability table
 self-enforcing.
 
@@ -35,6 +36,9 @@ or correct them as transport coverage lands.
 from __future__ import annotations
 
 from omnigent.harness_aliases import is_native_harness
+from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.seed import SDK_SEEDS, SdkSeed
+from omnigent.harness_bench.verdict import Verdict
 from omnigent.harness_capabilities import AuthModel, HarnessCapabilities, IntegrationMode
 from omnigent.harness_plugins import (
     harness_aliases,
@@ -44,9 +48,6 @@ from omnigent.harness_plugins import (
     install_specs,
     model_env_keys,
 )
-from tests.e2e._harness_probes import HARNESS_PROBES, HarnessProbe
-from tests.harness_bench.profile import BenchProfile
-from tests.harness_bench.verdict import Verdict
 
 # ── Group A: enum → prose for the descriptive columns ────────────
 
@@ -135,43 +136,39 @@ def _declared_from_capabilities(harness: str) -> dict[str, Verdict]:
     return declared
 
 
-def _profile_from_probe(probe: HarnessProbe) -> BenchProfile:
-    """Build an official :class:`BenchProfile` from an e2e ``HarnessProbe``.
+def _profile_from_seed(seed: SdkSeed) -> BenchProfile:
+    """Build an official :class:`BenchProfile` from an :class:`SdkSeed`.
 
     Descriptive columns and declared verdicts derive from the capability
-    model; only the transport and the e2e base fields are bench-local.
+    model; only the transport and the concrete seed fields are bench-local.
     """
-    caps = harness_capabilities().get(probe.harness)
+    caps = harness_capabilities().get(seed.harness)
     return BenchProfile(
-        harness=probe.harness,
-        model=probe.model,
-        env_prefix=probe.env_prefix,
-        marker=probe.marker,
-        cli_binary=probe.cli_binary,
+        harness=seed.harness,
+        model=seed.model,
+        env_prefix=seed.env_prefix,
+        marker=seed.marker,
+        cli_binary=seed.cli_binary,
         transport="sdk-inproc",
         owner="",
         auth=_auth_prose(caps),
         implementation=_implementation_prose(caps),
-        declared=_declared_from_capabilities(probe.harness),
+        declared=_declared_from_capabilities(seed.harness),
     )
 
 
 # Official harnesses the bench ships with: the P0 SDK harnesses the
-# sdk-inproc driver covers today. Built from HARNESS_PROBES so the e2e and
-# bench matrices never diverge.
-_OFFICIAL_HARNESSES = frozenset({"claude-sdk", "codex", "pi", "openai-agents"})
-
+# sdk-inproc driver covers today. Built from SDK_SEEDS (the single source of
+# truth the e2e matrix also rebuilds from) so the two never diverge.
 OFFICIAL_PROFILES: dict[str, BenchProfile] = {
-    probe.harness: _profile_from_probe(probe)
-    for probe in HARNESS_PROBES
-    if probe.harness in _OFFICIAL_HARNESSES
+    seed.harness: _profile_from_seed(seed) for seed in SDK_SEEDS
 }
 
 
 # ── native-tui harnesses ─────────────────────────────────────────
 #
-# Native harnesses are not in HARNESS_PROBES (that matrix is the SDK-wrap
-# e2e set), so their profiles are derived here directly from the capability
+# Native harnesses are not in SDK_SEEDS (that table is the SDK-wrap set), so
+# their profiles are derived here directly from the capability
 # model: every harness with integration_mode == NATIVE_TUI is registered, so
 # the shipped natives and any community-plugin native (harness_capabilities()
 # discovers plugins via entry points) are probeable by name with no bench edit.

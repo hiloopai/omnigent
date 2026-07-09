@@ -2,14 +2,14 @@
 
 Drives a native-tui harness — a resident vendor CLI (``claude``, ``codex``,
 ``pi``, ``cursor-agent``, ...) running in a runner-owned tmux pane — through
-the bench's :class:`~tests.harness_bench.transport.Driver` protocol.
+the bench's :class:`~omnigent.harness_bench.transport.Driver` protocol.
 
 The research finding this is built on: a native-tui turn rides the *same*
 HTTP surface as the full server — ``POST /v1/sessions/{id}/events`` to send,
 ``GET /v1/sessions/{id}/stream`` for ``response.output_text.delta`` events,
 ``/v1/sessions/{id}/policies`` for a tool-call deny, and item polling for the
 assistant reply. So ~90% of this driver is shared with
-:class:`~tests.harness_bench.full_server_driver.FullServerDriver`. Three
+:class:`~omnigent.harness_bench.full_server_driver.FullServerDriver`. Three
 things genuinely diverge, and they are the entire reason this is a separate
 driver:
 
@@ -54,6 +54,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -63,6 +64,15 @@ from typing import Any
 
 import httpx
 
+from omnigent.harness_bench.cli_probe import cli_unavailable_reason
+from omnigent.harness_bench.creds_lookup import lookup_databricks_host
+from omnigent.harness_bench.driver import ProvisioningError, TurnResult
+from omnigent.harness_bench.full_server import (
+    _find_free_port,
+    _mint_bearer,
+    spawn_omnigent_server,
+)
+from omnigent.harness_bench.profile import BenchProfile
 from omnigent.harness_capabilities import AuthModel, IntegrationMode
 from omnigent.harness_plugins import harness_capabilities
 from omnigent.host.daemon_launch import (
@@ -72,16 +82,6 @@ from omnigent.host.daemon_launch import (
 )
 from omnigent.native_terminal import bind_session_runner
 from omnigent.runner.identity import OMNIGENT_INTERNAL_WS_ORIGIN
-from tests._helpers.compat import apply_runner_env, compat_runner_cwd, runner_executable
-from tests.e2e._harness_probes import cli_unavailable_reason
-from tests.e2e.helpers import lookup_databricks_host
-from tests.harness_bench.driver import ProvisioningError, TurnResult
-from tests.harness_bench.full_server import (
-    _find_free_port,
-    _mint_bearer,
-    spawn_omnigent_server,
-)
-from tests.harness_bench.profile import BenchProfile
 
 _HEALTH_TIMEOUT_S = 90.0
 _HOST_ONLINE_TIMEOUT_S = 45.0
@@ -466,9 +466,8 @@ class NativeTuiDriver:
         # (auth cannot be relocated for native harnesses).
         log = (self._tmp / "host-daemon.log").open("wb")
         return subprocess.Popen(
-            [runner_executable(), "-m", "omnigent.host._daemon_entry", "--server", self._base_url],
-            env=apply_runner_env(base_env),
-            cwd=compat_runner_cwd(),
+            [sys.executable, "-m", "omnigent.host._daemon_entry", "--server", self._base_url],
+            env=base_env,
             stdout=subprocess.DEVNULL,
             stderr=log,
         )

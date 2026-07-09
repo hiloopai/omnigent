@@ -7,7 +7,7 @@ render progress in more than one way without the orchestrator knowing how:
 
 - :class:`LineSink` prints the plain ``[harness] Probe: VERDICT`` lines to a
   writer (the default; what CI / a piped run wants).
-- a rich live-table sink (see :mod:`tests.harness_bench.richreport`) draws one
+- a rich live-table sink (see :mod:`omnigent.harness_bench.richreport`) draws one
   row per harness with per-dimension cells that fill in as events arrive.
 
 Events carry structured fields (harness id, probe name/title, verdict, note),
@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from tests.harness_bench.verdict import Verdict
+from omnigent.harness_bench.verdict import Verdict
 
 
 @dataclass(frozen=True)

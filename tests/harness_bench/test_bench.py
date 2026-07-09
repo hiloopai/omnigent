@@ -17,14 +17,14 @@ import json
 
 import pytest
 
+from omnigent.harness_bench.bench import run_bench, run_harness
+from omnigent.harness_bench.driver import SdkInprocDriver
+from omnigent.harness_bench.manifest import OFFICIAL_PROFILES
+from omnigent.harness_bench.probes import ALL_PROBES
+from omnigent.harness_bench.profile import BenchProfile, resolve_profile
+from omnigent.harness_bench.report import render_json, render_markdown
+from omnigent.harness_bench.verdict import Priority, Verdict, reconcile
 from omnigent.runtime.harnesses import _HARNESS_MODULES
-from tests.harness_bench.bench import run_bench, run_harness
-from tests.harness_bench.driver import SdkInprocDriver
-from tests.harness_bench.manifest import OFFICIAL_PROFILES
-from tests.harness_bench.probes import ALL_PROBES
-from tests.harness_bench.profile import BenchProfile, resolve_profile
-from tests.harness_bench.report import render_json, render_markdown
-from tests.harness_bench.verdict import Priority, Verdict, reconcile
 
 _OFFICIAL = list(OFFICIAL_PROFILES.values())
 _OFFICIAL_IDS = [p.harness for p in _OFFICIAL]
@@ -70,8 +70,8 @@ def test_declared_covers_every_p0_dimension(profile: BenchProfile) -> None:
 def test_streaming_capability_declares_binary_verdict() -> None:
     # Guards the kiro-native drift: streaming declares binary (True→SUPPORTED,
     # False→UNSUPPORTED), never PARTIAL.
+    from omnigent.harness_bench.manifest import _declared_from_capabilities
     from omnigent.harness_plugins import harness_capabilities
-    from tests.harness_bench.manifest import _declared_from_capabilities
 
     caps = harness_capabilities()
     for harness, cap in caps.items():
@@ -168,7 +168,7 @@ def test_registry_profile_happy_path_no_plugin(monkeypatch: pytest.MonkeyPatch) 
     """
     from types import SimpleNamespace
 
-    import tests.harness_bench.manifest as man
+    import omnigent.harness_bench.manifest as man
     from omnigent.harness_capabilities import AuthModel, IntegrationMode
 
     class _Spec:
@@ -206,7 +206,7 @@ def test_registry_refuses_native_server_mode(monkeypatch: pytest.MonkeyPatch) ->
     """
     from types import SimpleNamespace
 
-    import tests.harness_bench.manifest as man
+    import omnigent.harness_bench.manifest as man
     from omnigent.harness_capabilities import AuthModel, IntegrationMode
 
     caps = SimpleNamespace(
@@ -222,7 +222,7 @@ def test_registry_refuses_native_server_mode(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_infra_failure_reason_classifies_auth_and_ignores_capability_gaps() -> None:
-    from tests.harness_bench.driver import TurnResult, infra_failure_reason
+    from omnigent.harness_bench.driver import TurnResult, infra_failure_reason
 
     # A 403 gateway error is an environment problem -> yields a skip reason.
     auth = TurnResult(
@@ -279,8 +279,8 @@ async def test_offline_render_produces_matrix() -> None:
 
 def test_grid_already_shown_only_for_grid_drawing_sink() -> None:
     """_grid_already_shown is True only for a sink that painted the grid."""
-    from tests.harness_bench.__main__ import _grid_already_shown
-    from tests.harness_bench.events import LineSink
+    from omnigent.harness_bench.__main__ import _grid_already_shown
+    from omnigent.harness_bench.events import LineSink
 
     assert _grid_already_shown(None) is False
     assert _grid_already_shown(LineSink(lambda _m: None)) is False
@@ -298,7 +298,7 @@ async def test_render_table_grid_false_drops_grid_keeps_footer() -> None:
     on the same terminal: the report should add the per-cell explanations, not
     reprint the grid.
     """
-    from tests.harness_bench.report import render_table
+    from omnigent.harness_bench.report import render_table
 
     matrix = await run_bench(_OFFICIAL, live=False)
     full = render_table(matrix, declared=True, grid=True)
@@ -325,8 +325,8 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
     Uses a fake driver so no creds/subprocess are needed: a basic turn passes,
     which lets every probe run and produce a ProbeFinished.
     """
-    from tests.harness_bench.driver import TurnResult
-    from tests.harness_bench.events import (
+    from omnigent.harness_bench.driver import TurnResult
+    from omnigent.harness_bench.events import (
         HarnessFinished,
         HarnessStarted,
         ProbeFinished,
@@ -376,7 +376,7 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _OKDriver,
     )
     try:
@@ -402,7 +402,7 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
     lines: list[str] = []
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _OKDriver,
     )
     try:
@@ -416,7 +416,7 @@ async def test_run_bench_jobs_preserves_order(monkeypatch: pytest.MonkeyPatch) -
     """--jobs > 1 runs harnesses concurrently but keeps report order == input order."""
     import asyncio as _asyncio
 
-    from tests.harness_bench.driver import TurnResult
+    from omnigent.harness_bench.driver import TurnResult
 
     class _SlowDriver:
         transport = "sdk-inproc"
@@ -450,7 +450,7 @@ async def test_run_bench_jobs_preserves_order(monkeypatch: pytest.MonkeyPatch) -
             return TurnResult(cancelled=True)
 
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _SlowDriver,
     )
     profiles = [
@@ -468,7 +468,7 @@ async def test_parallel_full_server_shares_one_server(monkeypatch: pytest.Monkey
     one SharedFullServer is entered once and each harness registers its own
     agent+session on it.
     """
-    from tests.harness_bench.driver import TurnResult
+    from omnigent.harness_bench.driver import TurnResult
 
     built: list[object] = []
 
@@ -524,9 +524,9 @@ async def test_parallel_full_server_shares_one_server(monkeypatch: pytest.Monkey
             return TurnResult(cancelled=True)
 
     # bench imports SharedFullServer into its own namespace, so patch it there.
-    monkeypatch.setattr("tests.harness_bench.bench.SharedFullServer", _FakeShared)
+    monkeypatch.setattr("omnigent.harness_bench.bench.SharedFullServer", _FakeShared)
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _FSDriver,
     )
 
@@ -551,7 +551,7 @@ async def test_parallel_full_server_shares_one_server(monkeypatch: pytest.Monkey
 
 def test_cli_writes_report_file(tmp_path) -> None:
     """`--report PATH` writes the matrix; format follows the extension."""
-    from tests.harness_bench.__main__ import main
+    from omnigent.harness_bench.__main__ import main
 
     md = tmp_path / "matrix.md"
     rc = main(["--no-live", "--report", str(md)])
@@ -616,9 +616,9 @@ async def test_full_server_async_shims_delegate_to_sync(monkeypatch: pytest.Monk
     in the async binding is caught without a server+runner. Builds no driver
     state — every sync method is stubbed.
     """
-    from tests.harness_bench.driver import TurnResult
-    from tests.harness_bench.full_server_driver import FullServerDriver
-    from tests.harness_bench.profile import BenchProfile
+    from omnigent.harness_bench.driver import TurnResult
+    from omnigent.harness_bench.full_server_driver import FullServerDriver
+    from omnigent.harness_bench.profile import BenchProfile
 
     profile = BenchProfile(harness="stub", model="m", env_prefix="HARNESS_STUB_", marker="STUB_OK")
     driver = FullServerDriver(profile, databricks_profile="oss")
@@ -678,7 +678,7 @@ async def test_provisioning_failure_skips_and_tears_down(monkeypatch: pytest.Mon
         harness="stub-native", model="m", env_prefix="HARNESS_STUB_NATIVE_", marker="X"
     )
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _FailingDriver,
     )
 
@@ -701,7 +701,7 @@ async def test_expected_provisioning_error_logged_quietly(
     """
     import logging
 
-    from tests.harness_bench.driver import ProvisioningError
+    from omnigent.harness_bench.driver import ProvisioningError
 
     def _driver_raising(exc: Exception):
         class _D:
@@ -726,12 +726,12 @@ async def test_expected_provisioning_error_logged_quietly(
 
     # Expected failure → a single INFO record, no exception/traceback attached.
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _driver_raising(
             ProvisioningError("cli not logged in")
         ),
     )
-    with caplog.at_level(logging.INFO, logger="tests.harness_bench.bench"):
+    with caplog.at_level(logging.INFO, logger="omnigent.harness_bench.bench"):
         await run_harness(profile, databricks_profile="oss", live=True)
     provisioning_logs = [r for r in caplog.records if "stub" in r.getMessage()]
     assert provisioning_logs, "expected a log line for the skip"
@@ -740,10 +740,10 @@ async def test_expected_provisioning_error_logged_quietly(
     # Unexpected failure → WARNING with the traceback attached.
     caplog.clear()
     monkeypatch.setattr(
-        "tests.harness_bench.bench.resolve_driver_class",
+        "omnigent.harness_bench.bench.resolve_driver_class",
         lambda p, *, override=None, fast=False: _driver_raising(RuntimeError("boom")),
     )
-    with caplog.at_level(logging.INFO, logger="tests.harness_bench.bench"):
+    with caplog.at_level(logging.INFO, logger="omnigent.harness_bench.bench"):
         await run_harness(profile, databricks_profile="oss", live=True)
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert warnings and any(r.exc_info is not None for r in warnings), (
@@ -756,8 +756,8 @@ async def test_expected_provisioning_error_logged_quietly(
 
 def test_native_tui_registered_and_gates() -> None:
     """native-tui is in the registry and derives any native-tui harness."""
-    from tests.harness_bench.native_tui_driver import NativeTuiDriver, native_vendor
-    from tests.harness_bench.transport import driver_registry, resolve_driver_class
+    from omnigent.harness_bench.native_tui_driver import NativeTuiDriver, native_vendor
+    from omnigent.harness_bench.transport import driver_registry, resolve_driver_class
 
     assert driver_registry()["native-tui"] is NativeTuiDriver
 
@@ -792,7 +792,7 @@ def test_transport_resolution_family_default_and_fast() -> None:
     the profile's transport is a family marker, and the effective driver comes
     from family + flags (see resolve_transport_name).
     """
-    from tests.harness_bench.transport import resolve_transport_name
+    from omnigent.harness_bench.transport import resolve_transport_name
 
     sdk = BenchProfile(
         harness="codex", model="m", env_prefix="X_", marker="X", transport="sdk-inproc"
@@ -827,8 +827,8 @@ async def test_native_provisioning_http_error_becomes_provisioning_error(
     """
     import httpx
 
-    from tests.harness_bench.driver import ProvisioningError
-    from tests.harness_bench.native_tui_driver import NativeTuiDriver
+    from omnigent.harness_bench.driver import ProvisioningError
+    from omnigent.harness_bench.native_tui_driver import NativeTuiDriver
 
     profile = BenchProfile(
         harness="claude-native",
@@ -857,7 +857,7 @@ def test_full_server_skips_native_with_accurate_message() -> None:
     there (bundle registration, not host-daemon provisioning). The skip must
     name native-tui as the answer, not misreport the 'sdk-inproc' driver.
     """
-    from tests.harness_bench.full_server_driver import FullServerDriver
+    from omnigent.harness_bench.full_server_driver import FullServerDriver
 
     # Real native profiles carry transport="native-tui" (set in the manifest);
     # that is what the full-server gate keys on.

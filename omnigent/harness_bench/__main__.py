@@ -3,24 +3,24 @@
 Examples::
 
     # List official harnesses.
-    python -m tests.harness_bench --list
+    python -m omnigent.harness_bench --list
 
     # Dry (offline) render — declared matrix, no turns, no creds.
-    python -m tests.harness_bench
+    python -m omnigent.harness_bench
 
     # Live probe one harness against a gateway profile (SDK → full-server,
     # the default: covers Tool calling + Policy DENY).
-    python -m tests.harness_bench --harness codex --profile my-profile
+    python -m omnigent.harness_bench --harness codex --profile my-profile
 
     # Quicker run: SDK harnesses on sdk-inproc (skips the server boot; no
     # Tool calling / Policy DENY coverage).
-    python -m tests.harness_bench --harness codex --profile my-profile --fast
+    python -m omnigent.harness_bench --harness codex --profile my-profile --fast
 
     # Live probe all official harnesses, JSON out.
-    python -m tests.harness_bench --profile my-profile --json
+    python -m omnigent.harness_bench --profile my-profile --json
 
     # A community harness that ships its own BenchProfile.
-    python -m tests.harness_bench --harness mypkg.harness:PROFILE --profile my-profile
+    python -m omnigent.harness_bench --harness mypkg.harness:PROFILE --profile my-profile
 """
 
 from __future__ import annotations
@@ -29,17 +29,17 @@ import argparse
 import asyncio
 import sys
 
-from tests.harness_bench.bench import run_bench
-from tests.harness_bench.events import LineSink
-from tests.harness_bench.manifest import OFFICIAL_PROFILES
-from tests.harness_bench.profile import BenchProfile, resolve_profile
-from tests.harness_bench.report import render_json, render_markdown, render_table
-from tests.harness_bench.transport import driver_registry, resolve_transport_name
+from omnigent.harness_bench.bench import run_bench
+from omnigent.harness_bench.events import LineSink
+from omnigent.harness_bench.manifest import OFFICIAL_PROFILES
+from omnigent.harness_bench.profile import BenchProfile, resolve_profile
+from omnigent.harness_bench.report import render_json, render_markdown, render_table
+from omnigent.harness_bench.transport import driver_registry, resolve_transport_name
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="python -m tests.harness_bench",
+        prog="python -m omnigent.harness_bench",
         description="Probe a harness and report a verdict per capability dimension.",
     )
     parser.add_argument(
@@ -245,7 +245,7 @@ def _select_progress_sink(rich_flag: bool | None):
     if rich_flag is not False:
         # richreport is imported lazily: it is the only place that touches the
         # optional `rich` dependency, so a plain/no-rich run never imports it.
-        from tests.harness_bench.richreport import rich_sink_or_none
+        from omnigent.harness_bench.richreport import rich_sink_or_none
 
         rich_sink = rich_sink_or_none(force=bool(rich_flag))
         if rich_sink is not None:
