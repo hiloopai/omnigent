@@ -338,26 +338,68 @@ def _isolate_codex_native_state(
 @pytest.fixture()
 def db_uri(tmp_path: Path) -> str:
     """
-    Return a test database URI backed by a file in tmp_path.
+    Return a test database URI, either from ``OMNIGENT_TEST_DB_URI`` or SQLite.
 
-    Uses get_or_create_engine() which runs Alembic migrations on first
-    engine creation — same path as production. File-based (not in-memory)
-    because DBOS needs a real file to create its system tables. Cleaned
-    up after each test.
+    When ``OMNIGENT_TEST_DB_URI`` is set, creates a fresh per-test database
+    named with the xdist worker id and a hash of tmp_path for isolation, runs
+    Alembic migrations on it, yields the URI, then drops the database after the
+    test. Otherwise falls back to a SQLite file in tmp_path.
+
+    Uses get_or_create_engine() which runs Alembic migrations on first engine
+    creation — same path as production. Cleaned up after each test.
 
     :param tmp_path: pytest tmp_path fixture (per-test temp dir).
-    :returns: a ``sqlite:///…`` URI string.
+    :returns: a database URI string.
     """
-    db_path = tmp_path / "test.db"
-    uri = f"sqlite:///{db_path}"
-    # Creates the engine AND runs migrations (once, cached).
-    engine = get_or_create_engine(uri)
+    base_uri = os.environ.get("OMNIGENT_TEST_DB_URI", "")
+    if base_uri:
+        import hashlib
+        import re
 
-    yield uri
+        import sqlalchemy as _sa
 
-    with _engine_lock:
-        _engine_cache.pop(uri, None)
-    engine.dispose()
+        suffix = hashlib.md5(str(tmp_path).encode()).hexdigest()[:8]
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "w0")
+        db_name = f"omnigent_test_{worker}_{suffix}"
+        uri = re.sub(r"/[^/]*(\?.*)?$", f"/{db_name}", base_uri)
+
+        root_engine = _sa.create_engine(base_uri, isolation_level="AUTOCOMMIT")
+        dialect = root_engine.dialect.name
+        with root_engine.connect() as conn:
+            if dialect == "mysql":
+                conn.execute(
+                    _sa.text(
+                        f"CREATE DATABASE IF NOT EXISTS `{db_name}` "
+                        "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                    )
+                )
+            else:
+                conn.execute(_sa.text(f'CREATE DATABASE "{db_name}"'))
+        root_engine.dispose()
+
+        engine = get_or_create_engine(uri)
+        yield uri
+
+        with _engine_lock:
+            _engine_cache.pop(uri, None)
+        engine.dispose()
+
+        root_engine2 = _sa.create_engine(base_uri, isolation_level="AUTOCOMMIT")
+        with root_engine2.connect() as conn:
+            if dialect == "mysql":
+                conn.execute(_sa.text(f"DROP DATABASE IF EXISTS `{db_name}`"))
+            else:
+                conn.execute(_sa.text(f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)'))
+        root_engine2.dispose()
+    else:
+        db_path = tmp_path / "test.db"
+        uri = f"sqlite:///{db_path}"
+        # Creates the engine AND runs migrations (once, cached).
+        engine = get_or_create_engine(uri)
+        yield uri
+        with _engine_lock:
+            _engine_cache.pop(uri, None)
+        engine.dispose()
 
 
 @pytest.fixture()

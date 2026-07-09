@@ -571,6 +571,7 @@ def test_unique_position_constraint(
     from sqlalchemy.exc import IntegrityError
 
     from omnigent.db.db_models import SqlConversationItem
+    from omnigent.db.enum_codecs import encode_item_status, encode_item_type
     from omnigent.db.utils import generate_item_id
 
     conv = conversation_store.create_conversation()
@@ -597,9 +598,9 @@ def test_unique_position_constraint(
                     conversation_id=conv.id,
                     response_id="resp_dup",
                     created_at=0,
-                    status="completed",
+                    status=encode_item_status("completed"),
                     position=0,  # duplicate
-                    type="message",
+                    type=encode_item_type("message"),
                     data='{"role":"user","content":[]}',
                     search_text="",
                 )
