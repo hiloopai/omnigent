@@ -36,9 +36,19 @@ class BenchRuntimeEnv:
 def _profile_from_config() -> str | None:
     """Return the Databricks profile ``omni run`` would use, or ``None``.
 
-    Reads the user-level ``auth:`` block first (what ``omni run`` consults), then
-    a top-level ``profile:`` key. Imported lazily so importing this module never
-    drags in ``omnigent.cli`` at load time.
+    Mirrors ``omni run``'s profile sources, in the same precedence:
+
+    1. the user-level ``auth:`` block (``omni setup`` writes this);
+    2. a top-level ``profile:`` key;
+    3. the default ``providers:`` entry of ``kind: databricks`` — the common
+       case for a machine configured through the provider wizard rather than
+       ``auth:`` (e.g. ``providers.databricks {default: true, profile: DEFAULT}``).
+       ``omni run`` resolves creds from this entry's ``profile`` (see
+       ``runtime/workflow.py`` ``DATABRICKS_KIND`` branch), so the bench must too
+       or a no-flag run would go offline where ``omni run`` goes live.
+
+    All imports are lazy so importing this module never drags in ``omnigent.cli``
+    at load time.
     """
     try:
         from omnigent.runtime.workflow import _load_global_auth
@@ -53,10 +63,34 @@ def _profile_from_config() -> str | None:
     try:
         from omnigent.cli import _load_effective_config
 
-        cfg_profile = _load_effective_config().get("profile")
+        config = _load_effective_config()
     except Exception:
-        cfg_profile = None
-    return str(cfg_profile) if cfg_profile else None
+        return None
+
+    cfg_profile = config.get("profile")
+    if cfg_profile:
+        return str(cfg_profile)
+
+    # Tier 3: the configured ``providers:`` block. Reuse ``omni``'s own resolver
+    # (``default_provider_for_harness`` — the same call ``resolve_credential``
+    # and the runtime spawn-env builder use) so the bench picks exactly the
+    # provider a launch would, with no reinvented selection logic. When that
+    # provider is a Databricks profile, its ``profile`` is the gateway route.
+    try:
+        from omnigent.onboarding.provider_config import (
+            DATABRICKS_KIND,
+            default_provider_for_harness,
+        )
+
+        # claude-sdk is a representative gateway harness; the databricks
+        # provider is auth-only (serves every family), so the harness choice
+        # only decides which family's default is consulted, not the profile.
+        provider = default_provider_for_harness(config, "claude-sdk")
+    except Exception:
+        provider = None
+    if provider is not None and provider.kind == DATABRICKS_KIND and provider.profile:
+        return str(provider.profile)
+    return None
 
 
 def resolve_bench_env(explicit_profile: str | None) -> BenchRuntimeEnv:

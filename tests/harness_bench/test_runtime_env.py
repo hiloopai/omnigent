@@ -16,6 +16,10 @@ from tests.harness_bench.runtime_env import (
     resolve_bench_env,
 )
 
+# Captured before the autouse _clean_env fixture stubs the module attribute, so
+# the tier-3 test can drive the real resolver.
+_REAL_PROFILE_FROM_CONFIG = runtime_env._profile_from_config
+
 
 class _Creds:
     """Stand-in for ``WorkspaceCreds`` (host + token)."""
@@ -97,6 +101,26 @@ def test_explicit_profile_overrides_config(monkeypatch: pytest.MonkeyPatch) -> N
     )
     resolve_bench_env("explicit")
     assert seen["profile"] == "explicit"  # flag wins over config
+
+
+def test_profile_from_providers_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tier 3: with no ``auth:`` / top-level ``profile:``, the default
+    ``providers:`` databricks entry supplies the profile — the common
+    provider-wizard config where ``omni run`` goes live with no ``--profile``.
+
+    Exercises the real ``_profile_from_config`` (captured before the autouse
+    stub) by monkeypatching the two upstream config sources it reads.
+    """
+    monkeypatch.setattr("omnigent.runtime.workflow._load_global_auth", lambda: None)
+    monkeypatch.setattr(
+        "omnigent.cli._load_effective_config",
+        lambda: {
+            "providers": {
+                "databricks": {"kind": "databricks", "default": True, "profile": "DEFAULT"}
+            }
+        },
+    )
+    assert _REAL_PROFILE_FROM_CONFIG() == "DEFAULT"
 
 
 def test_skip_reason_none_when_ambient(monkeypatch: pytest.MonkeyPatch) -> None:
