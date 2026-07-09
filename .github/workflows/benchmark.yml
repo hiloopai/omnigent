@@ -1,4 +1,4 @@
-name: Performance Benchmark
+name: Benchmark
 
 # Nightly run of the HTTP user-journey performance benchmark
 # (dev/benchmarks/omnigent). Seeds a sizeable corpus, boots a real server
@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       iterations:
-        description: "Sequential operations per latency run"
+        description: "Requests per run"
         required: false
         default: "200"
       runs:
