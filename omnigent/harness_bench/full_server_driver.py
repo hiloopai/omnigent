@@ -36,7 +36,6 @@ from typing import Any
 import httpx
 
 from omnigent.harness_bench.cli_probe import cli_unavailable_reason
-from omnigent.harness_bench.creds_lookup import lookup_databricks_host
 from omnigent.harness_bench.driver import TurnResult
 from omnigent.harness_bench.full_server import (
     _DENY_REASON,
@@ -45,6 +44,7 @@ from omnigent.harness_bench.full_server import (
     SharedFullServer,
 )
 from omnigent.harness_bench.profile import BenchProfile
+from omnigent.harness_bench.runtime_env import bench_creds_skip_reason, resolve_bench_env
 
 _TOOL_PROMPT = f"List the files using the {_TOOL_NAME} tool, then tell me how many there are."
 
@@ -111,12 +111,9 @@ class FullServerDriver:
                 f"{profile.harness!r} is a native-tui harness; the full-server transport "
                 "registers via an agent bundle and cannot drive it (use --transport native-tui)"
             )
-        if not databricks_profile:
-            return "no --profile / databricks profile provided; full-server needs a gateway route"
-        if lookup_databricks_host(databricks_profile) is None:
-            return (
-                f"databricks profile {databricks_profile!r} missing/hostless in ~/.databrickscfg"
-            )
+        creds_skip = bench_creds_skip_reason(databricks_profile)
+        if creds_skip is not None:
+            return creds_skip
         # Same CLI gate as the wrap driver (same binary requirement), but skip
         # its transport check — that is sdk-inproc-specific and would misreport
         # the driver name; the native case is already handled above.
@@ -126,7 +123,7 @@ class FullServerDriver:
 
     def __enter__(self) -> FullServerDriver:
         if self._shared is None:
-            self._shared = SharedFullServer(self._db_profile)
+            self._shared = SharedFullServer(resolve_bench_env(self._db_profile))
             self._shared.__enter__()
         agent_name = self._shared.register_agent(self._profile, deny=False)
         self._session_id = self._shared.create_session(agent_name)

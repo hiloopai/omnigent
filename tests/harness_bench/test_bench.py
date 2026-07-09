@@ -754,7 +754,7 @@ async def test_expected_provisioning_error_logged_quietly(
 # ── native-tui transport (offline) ──────────────────────────────
 
 
-def test_native_tui_registered_and_gates() -> None:
+def test_native_tui_registered_and_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     """native-tui is in the registry and derives any native-tui harness."""
     from omnigent.harness_bench.native_tui_driver import NativeTuiDriver, native_vendor
     from omnigent.harness_bench.transport import driver_registry, resolve_driver_class
@@ -781,7 +781,15 @@ def test_native_tui_registered_and_gates() -> None:
     codex_sdk = BenchProfile(harness="codex", model="m", env_prefix="X_", marker="X")
     assert NativeTuiDriver.unavailable(codex_sdk, databricks_profile="oss") is not None
 
-    # No profile → the same capability-neutral skip contract as other drivers.
+    # No creds anywhere (no --profile, no ambient OPENAI_*, no configured
+    # profile) → capability-neutral skip. Clear the ambient env and stub the
+    # config lookup so the contract is tested deterministically regardless of
+    # the host's environment.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        "omnigent.harness_bench.runtime_env._profile_from_config", lambda: None
+    )
     assert NativeTuiDriver.unavailable(claude_native, databricks_profile=None) is not None
 
 
