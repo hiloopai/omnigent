@@ -14,11 +14,11 @@ import { useIOSViewportLock } from "@/hooks/useIOSViewportLock";
 import { readFilesPanelPreferences, writeFilesPanelPreferences } from "@/lib/filesPanelPreferences";
 import { derivePermissionLevel, isOwnerLevel } from "@/lib/permissionsApi";
 import {
-  isElectronShell,
   isAndroidShell,
   isIOSShell,
   isMacElectronShell,
   onNativeSidebarDrag,
+  supportsBrowser,
 } from "@/lib/nativeBridge";
 import { onBrowserActionRequest } from "@/lib/browserActionBus";
 import {
@@ -471,10 +471,12 @@ export function AppShell() {
     () =>
       ({
         files: showFilesPanel,
-        // Browser tab: Electron shell only — that's where the embedded
-        // WebContentsView lives. A plain web build has no embedded browser, so
-        // the tab is hidden entirely (isElectronShell() is constant per load).
-        browser: isElectronShell(),
+        // Browser tab: shown only when the desktop shell hosts the embedded
+        // WebContentsView. A plain web build has no embedded browser, and an
+        // older desktop build predates the `browser*` bridge — both hide the
+        // tab entirely (supportsBrowser() is constant per load) so we never
+        // surface a dead tab whose calls no-op.
+        browser: supportsBrowser(),
         // Agents tab is unconditional: the panel always lists at least
         // the main agent (its "main" row), so there's never a dead end.
         subagents: true,
@@ -525,9 +527,9 @@ export function AppShell() {
 
   // Auto-surface the Browser tab on a `navigate` action, so a browser_navigate
   // fired while another tab is selected doesn't load into a hidden pane.
-  // Electron-only; no-op elsewhere (the bus never fires without a relay).
+  // Browser-capable shells only; no-op elsewhere (the bus never fires without a relay).
   useEffect(() => {
-    if (!isElectronShell()) return;
+    if (!supportsBrowser()) return;
     return onBrowserActionRequest((evt) => {
       if (evt.action !== "navigate") return;
       setRightRailTab("browser");
@@ -546,7 +548,7 @@ export function AppShell() {
   const designShotRef = useRef<Map<string, string>>(new Map());
   const boundAgentId = boundAgent?.id ?? null;
   useEffect(() => {
-    if (!isElectronShell()) return;
+    if (!supportsBrowser()) return;
     const w = window as unknown as {
       omnigentDesktop?: {
         onBrowserElementSelected?: (
