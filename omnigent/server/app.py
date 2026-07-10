@@ -60,6 +60,7 @@ from omnigent.server.performance_metrics import (
 from omnigent.server.routes.builtin_agents import create_builtin_agents_router
 from omnigent.server.routes.comments import create_comments_router
 from omnigent.server.routes.default_policies import create_default_policies_router
+from omnigent.server.routes.sharing_mode import create_sharing_mode_router
 from omnigent.server.routes.harnesses import create_harnesses_router
 from omnigent.server.routes.policy_registry import create_policy_registry_router
 from omnigent.server.routes.runner_tunnel import create_runner_tunnel_router
@@ -1379,19 +1380,36 @@ def create_app(
     from omnigent.server.admin_list import load_admin_list
 
     admin_list = load_admin_list(extra=frozenset(admins or ()))
-    # Session-sharing policy, normalized to a per-request callable so a
-    # deployment can flip it at runtime. ``None`` reads the top-level
-    # ``OMNIGENT_SHARING_MODE`` env var once at boot; every path fails
-    # open to ``ON`` for an unset/unrecognized value (see SharingMode.coerce).
+    # Session-sharing policy, normalized to a per-request callable, plus a
+    # ``sharing_mode_writable`` flag gating the admin ``PUT /v1/sharing-mode``
+    # endpoint.
+    #
+    # ``None`` (the OSS default): ``OMNIGENT_SHARING_MODE`` sets the boot
+    # default, but an admin-set override file (``<data_dir>/sharing_mode``,
+    # written from Settings → Sharing) takes precedence when present — read per
+    # request so a change applies without a restart. Editable here.
+    #
+    # A static value or a callable (managed/embedded deploys, e.g. a Databricks
+    # SAFE flag) is authoritative and NOT editable via the admin endpoint.
     if sharing_mode is None:
-        _sharing_default = SharingMode.coerce(os.environ.get("OMNIGENT_SHARING_MODE"))
-        app.state.sharing_mode = lambda: _sharing_default
+        from omnigent.server.sharing_settings import read_sharing_mode_override
+
+        _sharing_env_default = SharingMode.coerce(os.environ.get("OMNIGENT_SHARING_MODE"))
+
+        def _resolve_sharing_mode() -> SharingMode:
+            override = read_sharing_mode_override()
+            return override if override is not None else _sharing_env_default
+
+        app.state.sharing_mode = _resolve_sharing_mode
+        app.state.sharing_mode_writable = True
     elif callable(sharing_mode):
         _sharing_callable = sharing_mode
         app.state.sharing_mode = lambda: SharingMode.coerce(_sharing_callable())
+        app.state.sharing_mode_writable = False
     else:
         _sharing_static = SharingMode.coerce(sharing_mode)
         app.state.sharing_mode = lambda: _sharing_static
+        app.state.sharing_mode_writable = False
     # Tracks in-flight background managed-host launches (POST
     # /v1/sessions returns before the sandbox exists) so a message
     # racing the provision can rendezvous instead of failing with
@@ -2028,6 +2046,17 @@ def create_app(
         create_policy_registry_router(auth_provider=auth_provider),
         prefix="/v1",
         tags=["policy_registry"],
+    )
+    # Admin control for the server-wide sharing mode. Always mounted (the
+    # handlers self-gate on admin); PUT is a no-op-reject unless this server
+    # resolves its mode from the editable file-backed default.
+    app.include_router(
+        create_sharing_mode_router(
+            auth_provider=auth_provider,
+            permission_store=permission_store,
+        ),
+        prefix="/v1",
+        tags=["sharing_mode"],
     )
 
     # ── Tunnel lifecycle callbacks (Step 8.5 crash recovery) ───

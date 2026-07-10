@@ -29,6 +29,7 @@ import pytest
 from fastapi import FastAPI
 
 from omnigent.runtime.agent_cache import AgentCache
+from omnigent.server import sharing_settings
 from omnigent.server.app import create_app
 from omnigent.server.auth import (
     LEVEL_EDIT,
@@ -40,6 +41,11 @@ from omnigent.server.auth import (
     UnifiedAuthProvider,
     workspace_sharing_blocked,
 )
+from omnigent.server.sharing_settings import (
+    read_sharing_mode_override,
+    resolve_sharing_mode_path,
+    write_sharing_mode_override,
+)
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
 from omnigent.stores.artifact_store.local import LocalArtifactStore
 from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
@@ -47,9 +53,20 @@ from omnigent.stores.file_store.sqlalchemy_store import SqlAlchemyFileStore
 from omnigent.stores.permission_store.sqlalchemy_store import SqlAlchemyPermissionStore
 
 # Reserved test identities. The owner is granted MANAGE so it can reach
-# the grant endpoint; the grantee is the target of each new grant.
+# the grant endpoint; the grantee is the target of each new grant; the admin
+# manages the server-wide sharing mode.
 _OWNER = "owner@sharing.test"
 _GRANTEE = "bob@sharing.test"
+_ADMIN = "admin@sharing.test"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point ``resolve_data_dir()`` at the per-test tmp dir so the file-backed
+    ``sharing_mode`` override is isolated, and reset its module cache so no
+    value leaks across tests."""
+    monkeypatch.setenv("OMNIGENT_ADMIN_CREDENTIALS_PATH", str(tmp_path / "admin-credentials"))
+    sharing_settings._cache = None
 
 
 def _build_app(
@@ -112,6 +129,28 @@ def _seed_owned_session(
         auth_provider=UnifiedAuthProvider(source="header"),
     )
     return app, conv.id
+
+
+def _admin_app(
+    db_uri: str,
+    tmp_path: Path,
+    *,
+    sharing_mode: SharingMode | object | None = None,
+) -> FastAPI:
+    """Build an app with a seeded admin identity for the sharing-mode routes.
+
+    ``sharing_mode=None`` yields the editable file-backed default; a static
+    value yields the non-editable (managed) case.
+    """
+    permission_store = SqlAlchemyPermissionStore(db_uri)
+    permission_store.ensure_user(_ADMIN, is_admin=True)
+    return _build_app(
+        db_uri,
+        tmp_path,
+        sharing_mode=sharing_mode,
+        permission_store=permission_store,
+        auth_provider=UnifiedAuthProvider(source="header"),
+    )
 
 
 # ── SharingMode.coerce — fail-open-to-ON contract ────────────────────
@@ -408,3 +447,96 @@ async def test_restricted_allows_read_when_no_workspace(db_uri: str, tmp_path: P
             json={"user_id": _GRANTEE, "level": LEVEL_READ},
         )
         assert resp.status_code == 200, resp.text
+
+
+# ── File-backed override: persistence + create_app precedence ────────
+
+
+def test_override_file_roundtrip(tmp_path: Path) -> None:
+    """write/read round-trips the override; an unset file reads as None."""
+    assert read_sharing_mode_override() is None
+    write_sharing_mode_override(SharingMode.RESTRICTED_READ_ONLY)
+    assert resolve_sharing_mode_path().exists()
+    assert read_sharing_mode_override() is SharingMode.RESTRICTED_READ_ONLY
+
+
+def test_override_beats_env_default(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When an override file exists, create_app's default resolver returns it,
+    ignoring the env default; the path is marked editable."""
+    monkeypatch.setenv("OMNIGENT_SHARING_MODE", "on")
+    write_sharing_mode_override(SharingMode.OFF)
+    app = _build_app(db_uri, tmp_path)  # None → file-backed default
+    assert app.state.sharing_mode() is SharingMode.OFF
+    assert app.state.sharing_mode_writable is True
+
+
+def test_env_default_used_when_no_override(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no override file, the env default applies."""
+    monkeypatch.setenv("OMNIGENT_SHARING_MODE", "read_only")
+    app = _build_app(db_uri, tmp_path)
+    assert app.state.sharing_mode() is SharingMode.READ_ONLY
+
+
+# ── Admin route: GET / PUT /v1/sharing-mode ──────────────────────────
+
+
+async def test_get_reports_state(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNIGENT_SHARING_MODE", "on")
+    app = _admin_app(db_uri, tmp_path)
+    async with _client(app, _ADMIN) as c:
+        resp = await c.get("/v1/sharing-mode")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["sharing_mode"] == "on"
+        assert body["editable"] is True
+        assert body["options"] == ["on", "read_only", "restricted_read_only", "off"]
+
+
+async def test_put_sets_mode_and_persists(db_uri: str, tmp_path: Path) -> None:
+    """An admin PUT persists the override; GET, /v1/info, and the live
+    resolver all reflect it."""
+    app = _admin_app(db_uri, tmp_path)
+    async with _client(app, _ADMIN) as c:
+        put = await c.put("/v1/sharing-mode", json={"sharing_mode": "restricted_read_only"})
+        assert put.status_code == 200, put.text
+        assert put.json()["sharing_mode"] == "restricted_read_only"
+
+        assert (await c.get("/v1/sharing-mode")).json()["sharing_mode"] == "restricted_read_only"
+        assert (await c.get("/v1/info")).json()["sharing_mode"] == "restricted_read_only"
+        assert app.state.sharing_mode() is SharingMode.RESTRICTED_READ_ONLY
+        assert read_sharing_mode_override() is SharingMode.RESTRICTED_READ_ONLY
+
+
+async def test_put_rejects_unknown_value(db_uri: str, tmp_path: Path) -> None:
+    """A typo'd tier is a 400 — no silent fail-open coercion on an admin PUT."""
+    app = _admin_app(db_uri, tmp_path)
+    async with _client(app, _ADMIN) as c:
+        resp = await c.put("/v1/sharing-mode", json={"sharing_mode": "bogus"})
+        assert resp.status_code == 400, resp.text
+        # unchanged: nothing was persisted
+        assert read_sharing_mode_override() is None
+
+
+async def test_admin_endpoint_requires_admin(db_uri: str, tmp_path: Path) -> None:
+    """A non-admin identity is forbidden from reading or writing the mode."""
+    app = _admin_app(db_uri, tmp_path)  # only _ADMIN is an admin
+    async with _client(app, "intruder@sharing.test") as c:
+        assert (await c.get("/v1/sharing-mode")).status_code == 403
+        put = await c.put("/v1/sharing-mode", json={"sharing_mode": "off"})
+        assert put.status_code == 403, put.text
+
+
+async def test_put_rejected_when_not_writable(db_uri: str, tmp_path: Path) -> None:
+    """A deployment-managed mode (static/callable) reports editable=false and
+    rejects writes."""
+    app = _admin_app(db_uri, tmp_path, sharing_mode=SharingMode.ON)
+    async with _client(app, _ADMIN) as c:
+        assert (await c.get("/v1/sharing-mode")).json()["editable"] is False
+        put = await c.put("/v1/sharing-mode", json={"sharing_mode": "off"})
+        assert put.status_code == 403, put.text
