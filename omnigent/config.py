@@ -13,11 +13,11 @@ _GLOBAL_CONFIG_PATH = Path.home() / ".omnigent" / "config.yaml"
 _LOCAL_CONFIG_RELPATH = Path(".omnigent") / "config.yaml"
 
 
-def global_config_path() -> Path:
+def global_config_path(default_path: Path | None = None) -> Path:
     """Return the effective user-level config path."""
     if config_home := os.environ.get(_CONFIG_HOME_ENV_VAR):
         return Path(config_home) / "config.yaml"
-    return _GLOBAL_CONFIG_PATH
+    return default_path or _GLOBAL_CONFIG_PATH
 
 
 def load_global_config(path: Path | None = None) -> dict[str, Any]:  # type: ignore[explicit-any]

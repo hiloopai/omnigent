@@ -108,6 +108,7 @@ def test_profile_from_providers_block(monkeypatch: pytest.MonkeyPatch) -> None:
     Exercises the real ``_profile_from_config`` (captured before the autouse
     stub) by monkeypatching the two upstream config sources it reads.
     """
+    monkeypatch.setattr("omnigent.config.load_global_config", dict)
     monkeypatch.setattr(
         "omnigent.config.load_effective_config",
         lambda: {
@@ -121,13 +122,44 @@ def test_profile_from_providers_block(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_profile_from_auth_block(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "omnigent.config.load_effective_config",
+        "omnigent.config.load_global_config",
         lambda: {"auth": {"type": "databricks", "profile": "AUTH_PROFILE"}},
     )
     assert _REAL_PROFILE_FROM_CONFIG() == "AUTH_PROFILE"
 
 
+def test_project_auth_does_not_override_global_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "omnigent.config.load_global_config",
+        lambda: {"auth": {"type": "databricks", "profile": "GLOBAL_AUTH"}},
+    )
+    monkeypatch.setattr(
+        "omnigent.config.load_effective_config",
+        lambda: {"auth": {"type": "databricks", "profile": "PROJECT_AUTH"}},
+    )
+    assert _REAL_PROFILE_FROM_CONFIG() == "GLOBAL_AUTH"
+
+
+def test_project_only_auth_is_not_used_for_tier_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("omnigent.config.load_global_config", dict)
+    monkeypatch.setattr(
+        "omnigent.config.load_effective_config",
+        lambda: {"auth": {"type": "databricks", "profile": "PROJECT_AUTH"}},
+    )
+    assert _REAL_PROFILE_FROM_CONFIG() is None
+
+
+def test_profile_from_config_tolerates_malformed_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _malformed() -> dict[str, object]:
+        raise ValueError("malformed yaml")
+
+    monkeypatch.setattr("omnigent.config.load_global_config", _malformed)
+    monkeypatch.setattr("omnigent.config.load_effective_config", _malformed)
+    assert _REAL_PROFILE_FROM_CONFIG() is None
+
+
 def test_top_level_profile_precedes_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("omnigent.config.load_global_config", dict)
     monkeypatch.setattr(
         "omnigent.config.load_effective_config",
         lambda: {

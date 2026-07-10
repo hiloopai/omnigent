@@ -30,6 +30,18 @@ def test_assistant_text_reads_both_item_shapes() -> None:
     assert assistant_text(items, separator=" ") == "one two"
 
 
+def test_assistant_text_accepts_untyped_text_and_ignores_non_text_blocks() -> None:
+    item = {
+        "role": "assistant",
+        "content": [
+            {"text": "plain"},
+            {"type": "reasoning", "text": "internal"},
+            {"type": "image", "text": "metadata"},
+        ],
+    }
+    assert assistant_text(item) == "plain"
+
+
 def test_function_calls_and_output_states_are_normalized() -> None:
     items = [
         {"data": {"type": "function_call", "call_id": "c1", "name": "Bash"}},

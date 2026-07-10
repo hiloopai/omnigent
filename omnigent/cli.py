@@ -34,6 +34,7 @@ from omnigent._startup_profile import StartupProfiler
 from omnigent.cli_sandbox import lakebox as _lakebox_alias_group
 from omnigent.cli_sandbox import sandbox as _sandbox_group
 from omnigent.config import (
+    global_config_path,
     load_global_config,
     load_local_config,
 )
@@ -303,9 +304,7 @@ def _effective_global_config_path() -> Path:
     :returns: ``$OMNIGENT_CONFIG_HOME/config.yaml`` when the env
         override is set, otherwise :data:`_GLOBAL_CONFIG_PATH`.
     """
-    if config_home := os.environ.get(_CONFIG_HOME_ENV_VAR):
-        return Path(config_home) / "config.yaml"
-    return _GLOBAL_CONFIG_PATH
+    return global_config_path(_GLOBAL_CONFIG_PATH)
 
 
 def _display_path(path: Path) -> str:
