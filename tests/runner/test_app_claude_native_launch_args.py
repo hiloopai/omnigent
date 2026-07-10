@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import pytest
 
-from omnigent.runner.app import _build_claude_native_base_args
+from omnigent.claude_native import ClaudeNativeUcodeConfig
+from omnigent.runner.app import _build_claude_native_base_args, _claude_terminal_env_unset
 
 
 @pytest.mark.parametrize(
@@ -139,3 +140,65 @@ def test_build_claude_native_base_args_resume_prefix(
         )
         == expected
     )
+
+
+def test_claude_terminal_env_unset_masks_key_with_api_key_helper() -> None:
+    """An apiKeyHelper launch strips the raw key + nested-session marker.
+
+    When the credential reaches Claude Code via an ``apiKeyHelper``, a raw
+    ``ANTHROPIC_API_KEY`` in the child env makes Claude open its custom-API-
+    key confirmation menu, and the first web message is typed into that menu
+    instead of the chat composer. The key must not leak into the terminal
+    child; ``CLAUDECODE`` is stripped alongside it to avoid a nested-session
+    error. ``DATABRICKS_CONFIG_PROFILE`` is always dropped.
+    """
+    config = ClaudeNativeUcodeConfig(
+        env={"ANTHROPIC_BASE_URL": "https://gateway.example/anthropic"},
+        api_key_helper="printf %s sk-gateway",
+        model="gateway-served-claude",
+    )
+    env_unset = _claude_terminal_env_unset(config)
+    assert "ANTHROPIC_API_KEY" in env_unset
+    assert "CLAUDECODE" in env_unset
+    assert "DATABRICKS_CONFIG_PROFILE" in env_unset
+
+
+def test_claude_terminal_env_unset_without_helper_keeps_only_profile() -> None:
+    """No apiKeyHelper → only the Databricks profile is stripped.
+
+    Claude's own-login path (``None`` config) and a Bedrock-style config
+    (credential via env, no ``apiKeyHelper``) carry no raw key to shadow,
+    so the key/nested-session strip must not apply — dropping ``CLAUDECODE``
+    there would be gratuitous.
+    """
+    assert _claude_terminal_env_unset(None) == ["DATABRICKS_CONFIG_PROFILE"]
+    bedrock_like = ClaudeNativeUcodeConfig(
+        env={"ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.example"},
+        api_key_helper=None,
+        model="us.anthropic.claude-opus-4-5-20251101-v1:0",
+    )
+    assert _claude_terminal_env_unset(bedrock_like) == ["DATABRICKS_CONFIG_PROFILE"]
+
+
+def test_native_launch_passes_synthesized_model_as_flag() -> None:
+    """A synthesized gateway model reaches the launch as ``--model``.
+
+    ``_auto_create_claude_terminal`` feeds ``claude_config.model`` (populated
+    by ambient Anthropic synthesis from ``ANTHROPIC_MODEL``) into the base
+    args as the model default. This pins the end-to-end contract: a gateway
+    model resolves to ``--model <id>`` so Claude Code doesn't launch with its
+    own default that the gateway rejects.
+    """
+    config = ClaudeNativeUcodeConfig(
+        env={"ANTHROPIC_BASE_URL": "https://gateway.example/anthropic"},
+        api_key_helper="printf %s sk-gateway",
+        model="gateway-served-claude",
+    )
+    # Mirrors the runner's precedence: session override wins, else the
+    # provider/ucode gateway model becomes the --model default.
+    args = _build_claude_native_base_args(
+        reasoning_effort=None,
+        model_override=None or config.model,
+        terminal_launch_args=None,
+    )
+    assert args == ("--model", "gateway-served-claude")

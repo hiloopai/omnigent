@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # Type-only import: the runner keeps codex deps out of its runtime import
     # graph (they are imported lazily inside the codex-native helpers).
+    from omnigent.claude_native import ClaudeNativeUcodeConfig
     from omnigent.codex_native_app_server import CodexAppServerClient
     from omnigent.terminals.registry import TerminalListEntry
 
@@ -5091,6 +5092,37 @@ def _build_claude_native_base_args(
     return tuple(args)
 
 
+def _claude_terminal_env_unset(
+    claude_config: ClaudeNativeUcodeConfig | None,
+) -> list[str]:
+    """
+    Env vars to strip from a native Claude terminal child.
+
+    Always drops ``DATABRICKS_CONFIG_PROFILE`` so the terminal's MCP
+    servers don't inherit the runner's ambient Databricks profile and
+    resolve auth against the wrong workspace.
+
+    When the launch config carries an ``apiKeyHelper``, also drops the raw
+    ``ANTHROPIC_API_KEY`` and ``CLAUDECODE``: the runner forwards the key as
+    a harness credential, and Claude Code — seeing both a raw key and the
+    helper — opens its "Detected a custom API key" confirmation menu, whose
+    selected row uses the same ``❯`` glyph the tmux delivery path waits for.
+    The first web message is then typed into the menu, not the chat
+    composer, so no turn starts. ``CLAUDECODE`` is stripped alongside it so
+    the child doesn't report a nested-session error, mirroring the
+    claude-sdk executor's spawn.
+
+    :param claude_config: The resolved native launch config, or ``None``
+        (Claude's own login) — which strips only the Databricks profile.
+    :returns: The env var names to unset, e.g.
+        ``["DATABRICKS_CONFIG_PROFILE", "ANTHROPIC_API_KEY", "CLAUDECODE"]``.
+    """
+    env_unset = ["DATABRICKS_CONFIG_PROFILE"]
+    if claude_config is not None and claude_config.api_key_helper:
+        env_unset.extend(("ANTHROPIC_API_KEY", "CLAUDECODE"))
+    return env_unset
+
+
 def _publish_terminal_pending(
     publish_event: Callable[[str, dict[str, Any]], None],
     session_id: str,
@@ -5424,7 +5456,6 @@ async def _auto_create_claude_terminal(
 
     from omnigent.claude_launcher import resolve_claude_launch
     from omnigent.claude_native import (
-        ClaudeNativeUcodeConfig,
         augment_claude_args,
         build_native_claude_terminal_env,
         resolve_native_claude_config,
@@ -5657,10 +5688,7 @@ async def _auto_create_claude_terminal(
     # the CLI injects this in ``_claude_terminal_request``; on this path
     # the runner must, since it (not the CLI) launches the terminal.
     # Best-effort: no profile / no ucode state / malformed state falls
-    # back to Claude's own native config (empty env). The runner env is
-    # an allowlist that excludes ``ANTHROPIC_API_KEY`` /
-    # ``CLAUDE_CODE_*``, so — unlike the CLI — there are no stray
-    # provider/session vars to unset before the gateway env applies.
+    # back to Claude's own native config (empty env).
     # See designs/NATIVE_RUNNER_SERVER_LAUNCH.md.
     # Resolve the launch config across all offerings — a configured provider
     # (omnigent setup), a Databricks ucode profile from provider config, or
@@ -5725,6 +5753,8 @@ async def _auto_create_claude_terminal(
     # managed-host path. Identity by default. See omnigent.claude_launcher.
     launch_command, launch_args = resolve_claude_launch("claude", list(claude_args))
 
+    claude_terminal_env_unset = _claude_terminal_env_unset(claude_config)
+
     # Inherit the agent's os_env so its sandbox (e.g. ``type: none``),
     # egress_rules and env_passthrough are honoured. Without ``sandbox`` here
     # and ``parent_os_env`` below, launch_terminal falls back to
@@ -5742,21 +5772,20 @@ async def _auto_create_claude_terminal(
         # etc.) when derived. Empty provider config still forces
         # ENABLE_TOOL_SEARCH=true so MCP schemas are loaded on demand.
         env=build_native_claude_terminal_env(claude_config),
-        # Strip the ambient Databricks-SDK profile selection from
-        # the Claude tmux env. Claude's MCP servers inherit this env,
-        # and several construct ``WorkspaceClient`` without pinning
-        # ``auth_type``; when ``DATABRICKS_CONFIG_PROFILE`` is set,
-        # the SDK's auth resolver picks up that profile's cached
-        # OAuth token and ignores the explicit token the MCP was
-        # configured with — sending a bearer minted for the wrong
-        # workspace and getting back a 400 ``Invalid Token`` from
-        # the right one. Claude itself doesn't read this env var
-        # (provider routing is via ``ANTHROPIC_BASE_URL`` /
-        # ``apiKeyHelper``), so dropping it from the terminal env
-        # affects only the leak path. MCPs that genuinely need a
-        # specific profile must declare it in their own per-MCP env
+        # Strip the ambient Databricks-SDK profile selection (and, on the
+        # apiKeyHelper path, the raw Anthropic key / nested-session marker —
+        # see above). Claude's MCP servers inherit this env, and several
+        # construct ``WorkspaceClient`` without pinning ``auth_type``; when
+        # ``DATABRICKS_CONFIG_PROFILE`` is set, the SDK's auth resolver picks
+        # up that profile's cached OAuth token and ignores the explicit token
+        # the MCP was configured with — sending a bearer minted for the wrong
+        # workspace and getting back a 400 ``Invalid Token`` from the right
+        # one. Claude itself doesn't read this env var (provider routing is
+        # via ``ANTHROPIC_BASE_URL`` / ``apiKeyHelper``), so dropping it from
+        # the terminal env affects only the leak path. MCPs that genuinely
+        # need a specific profile must declare it in their own per-MCP env
         # configuration rather than inheriting it from the runner.
-        env_unset=["DATABRICKS_CONFIG_PROFILE"],
+        env_unset=claude_terminal_env_unset,
         scrollback=50000,
         # Keep the private tmux server alive if the `claude` CLI exits (e.g. a
         # sub-agent worker whose CLI exits right after rendering its prompt on
