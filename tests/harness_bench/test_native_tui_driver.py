@@ -9,6 +9,7 @@ the tool and policy turns without a server, host daemon, or vendor CLI.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import pytest
@@ -38,8 +39,9 @@ class _FakeResponse:
 class _FakeStream:
     """Context manager yielding canned SSE lines via iter_lines."""
 
-    def __init__(self, frames: list[str | dict]) -> None:
+    def __init__(self, frames: list[str | dict], *, tail_delay: float = 0.0) -> None:
         self._lines = []
+        self._tail_delay = tail_delay
         for frame in frames:
             if isinstance(frame, str):
                 self._lines.append(f"event: {frame}")
@@ -54,6 +56,8 @@ class _FakeStream:
 
     def iter_lines(self):
         yield from self._lines
+        if self._tail_delay:
+            time.sleep(self._tail_delay)
 
 
 class _FakeClient:
@@ -72,12 +76,14 @@ class _FakeClient:
         *,
         items: list[dict] | None = None,
         stream_events: list[str | dict] | None = None,
+        stream_tail_delay: float = 0.0,
         policy_status: int = 200,
     ) -> None:
         self._items = items or []
         self._stream_events = stream_events or [
             "response.output_item.done",
         ]
+        self._stream_tail_delay = stream_tail_delay
         self._policy_status = policy_status
         self.attached_policies: list[dict] = []
         self.deleted_policies: list[str] = []
@@ -104,7 +110,7 @@ class _FakeClient:
         return _FakeResponse(200, {"deleted": True})
 
     def stream(self, method: str, url: str, timeout: float | None = None):
-        return _FakeStream(self._stream_events)
+        return _FakeStream(self._stream_events, tail_delay=self._stream_tail_delay)
 
 
 def _driver_with_fake(harness: str, client: _FakeClient) -> NativeTuiDriver:
@@ -216,6 +222,21 @@ def test_policy_allow_attaches_policy_and_observes_tool_call() -> None:
     assert [tc["name"] for tc in result.tool_calls] == ["Bash"]
     assert '"result": "ALLOW"' in client.attached_policies[0]["factory_params"]["expression"]
     assert client.deleted_policies == ["spol_test"]
+
+
+def test_policy_allow_reader_stops_on_terminal_event() -> None:
+    client = _FakeClient(
+        items=[_function_call_item("Bash")],
+        stream_events=["response.output_item.done"],
+        stream_tail_delay=1.0,
+    )
+    driver = _driver_with_fake("claude-native", client)
+
+    started = time.monotonic()
+    result = driver._drive_policy_turn(action="allow")
+
+    assert result.tool_call_allowed
+    assert time.monotonic() - started < 0.5
 
 
 def test_policy_ask_observes_and_resolves_elicitation() -> None:

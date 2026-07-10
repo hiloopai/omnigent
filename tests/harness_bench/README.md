@@ -84,7 +84,7 @@ A profile's `transport` is a harness-family marker. The resolved driver is:
 | **Streaming** | More than one output-text delta is emitted; a repeated single delta is `PARTIAL`. | P0 |
 | **Tool calling** | A tool call is surfaced and the turn closes after its result. | P0 |
 | **Policy DENY** | A tool-call policy blocks the call. | P0 |
-| **Policy ALLOW** | An explicit allow policy lets the call proceed. | P1 |
+| **Policy ALLOW** | A tool call proceeds while an explicit allow policy is attached. | P1 |
 | **Policy ASK** | An ask policy raises an approval elicitation. | P1 |
 | **Model override** | The harness accepts and completes with the requested model. | P0 |
 | **Cost tracking** | A completed turn reports priced cost (`SUPPORTED`) or tokens only (`PARTIAL`). | P1 |

@@ -205,7 +205,7 @@ Validated for presence and shape only: `Owner`, `Transport`, `Implementation`,
 | Streaming (P0) | count output-text deltas; repeated single-delta output is `PARTIAL` |
 | Tool calling (P0) | provoke the transport's tool mechanism and require a surfaced call |
 | Policy DENY (P0) | apply a tool-call deny and require a blocked-call signal |
-| Policy ALLOW (P1) | apply an explicit allow and require a non-blocked tool output |
+| Policy ALLOW (P1) | attach an explicit allow and require a non-blocked tool output; native hooks expose no positive ALLOW event |
 | Policy ASK (P1) | apply ask and require an elicitation/approval request |
 | Model override (P0) | validate the requested harness/model pair and complete a turn |
 | Cost tracking (P1) | read priced cost or token usage from the turn/session |

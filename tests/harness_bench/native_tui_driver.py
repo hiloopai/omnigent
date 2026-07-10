@@ -566,7 +566,12 @@ class NativeTuiDriver:
         return result
 
     def _drive_policy_turn(self, *, action: str) -> TurnResult:
-        """Provoke a native tool under an explicit ALLOW or ASK policy."""
+        """Provoke a native tool under an explicit ALLOW or ASK policy.
+
+        ALLOW proves that a tool proceeds while an explicit policy is attached;
+        the native hook emits no positive signal that distinguishes an evaluated
+        ALLOW from its default no-op behavior.
+        """
         if action not in {"allow", "ask"}:
             raise ValueError(f"unsupported native policy action: {action!r}")
         assert self._client is not None and self._vendor is not None
@@ -592,6 +597,7 @@ class NativeTuiDriver:
 
         def _read() -> None:
             assert self._client is not None
+            event_type: str | None = None
             try:
                 with self._client.stream(
                     "GET",
@@ -600,16 +606,22 @@ class NativeTuiDriver:
                 ) as resp:
                     ready.set()
                     for line in resp.iter_lines():
+                        if line.startswith("event:"):
+                            event_type = line[len("event:") :].strip()
+                            if action == "allow" and event_type in _READER_TERMINAL:
+                                return
                         if line.startswith("data:"):
                             try:
                                 frame = json.loads(line[len("data:") :].strip())
                             except (TypeError, ValueError):
                                 continue
-                            if frame.get("type") == _ELICITATION_EVENT:
-                                result.elicitation_requested = True
+                            if frame.get("type") == _ELICITATION_EVENT or (
+                                event_type == _ELICITATION_EVENT
+                            ):
                                 value = frame.get("elicitation_id")
                                 if isinstance(value, str):
                                     elicitation_id.append(value)
+                                result.elicitation_requested = True
                                 return
                         if stop.is_set():
                             return
