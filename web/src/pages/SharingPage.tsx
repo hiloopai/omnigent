@@ -11,6 +11,7 @@
 
 import { useEffect, useState } from "react";
 import { PageScroll } from "@/components/PageScroll";
+import { Switch } from "@/components/ui/switch";
 import type { SharingMode } from "@/lib/capabilities";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { getCurrentIsAdmin, resolveIdentity } from "@/lib/identity";
@@ -92,11 +93,19 @@ export function SharingPage() {
 
   const current = state?.sharing_mode;
   const editable = state?.editable ?? false;
+  const publicEnabled = state?.public_sharing_enabled ?? true;
+  const publicEditable = state?.public_sharing_editable ?? false;
 
   function choose(mode: SharingMode) {
     if (!editable || mode === current || setMode.isPending) return;
     setError(null);
-    setMode.mutate(mode, { onError: (err) => setError(err.message) });
+    setMode.mutate({ sharing_mode: mode }, { onError: (err) => setError(err.message) });
+  }
+
+  function togglePublic(next: boolean) {
+    if (!publicEditable || setMode.isPending) return;
+    setError(null);
+    setMode.mutate({ public_sharing: next }, { onError: (err) => setError(err.message) });
   }
 
   return (
@@ -154,6 +163,29 @@ export function SharingPage() {
                 );
               })}
             </fieldset>
+
+            {/* Public access — a separate switch from the tiers above. */}
+            <div className="mt-6 flex items-center justify-between rounded-lg border px-4 py-3">
+              <div className="pr-4">
+                <p className="text-sm font-medium">Public access</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Allow sharing a session with anyone who has the link (public read access). When
+                  off, the Share dialog's "Public access" toggle is hidden and public grants are
+                  rejected.
+                </p>
+                {!publicEditable && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Managed by this deployment and can't be changed here.
+                  </p>
+                )}
+              </div>
+              <Switch
+                checked={publicEnabled}
+                onCheckedChange={togglePublic}
+                disabled={!publicEditable || setMode.isPending}
+                aria-label="Public access"
+              />
+            </div>
             {error && <p className="mt-3 text-sm text-destructive">{error}</p>}
           </>
         )}

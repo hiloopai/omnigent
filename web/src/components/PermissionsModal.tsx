@@ -74,6 +74,9 @@ export function PermissionsModal({ sessionId, open, onOpenChange }: PermissionsM
   // sessions entirely; that per-session rule is enforced server-side and
   // surfaces here as an error on the grant attempt.
   const sharingReadOnly = sharingMode === "read_only" || sharingMode === "restricted_read_only";
+  // Public (anyone-with-the-link) access is a separate server switch from the
+  // sharing tiers; when off, hide the toggle (the server rejects the grant too).
+  const publicSharingEnabled = info === "loading" ? true : info.public_sharing_enabled;
   // In "off" mode never fetch the grant list — the modal short-circuits to a
   // notice below, so the request would be wasted (and the server rejects any
   // grant anyway).
@@ -163,18 +166,20 @@ export function PermissionsModal({ sessionId, open, onOpenChange }: PermissionsM
           </DialogDescription>
         </DialogHeader>
 
-        {/* Public toggle */}
-        <div className="flex items-center justify-between rounded-lg border px-3 py-2">
-          <div>
-            <p className="text-sm font-medium">Public access</p>
-            <p className="text-xs text-muted-foreground">Anyone can view this session</p>
+        {/* Public toggle — hidden when the server disables public access. */}
+        {publicSharingEnabled && (
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+            <div>
+              <p className="text-sm font-medium">Public access</p>
+              <p className="text-xs text-muted-foreground">Anyone can view this session</p>
+            </div>
+            <Switch
+              checked={isPublic}
+              onCheckedChange={handlePublicToggle}
+              disabled={grant.isPending || revoke.isPending}
+            />
           </div>
-          <Switch
-            checked={isPublic}
-            onCheckedChange={handlePublicToggle}
-            disabled={grant.isPending || revoke.isPending}
-          />
-        </div>
+        )}
 
         {/* Current grants. DialogContent is a grid, and grid items default to
             min-width:auto — without min-w-0 a long nowrap email sets the whole

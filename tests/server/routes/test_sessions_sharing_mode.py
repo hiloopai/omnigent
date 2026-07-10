@@ -36,14 +36,17 @@ from omnigent.server.auth import (
     LEVEL_MANAGE,
     LEVEL_OWNER,
     LEVEL_READ,
+    RESERVED_USER_PUBLIC,
     AuthProvider,
     SharingMode,
     UnifiedAuthProvider,
     workspace_sharing_blocked,
 )
 from omnigent.server.sharing_settings import (
+    read_public_sharing_override,
     read_sharing_mode_override,
     resolve_sharing_mode_path,
+    write_public_sharing_override,
     write_sharing_mode_override,
 )
 from omnigent.stores.agent_store.sqlalchemy_store import SqlAlchemyAgentStore
@@ -63,10 +66,10 @@ _ADMIN = "admin@sharing.test"
 @pytest.fixture(autouse=True)
 def _isolate_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Point ``resolve_data_dir()`` at the per-test tmp dir so the file-backed
-    ``sharing_mode`` override is isolated, and reset its module cache so no
-    value leaks across tests."""
+    sharing overrides are isolated, and reset the module cache so no value
+    leaks across tests."""
     monkeypatch.setenv("OMNIGENT_ADMIN_CREDENTIALS_PATH", str(tmp_path / "admin-credentials"))
-    sharing_settings._cache = None
+    sharing_settings._cache = {}
 
 
 def _build_app(
@@ -74,6 +77,7 @@ def _build_app(
     tmp_path: Path,
     *,
     sharing_mode: SharingMode | object | None = None,
+    public_sharing: bool | object | None = None,
     permission_store: SqlAlchemyPermissionStore | None = None,
     auth_provider: AuthProvider | None = None,
 ) -> FastAPI:
@@ -88,6 +92,7 @@ def _build_app(
         permission_store=permission_store,
         auth_provider=auth_provider,
         sharing_mode=sharing_mode,
+        public_sharing=public_sharing,
     )
 
 
@@ -105,7 +110,8 @@ def _seed_owned_session(
     db_uri: str,
     tmp_path: Path,
     *,
-    sharing_mode: SharingMode,
+    sharing_mode: SharingMode = SharingMode.ON,
+    public_sharing: bool | object | None = None,
     workspace: str | None = None,
 ) -> tuple[FastAPI, str]:
     """Build an app whose ``_OWNER`` identity manages a real session.
@@ -114,7 +120,8 @@ def _seed_owned_session(
     so ``PUT …/permissions`` gets past the manage-access check and hits
     the sharing gate (and, when allowed, actually persists the grant).
     ``workspace`` sets the session's recorded cwd, exercising the
-    ``RESTRICTED_READ_ONLY`` home/root block.
+    ``RESTRICTED_READ_ONLY`` home/root block; ``public_sharing`` exercises
+    the public-access gate.
     """
     permission_store = SqlAlchemyPermissionStore(db_uri)
     conversation_store = SqlAlchemyConversationStore(db_uri)
@@ -125,6 +132,7 @@ def _seed_owned_session(
         db_uri,
         tmp_path,
         sharing_mode=sharing_mode,
+        public_sharing=public_sharing,
         permission_store=permission_store,
         auth_provider=UnifiedAuthProvider(source="header"),
     )
@@ -136,11 +144,12 @@ def _admin_app(
     tmp_path: Path,
     *,
     sharing_mode: SharingMode | object | None = None,
+    public_sharing: bool | object | None = None,
 ) -> FastAPI:
     """Build an app with a seeded admin identity for the sharing-mode routes.
 
-    ``sharing_mode=None`` yields the editable file-backed default; a static
-    value yields the non-editable (managed) case.
+    A ``None`` setting yields the editable file-backed default; a static value
+    yields the non-editable (managed) case.
     """
     permission_store = SqlAlchemyPermissionStore(db_uri)
     permission_store.ensure_user(_ADMIN, is_admin=True)
@@ -148,6 +157,7 @@ def _admin_app(
         db_uri,
         tmp_path,
         sharing_mode=sharing_mode,
+        public_sharing=public_sharing,
         permission_store=permission_store,
         auth_provider=UnifiedAuthProvider(source="header"),
     )
@@ -539,4 +549,141 @@ async def test_put_rejected_when_not_writable(db_uri: str, tmp_path: Path) -> No
     async with _client(app, _ADMIN) as c:
         assert (await c.get("/v1/sharing-mode")).json()["editable"] is False
         put = await c.put("/v1/sharing-mode", json={"sharing_mode": "off"})
+        assert put.status_code == 403, put.text
+
+
+async def test_put_requires_a_field(db_uri: str, tmp_path: Path) -> None:
+    """An empty body updates nothing and is a 400."""
+    app = _admin_app(db_uri, tmp_path)
+    async with _client(app, _ADMIN) as c:
+        resp = await c.put("/v1/sharing-mode", json={})
+        assert resp.status_code == 400, resp.text
+
+
+# ── Public-access switch (OMNIGENT_PUBLIC_SHARING) ───────────────────
+
+
+def test_public_sharing_defaults_enabled(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No arg + unset env → public sharing is enabled, file-editable."""
+    monkeypatch.delenv("OMNIGENT_PUBLIC_SHARING", raising=False)
+    app = _build_app(db_uri, tmp_path)
+    assert app.state.public_sharing() is True
+    assert app.state.public_sharing_writable is True
+
+
+@pytest.mark.parametrize(
+    "raw,expected", [("0", False), ("false", False), ("no", False), ("1", True), ("on", True)]
+)
+def test_public_sharing_reads_env_var(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw: str, expected: bool
+) -> None:
+    """``OMNIGENT_PUBLIC_SHARING`` is the top-level default when no arg is given."""
+    monkeypatch.setenv("OMNIGENT_PUBLIC_SHARING", raw)
+    app = _build_app(db_uri, tmp_path)
+    assert app.state.public_sharing() is expected
+
+
+def test_public_static_value_is_not_writable(db_uri: str, tmp_path: Path) -> None:
+    """An explicit bool is authoritative and not admin-editable."""
+    app = _build_app(db_uri, tmp_path, public_sharing=False)
+    assert app.state.public_sharing() is False
+    assert app.state.public_sharing_writable is False
+
+
+def test_public_override_roundtrip_and_precedence(
+    db_uri: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The override file round-trips and beats the env default."""
+    assert read_public_sharing_override() is None
+    monkeypatch.setenv("OMNIGENT_PUBLIC_SHARING", "1")
+    write_public_sharing_override(False)
+    assert read_public_sharing_override() is False
+    app = _build_app(db_uri, tmp_path)  # None → file-backed default
+    assert app.state.public_sharing() is False
+
+
+async def test_info_reports_public_sharing(db_uri: str, tmp_path: Path) -> None:
+    app_on = _build_app(db_uri, tmp_path, public_sharing=True)
+    async with _client(app_on) as c:
+        assert (await c.get("/v1/info")).json()["public_sharing_enabled"] is True
+    app_off = _build_app(db_uri, tmp_path, public_sharing=False)
+    async with _client(app_off) as c:
+        assert (await c.get("/v1/info")).json()["public_sharing_enabled"] is False
+
+
+async def test_public_grant_blocked_when_disabled(db_uri: str, tmp_path: Path) -> None:
+    """When public sharing is off, the ``__public__`` grant is 403 — but a
+    normal user grant still succeeds (the two switches are independent)."""
+    app, sid = _seed_owned_session(db_uri, tmp_path, public_sharing=False)
+    async with _client(app, _OWNER) as c:
+        public = await c.put(
+            f"/v1/sessions/{sid}/permissions",
+            json={"user_id": RESERVED_USER_PUBLIC, "level": LEVEL_READ},
+        )
+        assert public.status_code == 403, public.text
+        assert "public access has been disabled" in public.text.lower()
+
+        user = await c.put(
+            f"/v1/sessions/{sid}/permissions",
+            json={"user_id": _GRANTEE, "level": LEVEL_READ},
+        )
+        assert user.status_code == 200, user.text
+
+
+async def test_public_grant_allowed_when_enabled(db_uri: str, tmp_path: Path) -> None:
+    """The default (public enabled) still lets a ``__public__`` read grant through."""
+    app, sid = _seed_owned_session(db_uri, tmp_path, public_sharing=True)
+    async with _client(app, _OWNER) as c:
+        resp = await c.put(
+            f"/v1/sessions/{sid}/permissions",
+            json={"user_id": RESERVED_USER_PUBLIC, "level": LEVEL_READ},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["level"] == LEVEL_READ
+
+
+async def test_admin_get_reports_public_state(db_uri: str, tmp_path: Path) -> None:
+    app = _admin_app(db_uri, tmp_path)
+    async with _client(app, _ADMIN) as c:
+        body = (await c.get("/v1/sharing-mode")).json()
+        assert body["public_sharing_enabled"] is True
+        assert body["public_sharing_editable"] is True
+
+
+async def test_admin_put_disables_public_and_gate_follows(db_uri: str, tmp_path: Path) -> None:
+    """An admin PUT of public_sharing=false persists, is reflected in /v1/info,
+    and makes the grant gate reject the ``__public__`` grant."""
+    permission_store = SqlAlchemyPermissionStore(db_uri)
+    permission_store.ensure_user(_ADMIN, is_admin=True)
+    conv = SqlAlchemyConversationStore(db_uri).create_conversation()
+    permission_store.grant(_ADMIN, conv.id, LEVEL_OWNER)
+    app = _build_app(
+        db_uri,
+        tmp_path,
+        permission_store=permission_store,
+        auth_provider=UnifiedAuthProvider(source="header"),
+    )
+    async with _client(app, _ADMIN) as c:
+        put = await c.put("/v1/sharing-mode", json={"public_sharing": False})
+        assert put.status_code == 200, put.text
+        assert put.json()["public_sharing_enabled"] is False
+
+        assert (await c.get("/v1/info")).json()["public_sharing_enabled"] is False
+        assert read_public_sharing_override() is False
+
+        blocked = await c.put(
+            f"/v1/sessions/{conv.id}/permissions",
+            json={"user_id": RESERVED_USER_PUBLIC, "level": LEVEL_READ},
+        )
+        assert blocked.status_code == 403, blocked.text
+
+
+async def test_admin_put_public_rejected_when_not_writable(db_uri: str, tmp_path: Path) -> None:
+    """A deployment-managed public setting reports not-editable and rejects writes."""
+    app = _admin_app(db_uri, tmp_path, public_sharing=True)
+    async with _client(app, _ADMIN) as c:
+        assert (await c.get("/v1/sharing-mode")).json()["public_sharing_editable"] is False
+        put = await c.put("/v1/sharing-mode", json={"public_sharing": False})
         assert put.status_code == 403, put.text

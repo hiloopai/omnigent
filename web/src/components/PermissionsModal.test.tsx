@@ -54,14 +54,15 @@ function serverInfo(overrides: Partial<ServerInfo> = {}): ServerInfo {
     managed_sandboxes_enabled: false,
     sandbox_provider: null,
     sharing_mode: "on",
+    public_sharing_enabled: true,
     server_version: null,
     smart_routing_enabled: false,
     ...overrides,
   };
 }
 
-/** Wrapper that pins the server's sharing policy via CapabilitiesProvider. */
-function createSharingWrapper(mode: SharingMode) {
+/** Wrapper that pins arbitrary ServerInfo overrides via CapabilitiesProvider. */
+function createInfoWrapper(overrides: Partial<ServerInfo>) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -69,13 +70,16 @@ function createSharingWrapper(mode: SharingMode) {
     return (
       <QueryClientProvider client={qc}>
         <TooltipProvider>
-          <CapabilitiesProvider info={serverInfo({ sharing_mode: mode })}>
-            {children}
-          </CapabilitiesProvider>
+          <CapabilitiesProvider info={serverInfo(overrides)}>{children}</CapabilitiesProvider>
         </TooltipProvider>
       </QueryClientProvider>
     );
   };
+}
+
+/** Wrapper that pins the server's sharing policy via CapabilitiesProvider. */
+function createSharingWrapper(mode: SharingMode) {
+  return createInfoWrapper({ sharing_mode: mode });
 }
 
 beforeEach(() => {
@@ -549,6 +553,34 @@ describe("PermissionsModal", () => {
       const listbox = await screen.findByRole("listbox");
       const options = within(listbox).getAllByRole("option");
       expect(options.map((o) => o.textContent)).toEqual(["Read"]);
+    });
+  });
+
+  describe("public access", () => {
+    it("hides the Public access toggle when the server disables public sharing", async () => {
+      listMock.mockResolvedValue([]);
+
+      render(<PermissionsModal sessionId="conv_abc" open={true} onOpenChange={() => {}} />, {
+        wrapper: createInfoWrapper({ public_sharing_enabled: false }),
+      });
+
+      await waitFor(() => expect(listMock).toHaveBeenCalledWith("conv_abc"));
+      // The user-grant UI stays; only the public toggle is gone.
+      expect(screen.getByRole("button", { name: /grant/i })).toBeInTheDocument();
+      expect(screen.queryByText("Public access")).not.toBeInTheDocument();
+      expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    });
+
+    it("shows the Public access toggle when public sharing is enabled", async () => {
+      listMock.mockResolvedValue([]);
+
+      render(<PermissionsModal sessionId="conv_abc" open={true} onOpenChange={() => {}} />, {
+        wrapper: createInfoWrapper({ public_sharing_enabled: true }),
+      });
+
+      await waitFor(() => expect(listMock).toHaveBeenCalledWith("conv_abc"));
+      expect(screen.getByText("Public access")).toBeInTheDocument();
+      expect(screen.getByRole("switch")).toBeInTheDocument();
     });
   });
 });

@@ -1,15 +1,17 @@
 """Admin route for the server-wide session-sharing policy.
 
-``GET /v1/sharing-mode`` reports the current mode, whether it is editable on
-this server, and the available tiers. ``PUT /v1/sharing-mode`` sets it (admin
-only), persisting an override to ``<data_dir>/sharing_mode`` that the grant
+``GET /v1/sharing-mode`` reports two independent settings and whether each is
+editable here: the sharing *mode* (the tri-state tier + tier list) and whether
+*public* (anyone-with-the-link) access may be granted. ``PUT /v1/sharing-mode``
+sets either or both (admin only), persisting an override file
+(``<data_dir>/sharing_mode`` / ``<data_dir>/public_sharing``) that the grant
 gate and ``GET /v1/info`` read per request.
 
-Editing is only possible when the server resolves its mode from that file (the
-OSS default, ``create_app(sharing_mode=None)``). A deployment that injects its
-own resolver — a static value or a callable such as a Databricks SAFE flag —
-reports ``editable: false`` and rejects writes, since its policy is
-authoritative elsewhere.
+Editing a setting is only possible when the server resolves it from its file
+(the OSS default — ``create_app(sharing_mode=None, public_sharing=None)``). A
+deployment that injects its own resolver — a static value or a callable such as
+a Databricks SAFE flag — reports that setting as not editable and rejects
+writes to it, since its policy is authoritative elsewhere.
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ from pydantic import BaseModel
 from omnigent.errors import ErrorCode, OmnigentError
 from omnigent.server.auth import AuthProvider, SharingMode
 from omnigent.server.routes._auth_helpers import get_user_id
-from omnigent.server.sharing_settings import write_sharing_mode_override
+from omnigent.server.sharing_settings import (
+    write_public_sharing_override,
+    write_sharing_mode_override,
+)
 from omnigent.stores.permission_store import PermissionStore
 
 # The tiers offered to admins, most-permissive first (matches the UI order).
@@ -36,18 +41,28 @@ _TIERS: tuple[SharingMode, ...] = (
 
 
 class SetSharingModeRequest(BaseModel):
-    """Body for ``PUT /v1/sharing-mode``."""
+    """Body for ``PUT /v1/sharing-mode``.
 
-    sharing_mode: str
+    Both fields are optional so an admin can update either setting
+    independently; at least one must be present.
+    """
+
+    sharing_mode: str | None = None
+    public_sharing: bool | None = None
 
 
-def _state_response(mode: SharingMode, editable: bool) -> dict[str, Any]:
-    """Shape the ``sharing_mode`` state payload shared by GET and PUT."""
+def _state_response(request: Request) -> dict[str, Any]:
+    """Shape the sharing-settings payload from live ``app.state`` — shared by
+    GET and PUT so both reflect any override just written."""
+    state = request.app.state
+    mode: SharingMode = state.sharing_mode()
     return {
         "object": "sharing_mode",
         "sharing_mode": mode.value,
-        "editable": editable,
+        "editable": bool(getattr(state, "sharing_mode_writable", False)),
         "options": [tier.value for tier in _TIERS],
+        "public_sharing_enabled": bool(state.public_sharing()),
+        "public_sharing_editable": bool(getattr(state, "public_sharing_writable", False)),
     }
 
 
@@ -83,36 +98,49 @@ def create_sharing_mode_router(
 
     @router.get("/sharing-mode")
     async def get_sharing_mode(request: Request) -> dict[str, Any]:
-        """Report the current mode, whether it is editable here, and the tiers."""
+        """Report both settings, whether each is editable here, and the tiers."""
         await _require_admin(request, auth_provider, permission_store)
-        mode: SharingMode = request.app.state.sharing_mode()
-        editable = bool(getattr(request.app.state, "sharing_mode_writable", False))
-        return _state_response(mode, editable)
+        return _state_response(request)
 
     @router.put("/sharing-mode")
     async def set_sharing_mode(request: Request, body: SetSharingModeRequest) -> dict[str, Any]:
-        """Set the server-wide sharing mode (admin only).
+        """Set the sharing mode and/or public-access setting (admin only).
 
-        Rejects an unknown value with 400 (no fail-open coercion — an admin
-        setting a value should learn about a typo). Rejects the write with 403
-        when the deployment's mode is not file-backed (``editable: false``).
+        Updates only the fields present in the body; requires at least one.
+        Rejects an unknown mode value with 400 (no fail-open coercion — an admin
+        setting a value should learn about a typo). Rejects a write to a setting
+        the deployment manages itself (not file-backed) with 403.
         """
         await _require_admin(request, auth_provider, permission_store)
-        if not getattr(request.app.state, "sharing_mode_writable", False):
+        state = request.app.state
+        if body.sharing_mode is None and body.public_sharing is None:
             raise OmnigentError(
-                "Sharing mode is managed by this deployment and cannot be changed here.",
-                code=ErrorCode.FORBIDDEN,
-            )
-        try:
-            mode = SharingMode(body.sharing_mode.strip().lower())
-        except ValueError as exc:
-            raise OmnigentError(
-                f"Unknown sharing mode {body.sharing_mode!r}. Expected one of: "
-                + ", ".join(tier.value for tier in _TIERS)
-                + ".",
+                "No sharing settings to update.",
                 code=ErrorCode.INVALID_INPUT,
-            ) from exc
-        await asyncio.to_thread(write_sharing_mode_override, mode)
-        return _state_response(mode, editable=True)
+            )
+        if body.sharing_mode is not None:
+            if not getattr(state, "sharing_mode_writable", False):
+                raise OmnigentError(
+                    "Sharing mode is managed by this deployment and cannot be changed here.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+            try:
+                mode = SharingMode(body.sharing_mode.strip().lower())
+            except ValueError as exc:
+                raise OmnigentError(
+                    f"Unknown sharing mode {body.sharing_mode!r}. Expected one of: "
+                    + ", ".join(tier.value for tier in _TIERS)
+                    + ".",
+                    code=ErrorCode.INVALID_INPUT,
+                ) from exc
+            await asyncio.to_thread(write_sharing_mode_override, mode)
+        if body.public_sharing is not None:
+            if not getattr(state, "public_sharing_writable", False):
+                raise OmnigentError(
+                    "Public access is managed by this deployment and cannot be changed here.",
+                    code=ErrorCode.FORBIDDEN,
+                )
+            await asyncio.to_thread(write_public_sharing_override, body.public_sharing)
+        return _state_response(request)
 
     return router

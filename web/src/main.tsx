@@ -83,6 +83,7 @@ const _bootProbe: Promise<ServerInfo> = Promise.race([
           managed_sandboxes_enabled: false,
           sandbox_provider: null,
           sharing_mode: "on",
+          public_sharing_enabled: true,
           server_version: null,
           smart_routing_enabled: false,
         }),

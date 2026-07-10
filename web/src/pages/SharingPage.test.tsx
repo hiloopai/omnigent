@@ -43,6 +43,8 @@ function state(overrides: Partial<SharingModeState> = {}): SharingModeState {
     sharing_mode: "on",
     editable: true,
     options: ["on", "read_only", "restricted_read_only", "off"],
+    public_sharing_enabled: true,
+    public_sharing_editable: true,
     ...overrides,
   };
 }
@@ -100,7 +102,10 @@ describe("SharingPage", () => {
     )!;
     fireEvent.click(restricted);
 
-    expect(setModeMutate).toHaveBeenCalledWith("restricted_read_only", expect.anything());
+    expect(setModeMutate).toHaveBeenCalledWith(
+      { sharing_mode: "restricted_read_only" },
+      expect.anything(),
+    );
   });
 
   it("is read-only with a notice when the deployment manages the mode", async () => {
@@ -132,5 +137,41 @@ describe("SharingPage", () => {
       ).toBeInTheDocument(),
     );
     expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+  });
+
+  describe("public access toggle", () => {
+    it("renders an enabled, checked switch when public sharing is on and editable", async () => {
+      setSharingState(state({ public_sharing_enabled: true, public_sharing_editable: true }));
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      const toggle = screen.getByRole("switch", { name: /public access/i });
+      expect(toggle).toBeEnabled();
+      expect(toggle).toBeChecked();
+    });
+
+    it("toggling the switch calls the mutation with public_sharing", async () => {
+      setSharingState(state({ public_sharing_enabled: true, public_sharing_editable: true }));
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("switch", { name: /public access/i }));
+
+      expect(setModeMutate).toHaveBeenCalledWith({ public_sharing: false }, expect.anything());
+    });
+
+    it("disables the switch (no mutation) when public access is deployment-managed", async () => {
+      setSharingState(state({ public_sharing_enabled: true, public_sharing_editable: false }));
+
+      render(<SharingPage />);
+      await waitFor(() => expect(screen.getByText("On")).toBeInTheDocument());
+
+      const toggle = screen.getByRole("switch", { name: /public access/i });
+      expect(toggle).toBeDisabled();
+      fireEvent.click(toggle);
+      expect(setModeMutate).not.toHaveBeenCalled();
+    });
   });
 });

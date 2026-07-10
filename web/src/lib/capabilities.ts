@@ -30,12 +30,7 @@ import { hostFetch } from "./host";
  * an unknown/missing value.
  */
 export type SharingMode = "on" | "read_only" | "restricted_read_only" | "off";
-const _SHARING_MODES: readonly SharingMode[] = [
-  "on",
-  "read_only",
-  "restricted_read_only",
-  "off",
-];
+const _SHARING_MODES: readonly SharingMode[] = ["on", "read_only", "restricted_read_only", "off"];
 
 /** Shape of the response from ``GET /v1/info``. */
 export interface ServerInfo {
@@ -81,6 +76,12 @@ export interface ServerInfo {
    */
   sharing_mode: SharingMode;
   /**
+   * Whether public (anyone-with-the-link) read access may be granted.
+   * Independent of ``sharing_mode`` — drives whether the Share modal shows
+   * the "Public access" toggle. Fails open to ``true``.
+   */
+  public_sharing_enabled: boolean;
+  /**
    * Installed omnigent server version (same value as ``/api/version``),
    * e.g. ``"0.3.0.dev0"``. Shown in the session info popover's version
    * footer. ``null`` only when the probe failed (the OFF sentinel) — a
@@ -105,6 +106,7 @@ const _OFF: ServerInfo = {
   // Sharing fails OPEN (opposite of the other caps): a failed probe must
   // not silently disable sharing, so the sentinel is the permissive "on".
   sharing_mode: "on",
+  public_sharing_enabled: true,
   server_version: null,
   smart_routing_enabled: false,
 };
@@ -142,6 +144,8 @@ export async function resolveServerInfo(): Promise<ServerInfo> {
           sharing_mode: _SHARING_MODES.includes(data.sharing_mode as SharingMode)
             ? (data.sharing_mode as SharingMode)
             : "on",
+          // Fail open: only an explicit false disables the public toggle.
+          public_sharing_enabled: data.public_sharing_enabled !== false,
           server_version: typeof data.server_version === "string" ? data.server_version : null,
           smart_routing_enabled: data.smart_routing_enabled === true,
         };
