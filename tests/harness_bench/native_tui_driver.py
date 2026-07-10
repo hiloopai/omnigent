@@ -41,11 +41,16 @@ from tests.harness_bench.runtime_env import (
 )
 from tests.harness_bench.session_items import assistant_text, function_calls, item_role, item_type
 
-_HEALTH_TIMEOUT_S = 90.0
-_HOST_ONLINE_TIMEOUT_S = 45.0
+# Timeouts are "clearly stuck" ceilings, not expected durations: provisioning is
+# local (server/runner/host/forwarder boot, no model call) and a healthy native
+# turn streams within seconds. A run that blows these is a cold-start on a slow
+# CLI or a connection/network problem, not normal latency — so keep them tight
+# enough that a broken harness fails fast, with cold-start headroom.
+_HEALTH_TIMEOUT_S = 45.0
+_HOST_ONLINE_TIMEOUT_S = 30.0
 _POLL_INTERVAL_S = 0.3
-_TURN_TIMEOUT_S = 180.0
-_FORWARDER_READY_TIMEOUT_S = 90.0
+_TURN_TIMEOUT_S = 60.0
+_FORWARDER_READY_TIMEOUT_S = 45.0
 
 _STREAM_PROMPT = "Count from 1 to 20 in words, one per line."
 _LONG_PROMPT = "Write a detailed 500-word essay about the history of computing."
@@ -60,9 +65,9 @@ _POLICY_DENIED_EVENT = "response.policy_denied"
 
 _CEL_POLICY_HANDLER = "omnigent.policies.builtins.cel.cel_policy"
 _NATIVE_DENY_REASON = "bench-native-tool-deny"
-_TOOL_TURN_TIMEOUT_S = 180.0
+_TOOL_TURN_TIMEOUT_S = 60.0
 # policy_denied may arrive after output_item.done.
-_DENY_OBSERVE_S = 30.0
+_DENY_OBSERVE_S = 15.0
 
 _INTERRUPT_HOLD_S = 2.0
 _READER_TERMINAL = frozenset({_OUTPUT_DONE_EVENT, _FAILED_EVENT, _INTERRUPTED_EVENT})
@@ -282,7 +287,7 @@ class NativeTuiDriver:
                 "session_key": "main",
                 "ensure_native_terminal": True,
             },
-            timeout=90.0,
+            timeout=_FORWARDER_READY_TIMEOUT_S,
         )
         ensure.raise_for_status()
         with contextlib.suppress(Exception):

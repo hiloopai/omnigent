@@ -45,7 +45,9 @@ from tests.harness_bench.profile import BenchProfile
 from tests.harness_bench.runtime_env import BenchRuntimeEnv
 
 _REPO_ROOT = str(Path(__file__).resolve().parents[2])
-_HEALTH_TIMEOUT_S = 90.0
+# Server+runner boot is local; 45s is a "clearly failed to start" ceiling with
+# cold-start headroom, not an expected wait (a healthy boot is a few seconds).
+_HEALTH_TIMEOUT_S = 45.0
 _POLL_INTERVAL_S = 0.2
 
 # The builtin the tool/policy probes drive: read-only, zero setup, server-
