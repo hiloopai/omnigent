@@ -24,7 +24,7 @@ class SessionCreatedEvent:
     :param harness: Harness kind, e.g. ``"claude-native"`` or ``"pi"``.
     :param surface: Client surface: ``"web"``, ``"desktop"``, ``"ios"``,
         ``"android"``, ``"cli"``, or ``"unknown"``.
-    :param anon_user_id: First 16 hex chars of ``sha256(user_id)``.
+    :param anon_user_id: First 16 hex chars of ``sha256("<installation_id>:<user_id>")``.
     :param is_fork: ``True`` when the session was forked from another.
     :param is_sub_agent: ``True`` when ``sub_agent_name`` is set.
     """
@@ -45,7 +45,7 @@ class SessionStoppedEvent:
 
     :param installation_id: Server-side installation ID.
     :param session_id: Omnigent conversation/session identifier.
-    :param anon_user_id: First 16 hex chars of ``sha256(user_id)``.
+    :param anon_user_id: First 16 hex chars of ``sha256("<installation_id>:<user_id>")``.
     """
 
     installation_id: str | None
@@ -59,7 +59,7 @@ class SessionDeletedEvent:
 
     :param installation_id: Server-side installation ID.
     :param session_id: Omnigent conversation/session identifier.
-    :param anon_user_id: First 16 hex chars of ``sha256(user_id)``.
+    :param anon_user_id: First 16 hex chars of ``sha256("<installation_id>:<user_id>")``.
     :param duration_seconds: Wall-clock lifetime of the session.
     :param input_tokens: Cumulative input tokens from ``session_usage``.
     :param output_tokens: Cumulative output tokens from ``session_usage``.
