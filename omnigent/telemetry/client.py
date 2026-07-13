@@ -60,10 +60,7 @@ def is_disabled() -> bool:
             return True
         if os.environ.get("DO_NOT_TRACK", "").strip() == "1":
             return True
-        for var in _CI_ENV_VARS:
-            if var in os.environ:
-                return True
-        return False
+        return any(var in os.environ for var in _CI_ENV_VARS)
     except Exception:
         return True
 
@@ -100,6 +97,11 @@ class TelemetryClient:
         :param event: A dataclass instance, e.g. :class:`SessionCreatedEvent`.
         """
         if self._stopped:
+            return
+        # Defense-in-depth: re-check opt-out inside the client so
+        # a late env-var change is respected even if the call site
+        # skipped the module-level is_disabled() guard.
+        if is_disabled():
             return
         try:
             payload = {
