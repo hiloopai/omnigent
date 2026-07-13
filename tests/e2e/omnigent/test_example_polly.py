@@ -100,7 +100,7 @@ def test_coding_subagents(polly_spec: AgentSpec) -> None:
     assert by_name["claude_code"].executor.model == "claude-sonnet-5"
     assert by_name["codex"].executor.config.get("yolo") in (True, "True", "true")
     assert by_name["cursor"].executor.config.get("yolo") in (True, "True", "true")
-    assert by_name["cursor"].executor.model == "cursor-grok-4.5-high"
+    assert by_name["cursor"].executor.model == "grok-4.5"
     for name in ("claude_code", "codex", "opencode", "cursor", "hermes", "pi"):
         prompt = (_POLLY_BUNDLE / "agents" / name / "config.yaml").read_text(encoding="utf-8")
         assert "IMPLEMENT — write real product code" in prompt
