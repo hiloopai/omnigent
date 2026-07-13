@@ -20,6 +20,7 @@ from omnigent.inner.databricks_executor import (
 from omnigent.inner.executor import (
     ExecutorConfig,
     ExecutorError,
+    ReasoningChunk,
     TextChunk,
     ToolCallRequest,
     TurnComplete,
@@ -64,6 +65,7 @@ class FakeDelta:
     """
 
     content: Any = None
+    reasoning_content: str | None = None
     tool_calls: list[FakeToolCallDelta] | None = None
 
 
@@ -149,15 +151,14 @@ class FakeClient:
         self.chat = FakeChat(FakeCompletions(stream_chunks))
 
 
-def test_kimi_reasoning_content_blocks_are_not_text_chunks() -> None:
+def test_claude_fmapi_reasoning_blocks_emit_reasoning_chunks() -> None:
     """
-    Kimi streams reasoning summaries as ``delta.content`` block lists before
-    the assistant answer; the executor must not hand those lists to
-    :class:`TextChunk` or append them to the final assistant response.
+    Claude FMAPI returns typed reasoning-summary and text content blocks.
+    Reasoning must become separate events without leaking into the answer.
     """
 
     async def _t() -> None:
-        """Drive DatabricksExecutor over a Kimi-shaped stream."""
+        """Drive DatabricksExecutor over a Claude FMAPI stream."""
         chunks = [
             FakeStreamChunk(
                 choices=[
@@ -184,16 +185,62 @@ def test_kimi_reasoning_content_blocks_are_not_text_chunks() -> None:
                 messages=[{"role": "user", "content": "hi"}],
                 tools=[],
                 system_prompt="Be helpful.",
-                config=ExecutorConfig(model="databricks-kimi-k2-6"),
+                config=ExecutorConfig(model="databricks-claude-sonnet-4-6"),
             )
         ]
 
         text_events = [e for e in events if isinstance(e, TextChunk)]
+        reasoning_events = [e for e in events if isinstance(e, ReasoningChunk)]
         turn_events = [e for e in events if isinstance(e, TurnComplete)]
         assert [e.text for e in text_events] == ["Hello"]
+        assert [(e.event_type, e.delta) for e in reasoning_events] == [
+            ("reasoning_started", ""),
+            ("reasoning_summary", "Thinking"),
+        ]
         assert all(isinstance(e.text, str) for e in text_events)
         assert len(turn_events) == 1
         assert turn_events[0].response == "Hello"
+
+    _run(_t())
+
+
+def test_gpt_fmapi_reasoning_content_emits_reasoning_chunks() -> None:
+    """GPT-style top-level reasoning content is forwarded separately."""
+
+    async def _t() -> None:
+        chunks = [
+            FakeStreamChunk(
+                choices=[
+                    FakeStreamChoice(
+                        delta=FakeDelta(content=None, reasoning_content="Working it out")
+                    )
+                ]
+            ),
+            FakeStreamChunk(choices=[FakeStreamChoice(delta=FakeDelta(content="42"))]),
+            FakeStreamChunk(choices=[FakeStreamChoice(finish_reason="stop")]),
+        ]
+        executor = DatabricksExecutor(client=FakeClient(chunks))
+
+        events = [
+            event
+            async for event in executor.run_turn(
+                messages=[{"role": "user", "content": "solve"}],
+                tools=[],
+                system_prompt="Be helpful.",
+                config=ExecutorConfig(
+                    model="databricks-gpt-5-4",
+                    extra={"reasoning_effort": "high"},
+                ),
+            )
+        ]
+
+        reasoning_events = [event for event in events if isinstance(event, ReasoningChunk)]
+        assert [(event.event_type, event.delta) for event in reasoning_events] == [
+            ("reasoning_started", ""),
+            ("reasoning_text", "Working it out"),
+        ]
+        assert [event.text for event in events if isinstance(event, TextChunk)] == ["42"]
+        assert executor._client.chat.completions.last_kwargs["reasoning_effort"] == "high"
 
     _run(_t())
 
@@ -585,6 +632,123 @@ class TestDatabricksExecutorConfig(unittest.TestCase):
             self.assertEqual(
                 client.chat.completions.last_kwargs["model"],
                 "databricks-claude-sonnet-4-6",
+            )
+
+        _run(_t())
+
+    def test_gpt_reasoning_effort_is_forwarded_directly(self):
+        """GPT reasoning models use FMAPI's top-level reasoning_effort."""
+
+        async def _t():
+            client = FakeClient(_make_text_stream("ok"))
+            executor = DatabricksExecutor(client=client)
+
+            [
+                event
+                async for event in executor.run_turn(
+                    [{"role": "user", "content": "Solve this"}],
+                    [],
+                    "",
+                    config=ExecutorConfig(
+                        model="databricks-gpt-5-4",
+                        extra={"reasoning_effort": "high"},
+                    ),
+                )
+            ]
+
+            kwargs = client.chat.completions.last_kwargs
+            self.assertEqual(kwargs["reasoning_effort"], "high")
+            self.assertNotIn("extra_body", kwargs)
+
+        _run(_t())
+
+    def test_claude_reasoning_effort_becomes_thinking_budget(self):
+        """Claude hybrid reasoning uses extra_body.thinking on FMAPI."""
+
+        async def _t():
+            client = FakeClient(_make_text_stream("ok"))
+            executor = DatabricksExecutor(client=client)
+
+            [
+                event
+                async for event in executor.run_turn(
+                    [{"role": "user", "content": "Solve this"}],
+                    [],
+                    "",
+                    config=ExecutorConfig(
+                        model="databricks-claude-sonnet-4-6",
+                        max_tokens=20480,
+                        extra={"reasoning_effort": "high"},
+                    ),
+                )
+            ]
+
+            kwargs = client.chat.completions.last_kwargs
+            self.assertNotIn("reasoning_effort", kwargs)
+            self.assertEqual(
+                kwargs["extra_body"],
+                {"thinking": {"type": "enabled", "budget_tokens": 8192}},
+            )
+
+        _run(_t())
+
+    def test_claude_thinking_budget_is_below_max_tokens(self):
+        """FMAPI rejects a Claude thinking budget equal to max_tokens."""
+
+        async def _t():
+            client = FakeClient(_make_text_stream("ok"))
+            executor = DatabricksExecutor(client=client)
+
+            [
+                event
+                async for event in executor.run_turn(
+                    [],
+                    [],
+                    "",
+                    config=ExecutorConfig(
+                        model="system.ai.claude-sonnet-4-5",
+                        max_tokens=1024,
+                        extra={"reasoning_effort": "high"},
+                    ),
+                )
+            ]
+
+            thinking = client.chat.completions.last_kwargs["extra_body"]["thinking"]
+            self.assertEqual(thinking["budget_tokens"], 1023)
+
+        _run(_t())
+
+    def test_claude_preserves_explicit_thinking_and_extra_body(self):
+        """An explicit FMAPI thinking config takes precedence over effort mapping."""
+
+        async def _t():
+            client = FakeClient(_make_text_stream("ok"))
+            executor = DatabricksExecutor(client=client)
+            explicit_thinking = {"type": "enabled", "budget_tokens": 2048}
+
+            [
+                event
+                async for event in executor.run_turn(
+                    [],
+                    [],
+                    "",
+                    config=ExecutorConfig(
+                        model="databricks-claude-sonnet-4-6",
+                        max_tokens=10000,
+                        extra={
+                            "reasoning_effort": "high",
+                            "extra_body": {
+                                "thinking": explicit_thinking,
+                                "custom_option": True,
+                            },
+                        },
+                    ),
+                )
+            ]
+
+            self.assertEqual(
+                client.chat.completions.last_kwargs["extra_body"],
+                {"thinking": explicit_thinking, "custom_option": True},
             )
 
         _run(_t())
