@@ -292,7 +292,7 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
     Uses a fake driver so no creds/subprocess are needed: a basic turn passes,
     which lets every probe run and produce a ProbeFinished.
     """
-    from tests.harness_bench.driver import TurnResult
+    from tests.harness_bench.driver import ForkResult, TurnResult
     from tests.harness_bench.events import (
         HarnessFinished,
         HarnessStarted,
@@ -338,6 +338,9 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
         async def run_tool_turn(self, *, deny: bool) -> TurnResult:
             return TurnResult(completed=True)
 
+        async def run_fork_turn(self, marker: str) -> ForkResult:
+            return ForkResult(created=True, history_copied=True, recalled=True)
+
         async def run_interrupt_turn(self) -> TurnResult:
             return TurnResult(cancelled=True)
 
@@ -381,7 +384,7 @@ async def test_run_bench_jobs_preserves_order(monkeypatch: pytest.MonkeyPatch) -
     """--jobs > 1 runs harnesses concurrently but keeps report order == input order."""
     import asyncio as _asyncio
 
-    from tests.harness_bench.driver import TurnResult
+    from tests.harness_bench.driver import ForkResult, TurnResult
 
     class _SlowDriver:
         transport = "sdk-inproc"
@@ -409,6 +412,9 @@ async def test_run_bench_jobs_preserves_order(monkeypatch: pytest.MonkeyPatch) -
         async def run_tool_turn(self, *, deny: bool) -> TurnResult:
             return TurnResult(completed=True)
 
+        async def run_fork_turn(self, marker: str) -> ForkResult:
+            return ForkResult(created=True, history_copied=True, recalled=True)
+
         async def run_interrupt_turn(self) -> TurnResult:
             return TurnResult(cancelled=True)
 
@@ -431,7 +437,7 @@ async def test_parallel_full_server_shares_one_server(monkeypatch: pytest.Monkey
     one SharedFullServer is entered once and each harness registers its own
     agent+session on it.
     """
-    from tests.harness_bench.driver import TurnResult
+    from tests.harness_bench.driver import ForkResult, TurnResult
 
     built: list[object] = []
 
@@ -481,6 +487,9 @@ async def test_parallel_full_server_shares_one_server(monkeypatch: pytest.Monkey
 
         async def run_tool_turn(self, *, deny: bool) -> TurnResult:
             return TurnResult(completed=True, tool_call_denied=deny)
+
+        async def run_fork_turn(self, marker: str) -> ForkResult:
+            return ForkResult(created=True, history_copied=True, recalled=True)
 
         async def run_interrupt_turn(self) -> TurnResult:
             return TurnResult(cancelled=True)
@@ -570,7 +579,7 @@ async def test_full_server_async_shims_delegate_to_sync(monkeypatch: pytest.Monk
     in the async binding is caught without a server+runner. Builds no driver
     state — every sync method is stubbed.
     """
-    from tests.harness_bench.driver import TurnResult
+    from tests.harness_bench.driver import ForkResult, TurnResult
     from tests.harness_bench.full_server_driver import FullServerDriver
     from tests.harness_bench.profile import BenchProfile
 
@@ -582,11 +591,16 @@ async def test_full_server_async_shims_delegate_to_sync(monkeypatch: pytest.Monk
         calls.append(f"{name}:{kw}")
         return TurnResult(completed=True)
 
+    def _fork_stub(marker: str):
+        calls.append(f"fork:{marker}")
+        return ForkResult(created=True, history_copied=True, recalled=True)
+
     monkeypatch.setattr(driver, "__enter__", lambda: (calls.append("enter"), driver)[1])
     monkeypatch.setattr(driver, "__exit__", lambda *a: calls.append("exit"))
     monkeypatch.setattr(driver, "run_turn", lambda prompt, **kw: _stub("run_turn", prompt=prompt))
     monkeypatch.setattr(driver, "streaming_probe_turn", lambda **kw: _stub("streaming"))
     monkeypatch.setattr(driver, "tool_probe_turn", lambda **kw: _stub("tool", **kw))
+    monkeypatch.setattr(driver, "fork_probe_turn", _fork_stub)
     monkeypatch.setattr(driver, "interrupt_probe_turn", lambda **kw: _stub("interrupt"))
 
     async with driver as d:
@@ -594,6 +608,7 @@ async def test_full_server_async_shims_delegate_to_sync(monkeypatch: pytest.Monk
         assert (await d.run_basic_turn("STUB_OK")).completed
         assert (await d.run_streaming_turn()).completed
         assert (await d.run_tool_turn(deny=True)).completed
+        assert (await d.run_fork_turn("STUB_OK")).recalled
         assert (await d.run_interrupt_turn()).completed
 
     assert calls[0] == "enter" and calls[-1] == "exit"
