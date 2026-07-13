@@ -39,8 +39,8 @@ Remote config
 ~~~~~~~~~~~~~
 On startup a daemon thread fetches a JSON config from a versioned URL::
 
-    https://telemetry.omnigent.ai/config/{version}.json   (prod)
-    https://telemetry-staging.omnigent.ai/config/{version}.json  (dev/pre-release)
+    https://config.omnigent-telemetry.io/{version}.json          (prod)
+    https://config-staging.omnigent-telemetry.io/{version}.json  (dev/pre-release)
 
 The config shape::
 
@@ -103,8 +103,8 @@ _SCHEMA_VERSION = 1
 _CONFIG_FETCH_TIMEOUT_S = 2.0
 
 # Remote config base URLs. Dev/pre-release versions use staging.
-_CONFIG_URL_PROD = "https://telemetry.omnigent.ai/config"
-_CONFIG_URL_STAGING = "https://telemetry-staging.omnigent.ai/config"
+_CONFIG_URL_PROD = "https://config.omnigent-telemetry.io"
+_CONFIG_URL_STAGING = "https://config-staging.omnigent-telemetry.io"
 
 # Per-process telemetry session ID — groups all events from one server run.
 _TELEMETRY_SESSION_ID: str = str(uuid.uuid4())
