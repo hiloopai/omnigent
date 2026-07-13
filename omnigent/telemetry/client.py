@@ -2,6 +2,38 @@
 
 Errors are silently swallowed — telemetry must never disrupt the
 application.  All opt-out signals are checked in :func:`is_disabled`.
+
+Wire format (matches the API Gateway / Kinesis ingestion schema):
+
+    POST OMNIGENT_TELEMETRY_ENDPOINT
+    {
+        "records": [
+            {
+                "data": {
+                    "event_name": "SessionCreatedEvent",
+                    "session_id": "<telemetry-session-uuid>",
+                    "omnigent_version": "0.4.2",
+                    "schema_version": 1,
+                    "python_version": "3.12.3",
+                    "operating_system": "Linux",
+                    "timestamp_ns": 1720000000000000000,
+                    "status": "success",
+                    "duration_ms": 0,
+                    "installation_id": "<uuid>",
+                    "environment": null,
+                    "params": "{\"agent_id\": \"...\", ...}"
+                },
+                "partition-key": "<random-uuid>"
+            }
+        ]
+    }
+
+``session_id`` is a per-process UUID that groups all events from one
+server run — it is NOT the Omnigent conversation id (which goes in
+``params``).  ``params`` is a JSON-encoded string of event-specific
+fields.  ``additionalProperties: false`` on the gateway means any field
+not in the schema above will cause a 400, so event-specific data must
+live in ``params``.
 """
 
 from __future__ import annotations
@@ -10,11 +42,16 @@ import atexit
 import json
 import logging
 import os
+import platform
 import queue
+import sys
 import threading
 import time
+import uuid
 from dataclasses import asdict
 from typing import Any
+
+from omnigent.version import VERSION
 
 _logger = logging.getLogger(__name__)
 
@@ -39,6 +76,10 @@ _CI_ENV_VARS = frozenset(
 _BATCH_SIZE = 50
 _BATCH_INTERVAL_S = 30.0
 _MAX_QUEUE_SIZE = 512
+_SCHEMA_VERSION = 1
+
+# Per-process telemetry session ID — groups all events from one server run.
+_TELEMETRY_SESSION_ID: str = str(uuid.uuid4())
 
 
 def is_disabled() -> bool:
@@ -65,13 +106,70 @@ def is_disabled() -> bool:
         return True
 
 
+def _detect_environment() -> str | None:
+    """Return a short environment tag or ``None`` for plain installs."""
+    try:
+        checks: list[tuple[str, str]] = [
+            ("KAGGLE_KERNEL_RUN_TYPE", "kaggle"),
+            ("COLAB_BACKEND_VERSION", "colab"),
+            ("AZUREML_ARM_WORKSPACE_NAME", "azure_ml"),
+            ("SM_CURRENT_HOST", "sagemaker_studio"),
+        ]
+        for env_var, tag in checks:
+            if os.environ.get(env_var):
+                return tag
+        # Docker: /.dockerenv exists in containers
+        if os.path.exists("/.dockerenv"):
+            return "docker"
+        return None
+    except Exception:
+        return None
+
+
+def _build_record(event: object) -> dict[str, Any]:
+    """Serialise *event* into the gateway ``data`` envelope.
+
+    Event-specific fields (everything except ``installation_id``) are
+    JSON-encoded into the ``params`` string so the gateway schema's
+    ``additionalProperties: false`` constraint is satisfied.
+    """
+    fields: dict[str, Any] = asdict(event)  # type: ignore[arg-type]
+    installation_id: str | None = fields.pop("installation_id", None)
+
+    # All remaining event-specific fields go into params as a JSON string.
+    params_str: str | None = None
+    if fields:
+        params_str = json.dumps(fields, default=str)
+        if len(params_str) > 1000:
+            params_str = params_str[:997] + "..."
+
+    data: dict[str, Any] = {
+        "event_name": type(event).__name__,
+        "session_id": _TELEMETRY_SESSION_ID,
+        "omnigent_version": VERSION,
+        "schema_version": _SCHEMA_VERSION,
+        "python_version": sys.version.split()[0],
+        "operating_system": platform.system(),
+        "timestamp_ns": time.time_ns(),
+        "status": "success",
+        "duration_ms": 0,
+        "installation_id": installation_id,
+        "environment": _detect_environment(),
+        "params": params_str,
+    }
+    return {
+        "data": data,
+        "partition-key": str(uuid.uuid4()),
+    }
+
+
 class TelemetryClient:
     """Fire-and-forget telemetry emitter backed by a background thread.
 
-    Events are serialised to JSON and placed on an in-memory queue.
-    A single daemon thread consumes the queue and POSTs batches to
-    ``OMNIGENT_TELEMETRY_ENDPOINT`` when that variable is set.  If the
-    variable is absent the queue is drained silently (useful for
+    Events are serialised into the gateway wire format and placed on an
+    in-memory queue.  A single daemon thread consumes the queue and POSTs
+    batches to ``OMNIGENT_TELEMETRY_ENDPOINT`` when that variable is set.
+    If the variable is absent the queue is drained silently (useful for
     testing that instrumentation fires without a live endpoint).
 
     All errors in the background thread are suppressed.
@@ -91,8 +189,8 @@ class TelemetryClient:
     def emit(self, event: object) -> None:
         """Queue an event for async delivery.
 
-        Accepts any dataclass; converts it to ``{"event_type": ...,
-        **fields}``.  Silently no-ops when disabled or stopped.
+        Accepts any dataclass; converts it to the gateway wire format.
+        Silently no-ops when disabled or stopped.
 
         :param event: A dataclass instance, e.g. :class:`SessionCreatedEvent`.
         """
@@ -104,13 +202,10 @@ class TelemetryClient:
         if is_disabled():
             return
         try:
-            payload = {
-                "event_type": type(event).__name__,
-                **asdict(event),  # type: ignore[arg-type]
-            }
+            record = _build_record(event)
             self._ensure_started()
             try:
-                self._queue.put_nowait(payload)
+                self._queue.put_nowait(record)
             except queue.Full:
                 pass  # queue full — drop event; telemetry must never block
         except Exception:
@@ -202,14 +297,14 @@ class TelemetryClient:
         if pending:
             self._send(pending)
 
-    def _send(self, events: list[dict[str, Any]]) -> None:
+    def _send(self, records: list[dict[str, Any]]) -> None:
         """POST a batch to the configured endpoint, or no-op if unset."""
-        if not self._endpoint or not events:
+        if not self._endpoint or not records:
             return
         try:
             import urllib.request
 
-            body = json.dumps({"events": events}).encode("utf-8")
+            body = json.dumps({"records": records}).encode("utf-8")
             req = urllib.request.Request(
                 self._endpoint,
                 data=body,
