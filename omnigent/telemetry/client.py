@@ -97,7 +97,7 @@ _CI_ENV_VARS = frozenset(
 )
 
 _BATCH_SIZE = 50
-_BATCH_INTERVAL_S = 30.0
+_BATCH_INTERVAL_S = 10.0
 _MAX_QUEUE_SIZE = 512
 _SCHEMA_VERSION = 1
 _CONFIG_FETCH_TIMEOUT_S = 2.0
@@ -532,6 +532,9 @@ def init_client() -> None:
         if _CLIENT is None:
             try:
                 _CLIENT = TelemetryClient()
+                # Start threads eagerly at init time so the config fetch
+                # runs in the background before the first event arrives.
+                _CLIENT._ensure_started()
             except Exception:
                 _logger.debug("TelemetryClient init failed", exc_info=True)
 
