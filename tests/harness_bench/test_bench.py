@@ -591,16 +591,7 @@ def test_unknown_dimension_is_a_cli_error(capsys: pytest.CaptureFixture[str]) ->
     assert "unknown --dimension 'telepathy'" in capsys.readouterr().err
 
 
-def test_model_override_requires_an_explicit_harness(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    from tests.harness_bench.__main__ import main
-
-    assert main(["--no-live", "--model", "system.ai.gpt-5-6-sol"]) == 2
-    assert "--model requires at least one explicit --harness" in capsys.readouterr().err
-
-
-def test_model_override_and_dimension_slice_reach_report(capsys) -> None:
+def test_harness_model_override_and_dimension_slice_reach_report(capsys) -> None:
     from tests.harness_bench.__main__ import main
 
     assert (
@@ -608,9 +599,7 @@ def test_model_override_and_dimension_slice_reach_report(capsys) -> None:
             [
                 "--no-live",
                 "--harness",
-                "codex",
-                "--model",
-                "system.ai.gpt-5-6-sol",
+                "codex=system.ai.gpt-5-6-sol",
                 "--dimension",
                 "reasoning",
                 "--json",
@@ -624,7 +613,7 @@ def test_model_override_and_dimension_slice_reach_report(capsys) -> None:
     assert [cell["dimension"] for cell in harness["cells"]] == ["basic_turn", "reasoning"]
 
 
-def test_multi_harness_model_mappings_reach_report(capsys) -> None:
+def test_multi_harness_specs_keep_models_attached(capsys) -> None:
     from tests.harness_bench.__main__ import main
 
     assert (
@@ -632,12 +621,8 @@ def test_multi_harness_model_mappings_reach_report(capsys) -> None:
             [
                 "--no-live",
                 "--harness",
-                "codex",
-                "--harness",
-                "claude-sdk",
-                "--model",
                 "codex=system.ai.gpt-5-6-sol",
-                "--model",
+                "--harness",
                 "claude-sdk=databricks-claude-opus-4-8",
                 "--dimension",
                 "reasoning",
@@ -654,7 +639,7 @@ def test_multi_harness_model_mappings_reach_report(capsys) -> None:
     }
 
 
-def test_multi_harness_model_mappings_require_complete_coverage(capsys) -> None:
+def test_multi_harness_specs_allow_default_and_custom_models(capsys) -> None:
     from tests.harness_bench.__main__ import main
 
     assert (
@@ -662,60 +647,25 @@ def test_multi_harness_model_mappings_require_complete_coverage(capsys) -> None:
             [
                 "--no-live",
                 "--harness",
-                "codex",
-                "--harness",
-                "claude-sdk",
-                "--model",
                 "codex=system.ai.gpt-5-6-sol",
-            ]
-        )
-        == 2
-    )
-    assert "missing --model mapping for selected harness 'claude-sdk'" in capsys.readouterr().err
-
-
-def test_multi_harness_model_mappings_reject_positional_models(capsys) -> None:
-    from tests.harness_bench.__main__ import main
-
-    assert (
-        main(
-            [
-                "--no-live",
-                "--harness",
-                "codex",
                 "--harness",
                 "claude-sdk",
-                "--model",
-                "system.ai.gpt-5-6-sol",
-                "--model",
-                "databricks-claude-opus-4-8",
+                "--json",
             ]
         )
-        == 2
+        == 0
     )
-    assert "multiple harnesses require --model HARNESS=MODEL" in capsys.readouterr().err
+    payload = json.loads(capsys.readouterr().out)
+    models = {harness["harness"]: harness["model"] for harness in payload["harnesses"]}
+    assert models["codex"] == "system.ai.gpt-5-6-sol"
+    assert models["claude-sdk"] == OFFICIAL_PROFILES["claude-sdk"].model
 
 
-def test_multi_harness_model_mappings_reject_unselected_harness(capsys) -> None:
+def test_harness_spec_rejects_empty_model(capsys: pytest.CaptureFixture[str]) -> None:
     from tests.harness_bench.__main__ import main
 
-    assert (
-        main(
-            [
-                "--no-live",
-                "--harness",
-                "codex",
-                "--harness",
-                "claude-sdk",
-                "--model",
-                "codex=system.ai.gpt-5-6-sol",
-                "--model",
-                "pi=databricks-claude-sonnet-4-6",
-            ]
-        )
-        == 2
-    )
-    assert "--model mapping names unselected harness 'pi'" in capsys.readouterr().err
+    assert main(["--no-live", "--harness", "codex="]) == 2
+    assert "--harness 'codex' has an empty model override" in capsys.readouterr().err
 
 
 @pytest.fixture

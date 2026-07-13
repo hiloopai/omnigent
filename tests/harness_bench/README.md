@@ -20,14 +20,12 @@ python -m tests.harness_bench --harness codex
 python -m tests.harness_bench --harness codex --dimension reasoning
 
 # Pin one harness to an exact model for this run.
-python -m tests.harness_bench --harness codex --model system.ai.gpt-5-6-sol
+python -m tests.harness_bench --harness codex=system.ai.gpt-5-6-sol
 
-# Pin every harness in a multi-harness run explicitly.
+# Mix custom and default models in a multi-harness run.
 python -m tests.harness_bench \
-  --harness codex \
-  --harness claude-sdk \
-  --model codex=system.ai.gpt-5-6-sol \
-  --model claude-sdk=databricks-claude-opus-4-8
+  --harness codex=system.ai.gpt-5-6-sol \
+  --harness claude-sdk
 
 # Override the configured/ambient Databricks profile.
 python -m tests.harness_bench --harness codex --profile my-profile
@@ -48,18 +46,15 @@ non-zero exit means at least one `DRIFT` cell was found.
   `--live` requires resolvable gateway credentials.
 - `--profile NAME` -- optional Databricks profile override; it is not required
   when config or ambient `OPENAI_*` already supplies credentials.
-- `--harness NAME` -- probe one harness (repeatable). Accepts an official name
-  or a `module:attr` / `module.ATTR` reference to a community `BenchProfile`.
-  Defaults to every official harness.
+- `--harness NAME[=MODEL]` -- probe one harness (repeatable), optionally
+  replacing that harness profile's model for this run. `NAME` accepts an
+  official name or a `module:attr` / `module.ATTR` community `BenchProfile`.
+  Omitting `=MODEL` keeps the profile default. This is the simple alternative
+  to test model-pool environment variables. Defaults to every official harness.
 - `--dimension NAME[,NAME...]` -- run only selected dimensions. Repeat the flag
   or pass a comma-separated list. Names use the identifiers shown by
   `--list-dimensions`; `basic_turn` is added automatically as the
   exercisability prerequisite.
-- `--model [HARNESS=]MODEL` -- replace selected profile models for this run.
-  With one explicit harness, bare `MODEL` is shorthand. With multiple
-  harnesses, repeat `HARNESS=MODEL` and provide exactly one mapping for every
-  selected resolved harness. This is the simple alternative to test model-pool
-  environment variables.
 - `--list-dimensions` -- list dimension identifiers, display titles, and
   priorities.
 - `--fast` -- run SDK harnesses on `sdk-inproc` instead of the `full-server`
