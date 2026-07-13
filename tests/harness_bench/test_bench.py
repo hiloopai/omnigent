@@ -370,6 +370,8 @@ async def test_run_harness_emits_structured_events_and_linesink_adapts() -> None
     assert any(isinstance(e, ProbeStarted) for e in sink.events)
     finished = [e for e in sink.events if isinstance(e, ProbeFinished)]
     assert {e.probe for e in finished} >= {"basic_turn", "streaming"}
+    mcp = next(e for e in finished if e.probe == "omnigent_mcp")
+    assert mcp.verdict is Verdict.NOT_APPLICABLE
 
     lines: list[str] = []
     monkeypatch = pytest.MonkeyPatch()

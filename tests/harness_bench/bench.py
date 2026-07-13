@@ -255,7 +255,18 @@ async def run_harness(
         prereq_skip: str | None = None
         for probe in probes:
             if not _applicable(probe, profile):
-                cells.append(_cell(probe, profile, ProbeResult.not_applicable()))
+                observed = ProbeResult.not_applicable()
+                cells.append(_cell(probe, profile, observed))
+                _emit(
+                    sink,
+                    ProbeFinished(
+                        profile.harness,
+                        probe.name,
+                        probe.title,
+                        observed.verdict,
+                        observed.note,
+                    ),
+                )
                 continue
             if prereq_skip is not None:
                 observed = ProbeResult.skipped(prereq_skip)
