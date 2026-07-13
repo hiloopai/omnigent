@@ -115,8 +115,50 @@ function decideWindowOpen(details, context) {
   return { kind: "external" };
 }
 
+/**
+ * Response headers that sever a popup's `window.opener`. A main-frame
+ * response carrying ``Cross-Origin-Opener-Policy: same-origin`` moves the
+ * popup into a new browsing-context group: the opener's handle to the popup
+ * starts reporting ``closed === true`` and the popup's ``window.opener``
+ * becomes permanently null — which kills the OAuth handshake this popup
+ * exists for (the callback page can never postMessage the code back, and
+ * web-shared's closed-poll misreads the severed handle as "user closed the
+ * window" within ~1s). slack.com serves exactly this header on its sign-in
+ * pages (verified live), which is why a FIRST Slack sign-in — the one that
+ * routes through those pages — flaked while retries (session cookie set,
+ * straight 302 to the callback) worked. The Report-Only variant doesn't
+ * sever; it is stripped only to keep violation noise out of the flow.
+ */
+const OPENER_SEVERING_HEADERS = new Set([
+  "cross-origin-opener-policy",
+  "cross-origin-opener-policy-report-only",
+]);
+
+/**
+ * Strip opener-severing headers from a webRequest response-headers object.
+ *
+ * @param {Record<string, string[]> | undefined} responseHeaders
+ * @returns {Record<string, string[]> | null} A copy without the COOP
+ *   headers, or null when there was nothing to strip (caller should leave
+ *   the response untouched).
+ */
+function stripCrossOriginOpenerHeaders(responseHeaders) {
+  if (!responseHeaders) return null;
+  let found = false;
+  const stripped = {};
+  for (const [key, value] of Object.entries(responseHeaders)) {
+    if (OPENER_SEVERING_HEADERS.has(key.toLowerCase())) {
+      found = true;
+      continue;
+    }
+    stripped[key] = value;
+  }
+  return found ? stripped : null;
+}
+
 module.exports = {
   decideWindowOpen,
+  stripCrossOriginOpenerHeaders,
   WEB_SCHEMES,
   // Exported for focused unit tests.
   OAUTH_POPUP_ORIGINS,

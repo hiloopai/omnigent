@@ -39,7 +39,7 @@ const { createBrowserViewRegistry } = require("./browserViewRegistry");
 const { createBrowserViewBoundsController } = require("./browserViewBounds");
 const { registerBrowserIpc } = require("./browserIpc");
 const { registerSessionExpiryReload } = require("./session-expiry");
-const { decideWindowOpen, WEB_SCHEMES } = require("./popupPolicy");
+const { decideWindowOpen, stripCrossOriginOpenerHeaders, WEB_SCHEMES } = require("./popupPolicy");
 const omnigentCli = require("./omnigent_cli");
 const serverManager = require("./server_manager");
 
@@ -411,13 +411,54 @@ function isLocalhostTrustedOrigin(origin) {
 }
 
 /**
+ * True when a webContents id belongs to a live OAuth popup — the scoping
+ * predicate for popup-only response rewriting (popupResponseHeadersHook).
+ *
+ * @param {number} webContentsId
+ * @returns {boolean}
+ */
+function isOauthPopupWebContentsId(webContentsId) {
+  for (const popup of oauthPopups) {
+    if (!popup.isDestroyed() && popup.webContents.id === webContentsId) return true;
+  }
+  return false;
+}
+
+/**
+ * First-look response hook (composed into localhost_cors's single
+ * onHeadersReceived registration): strip Cross-Origin-Opener-Policy from
+ * main-frame responses INSIDE tracked OAuth popups, so a provider sign-in
+ * page can't sever `window.opener` mid-flow. COOP: same-origin on any hop
+ * (slack.com's sign-in pages — verified live) moves the popup into a new
+ * browsing-context group: the app's handle reports closed=true (web-shared's
+ * cancel poll then fails the flow within ~1s) and the popup's window.opener
+ * is permanently nulled, so the OAuth callback can never deliver the code.
+ * That is exactly the "first sign-in fails, retry works" flake: once the
+ * provider session cookie exists, later runs 302 straight to the callback
+ * and never touch the COOP page. Every window that is not a tracked popup
+ * keeps provider COOP untouched.
+ *
+ * @param {Electron.OnHeadersReceivedListenerDetails} details
+ * @returns {Electron.HeadersReceivedResponse | null}
+ */
+function popupResponseHeadersHook(details) {
+  if (details.resourceType !== "mainFrame") return null;
+  if (typeof details.webContentsId !== "number") return null;
+  if (!isOauthPopupWebContentsId(details.webContentsId)) return null;
+  const stripped = stripCrossOriginOpenerHeaders(details.responseHeaders);
+  return stripped ? { responseHeaders: stripped } : null;
+}
+
+/**
  * Allow pages on trusted origins to call localhost services (auth helpers,
  * local runners) by injecting CORS/preflight headers on localhost responses
  * — see localhost_cors.js for the mechanism and isLocalhostTrustedOrigin
- * for the trust scope.
+ * for the trust scope. Also composes in the OAuth-popup COOP strip
+ * (popupResponseHeadersHook): Electron allows one onHeadersReceived
+ * listener per session, and localhost_cors owns it.
  */
 function registerLocalhostAccess() {
-  registerLocalhostCors(session.defaultSession, isLocalhostTrustedOrigin);
+  registerLocalhostCors(session.defaultSession, isLocalhostTrustedOrigin, popupResponseHeadersHook);
 }
 
 // Per-window timestamp of the last expired-session reload, so a host whose SSO

@@ -188,9 +188,14 @@ dismisses.
   shell's window registry, so it gains none of that registry's privileges
   — its only grant is the auth-surface localhost trust described below
   (sign-in chains run IdP device-trust checks, e.g. Okta FastPass, inside
-  the popup). Custom providers on other domains fall back to the external
-  browser; add their authorization origin to `popup_allowed_origins` to
-  sign in without leaving the app:
+  the popup). The shell also strips `Cross-Origin-Opener-Policy` from
+  main-frame responses inside these popups (and only there): a COOP:
+  same-origin hop — slack.com's sign-in pages serve one — would sever
+  `window.opener` mid-flow, which both kills the code hand-off and makes
+  the opener misread the popup as closed, so first-time sign-ins fail
+  while retries succeed. Custom providers on other domains fall back to
+  the external browser; add their authorization origin to
+  `popup_allowed_origins` to sign in without leaving the app:
 
   ```json
   { "popup_allowed_origins": ["https://sso.my-git-host.example.com"] }

@@ -139,3 +139,39 @@ describe("OAuth popup localhost trust wiring (src/main.js)", () => {
     );
   });
 });
+
+// Guard for the COOP-strip wiring. E2E-verified failure mode when lost: a
+// provider sign-in page serving Cross-Origin-Opener-Policy: same-origin
+// (slack.com does) severs the popup's window.opener mid-flow — the app's
+// handle reports closed=true (the web cancel-poll fails the flow in ~1s)
+// and the OAuth callback can never postMessage the code back — i.e. every
+// FIRST sign-in through such a provider fails and only retries (session
+// cookie already set) succeed.
+describe("OAuth popup COOP-strip wiring (src/main.js)", () => {
+  it("composes popupResponseHeadersHook into the localhost-CORS registration as live code", () => {
+    assert.match(
+      liveCode,
+      /registerLocalhostCors\(\s*session\.defaultSession,\s*isLocalhostTrustedOrigin,\s*popupResponseHeadersHook,?\s*\)/,
+      [
+        "registerLocalhostAccess no longer passes popupResponseHeadersHook to",
+        "registerLocalhostCors. Electron allows ONE onHeadersReceived listener per session",
+        "(localhost_cors owns it), so the popup COOP strip MUST compose in there — without",
+        "it, COOP-serving sign-in pages (slack.com) sever window.opener and first-time",
+        "OAuth sign-ins fail. Restore the third argument.",
+      ].join(" "),
+    );
+  });
+
+  it("scopes the strip to main-frame responses of tracked popups", () => {
+    assert.match(
+      liveCode,
+      /function popupResponseHeadersHook\(details\)\s*\{[\s\S]{0,200}resourceType[\s\S]{0,240}isOauthPopupWebContentsId\(/,
+      [
+        "popupResponseHeadersHook lost its mainFrame/tracked-popup scoping. The COOP strip",
+        "must apply ONLY to main-frame responses inside live OAuth popups — stripping COOP",
+        "for shell windows or subresources would disable a real isolation protection on",
+        "ordinary browsing. Restore the resourceType + isOauthPopupWebContentsId guards.",
+      ].join(" "),
+    );
+  });
+});

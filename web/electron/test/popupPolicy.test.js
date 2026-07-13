@@ -174,3 +174,39 @@ describe("popupPolicy — everything else keeps leaving the shell", () => {
     }
   });
 });
+
+describe("popupPolicy — stripCrossOriginOpenerHeaders", () => {
+  const { stripCrossOriginOpenerHeaders } = require("../src/popupPolicy");
+
+  it("strips COOP and its Report-Only variant, case-insensitively", () => {
+    const stripped = stripCrossOriginOpenerHeaders({
+      "Cross-Origin-Opener-Policy": ["same-origin"],
+      "cross-origin-opener-policy-report-only": ["same-origin; report-to=coop"],
+      "Content-Type": ["text/html"],
+    });
+    assert.deepEqual(stripped, { "Content-Type": ["text/html"] });
+  });
+
+  it("returns null when there is nothing to strip (leave the response untouched)", () => {
+    for (const headers of [
+      undefined,
+      {},
+      { "Content-Type": ["text/html"], "Cross-Origin-Embedder-Policy": ["require-corp"] },
+    ]) {
+      assert.equal(
+        stripCrossOriginOpenerHeaders(headers),
+        null,
+        `expected null for ${JSON.stringify(headers)}`,
+      );
+    }
+  });
+
+  it("preserves every other header exactly", () => {
+    const stripped = stripCrossOriginOpenerHeaders({
+      "COOP-Unrelated": ["x"],
+      "set-cookie": ["a=1", "b=2"],
+      "Cross-Origin-Opener-Policy": ["same-origin-allow-popups"],
+    });
+    assert.deepEqual(stripped, { "COOP-Unrelated": ["x"], "set-cookie": ["a=1", "b=2"] });
+  });
+});
