@@ -155,8 +155,8 @@ def test_get_installation_id_creates_uuid(tmp_path: Path) -> None:
     telemetry_file = tmp_path / "telemetry.json"
 
     with (
-        patch.object(_mod, "_CACHE_INITIALIZED", False),
-        patch.object(_mod, "_INSTALLATION_ID_CACHE", None),
+        patch.object(_mod, "_cache_initialized", False),
+        patch.object(_mod, "_cache", None),
         patch.object(_mod, "_CACHE_LOCK", threading.RLock()),
         patch(
             "omnigent.telemetry.installation_id._telemetry_file_path", return_value=telemetry_file
@@ -183,8 +183,8 @@ def test_get_installation_id_reads_existing(tmp_path: Path) -> None:
     )
 
     with (
-        patch.object(_mod, "_CACHE_INITIALIZED", False),
-        patch.object(_mod, "_INSTALLATION_ID_CACHE", None),
+        patch.object(_mod, "_cache_initialized", False),
+        patch.object(_mod, "_cache", None),
         patch.object(_mod, "_CACHE_LOCK", threading.RLock()),
         patch(
             "omnigent.telemetry.installation_id._telemetry_file_path", return_value=telemetry_file
@@ -202,8 +202,8 @@ def test_get_installation_id_cache(tmp_path: Path) -> None:
     telemetry_file = tmp_path / "telemetry.json"
 
     with (
-        patch.object(_mod, "_CACHE_INITIALIZED", False),
-        patch.object(_mod, "_INSTALLATION_ID_CACHE", None),
+        patch.object(_mod, "_cache_initialized", False),
+        patch.object(_mod, "_cache", None),
         patch.object(_mod, "_CACHE_LOCK", threading.RLock()),
         patch(
             "omnigent.telemetry.installation_id._telemetry_file_path", return_value=telemetry_file
@@ -224,8 +224,8 @@ def test_get_installation_id_corrupted_file(tmp_path: Path) -> None:
     telemetry_file.write_text("not valid json{{{{", encoding="utf-8")
 
     with (
-        patch.object(_mod, "_CACHE_INITIALIZED", False),
-        patch.object(_mod, "_INSTALLATION_ID_CACHE", None),
+        patch.object(_mod, "_cache_initialized", False),
+        patch.object(_mod, "_cache", None),
         patch.object(_mod, "_CACHE_LOCK", threading.RLock()),
         patch(
             "omnigent.telemetry.installation_id._telemetry_file_path", return_value=telemetry_file
