@@ -220,6 +220,10 @@ def test_infra_failure_reason_classifies_auth_and_ignores_capability_gaps() -> N
 
     assert infra_failure_reason(TurnResult(failed=True, error="model refused the tool")) is None
     assert infra_failure_reason(TurnResult(completed=True, text="ok")) is None
+    text_auth = infra_failure_reason(
+        TurnResult(completed=True, text="[API Error: 403 Invalid Token]")
+    )
+    assert text_auth is not None and "403" in text_auth
 
     for msg in (
         "inner executor error: provider auth command `sh` produced an empty token",

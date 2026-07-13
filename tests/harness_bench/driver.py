@@ -88,9 +88,11 @@ def _error_text(error: object) -> str:
 
 def infra_failure_reason(result: TurnResult | ForkResult) -> str | None:
     """Return a skip reason when failure reflects infrastructure, not capability."""
-    if not result.failed:
-        return None
     text = _error_text(result.error)
+    if isinstance(result, TurnResult) and result.text:
+        text = f"{text} {result.text}"
+    if not result.failed and not any(marker in text for marker in _INFRA_ERROR_MARKERS):
+        return None
     if not any(marker in text for marker in _INFRA_ERROR_MARKERS):
         return None
     for code in ("403", "401"):
