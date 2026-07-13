@@ -218,11 +218,7 @@ def is_disabled() -> bool:
     try:
         if os.environ.get("OMNIGENT_TELEMETRY", "").strip() == "0":
             return True
-        for var in (
-            "DISABLE_TELEMETRY",
-            "OMNIGENT_DISABLE_TELEMETRY",
-            "OMNIGENT_TELEMETRY_DISABLE",
-        ):
+        for var in ("DISABLE_TELEMETRY", "OMNIGENT_DISABLE_TELEMETRY"):
             if os.environ.get(var, "").strip().lower() in ("1", "true", "yes"):
                 return True
         if os.environ.get("DO_NOT_TRACK", "").strip() == "1":
