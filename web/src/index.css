@@ -1790,3 +1790,80 @@
     radial-gradient(ellipse at 80% 20%, rgba(255, 121, 198, 0.1) 0%, transparent 45%),
     linear-gradient(160deg, #2a2c3a 0%, #282a36 55%, #21222c 100%);
 }
+
+/* ── Monokai — vibrant lime & magenta on charcoal (dark-first classic) ─────── */
+:root:not(.dark)[data-theme="monokai"] {
+  --background: #f5f4ef;
+  --foreground: #272822;
+  --card: #ffffff;
+  --card-solid: #ffffff;
+  --card-foreground: #272822;
+  --tray: #ffffff;
+  --popover: #ffffff;
+  --popover-foreground: #272822;
+  --primary: #6b8e23;
+  --primary-foreground: #ffffff;
+  --secondary: #ebeae2;
+  --secondary-foreground: #272822;
+  --muted: #ebeae2;
+  --muted-foreground: #6f6f66;
+  --code-bg: #ebeae2;
+  --accent: #eef0e0;
+  --accent-foreground: #1f7a8c;
+  --border: #d4d0c4;
+  --border-strong: #b3ae9e;
+  --button-border: #d4d0c4;
+  --input: #d4d0c4;
+  --ring: #6b8e23;
+  --brand-accent: #c2185b;
+  --sidebar: #efeee6;
+  --sidebar-foreground: #272822;
+  --sidebar-primary: #6b8e23;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #eef0e0;
+  --sidebar-accent-foreground: #1f7a8c;
+  --sidebar-border: #d4d0c4;
+  --sidebar-ring: #6b8e23;
+}
+.dark[data-theme="monokai"] {
+  --background: #272822;
+  --foreground: #f8f8f2;
+  --card: rgba(62, 61, 50, 0.6);
+  --card-solid: #2d2e28;
+  --card-foreground: #f8f8f2;
+  --tray: rgba(62, 61, 50, 0.6);
+  --popover: rgba(30, 31, 28, 0.92);
+  --popover-foreground: #f8f8f2;
+  --primary: #a6e22e;
+  --primary-foreground: #272822;
+  --secondary: #3e3d32;
+  --secondary-foreground: #f8f8f2;
+  --muted: #3e3d32;
+  --muted-foreground: #90908a;
+  --code-bg: #1e1f1c;
+  --accent: #3e3d32;
+  --accent-foreground: #66d9ef;
+  --border: #414339;
+  --border-strong: #75715e;
+  --button-border: #414339;
+  --input: #414339;
+  --ring: #a6e22e;
+  --brand-accent: #f92672;
+  --sidebar: rgba(30, 31, 28, 0.8);
+  --sidebar-foreground: #f8f8f2;
+  --sidebar-primary: #a6e22e;
+  --sidebar-primary-foreground: #272822;
+  --sidebar-accent: #3e3d32;
+  --sidebar-accent-foreground: #66d9ef;
+  --sidebar-border: #414339;
+  --sidebar-ring: #66d9ef;
+}
+:root:not(.dark)[data-theme="monokai"] .app-shell {
+  background: linear-gradient(160deg, #f7f6f0 0%, #f5f4ef 55%, #efeee6 100%);
+}
+.dark[data-theme="monokai"] .app-shell {
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(166, 226, 46, 0.1) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 20%, rgba(249, 38, 114, 0.08) 0%, transparent 45%),
+    linear-gradient(160deg, #2d2e28 0%, #272822 60%, #1e1f1c 100%);
+}

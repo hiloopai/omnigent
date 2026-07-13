@@ -22,7 +22,14 @@
 const STORAGE_KEY = "omnigent:ui-theme-palette";
 
 /** Selectable color palettes. The first entry is the default (brand) look. */
-export const themePalettes = ["omni", "dracula", "github", "catppuccin", "gruvbox"] as const;
+export const themePalettes = [
+  "omni",
+  "dracula",
+  "github",
+  "catppuccin",
+  "gruvbox",
+  "monokai",
+] as const;
 
 export type ThemePalette = (typeof themePalettes)[number];
 
@@ -123,6 +130,19 @@ export const PALETTES: readonly PaletteMeta[] = [
       text: "#3c3836",
     },
     dark: { bg: "#282828", card: "#3c3836", accent: "#fe8019", border: "#504945", text: "#ebdbb2" },
+  },
+  {
+    id: "monokai",
+    label: "Monokai",
+    blurb: "Vibrant lime and magenta on charcoal.",
+    light: {
+      bg: "#f5f4ef",
+      card: "#ffffff",
+      accent: "#6b8e23",
+      border: "#d4d0c4",
+      text: "#272822",
+    },
+    dark: { bg: "#272822", card: "#2d2e28", accent: "#A6E22E", border: "#414339", text: "#f8f8f2" },
   },
 ] as const;
 
