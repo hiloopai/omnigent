@@ -1,36 +1,18 @@
 // Policy for page-initiated window.open / target=_blank (the
-// setWindowOpenHandler path in main.js). The default stays "leave the
-// shell": web links open in the user's real browser — whose URL bar,
-// password manager, and Safe Browsing beat any chromeless Electron window —
-// and non-web schemes (vscode://, ssh://) need a consent dialog because
-// shell.openExternal launches OS protocol handlers with page-controlled
-// arguments and no prompt of its own.
-//
-// The ONE exception is an OAuth sign-in popup. The workspace UI's OAuth
-// flows (connect an MCP service, Catalog Explorer connections, OneChat)
-// deliver the authorization code back to the page via
-// `window.opener.postMessage` plus a nonce in the OPENER's localStorage —
-// both exist only in a real same-profile child window. Punting the popup to
-// the external browser severs opener and profile, strands the code, and the
-// flow dies ("Sign-in failed"). So a window.open is allowed as a real child
-// window when ALL of:
-//
-//   1. It is popup-SHAPED: disposition "new-window" with explicit
-//      width/height features. Pages only pass size features when they want
-//      a popup; plain links and bare window.open arrive as
-//      "foreground-tab" and keep going external.
-//   2. The opener window is pinned AND currently ON its pinned origin —
-//      a page reached mid-SSO-redirect on a foreign origin gets nothing.
-//   3. The target is https and its origin is the pinned server itself, a
-//      well-known OAuth authorization origin (below), or hand-listed in
-//      settings.json `popup_allowed_origins`. This is the anti-phishing
-//      gate: page content can NEVER open an arbitrary URL in a chromeless
-//      window; at most it can open a known sign-in host (landing anywhere
-//      else from there requires an open redirect on that host).
-//
-// Everything the policy allows is additionally hardened by the caller —
-// sandboxed, stripped of the shell preload, host stamped into the window
-// title, and denied popups of its own (see hardenOauthPopup in main.js).
+// setWindowOpenHandler path in main.js). Default: leave the shell — web
+// links open in the user's real browser, non-web schemes need consent.
+// The ONE exception is an OAuth sign-in popup: the workspace's OAuth
+// callback returns the authorization code via window.opener.postMessage
+// plus a nonce in the OPENER's localStorage, both of which exist only in
+// a real same-profile child window — an external browser strands the code
+// and the flow dies. A popup is allowed only when it is popup-SHAPED
+// (explicit width/height features — links and bare window.open arrive as
+// "foreground-tab"), the opener window is pinned AND currently ON its
+// pinned origin, and the target is https on the pinned origin, a
+// well-known OAuth authorization origin, or settings.json
+// `popup_allowed_origins`. That last gate means page content can never
+// open an arbitrary URL in a chromeless window. Allowed popups are
+// further hardened by the caller (hardenOauthPopup in main.js).
 //
 // Runs in the main process (the gate holds regardless of caller); pure +
 // dep-free so `node --test` can exercise it without Electron.
@@ -48,11 +30,8 @@ const WEB_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 /**
  * Origins of the OAuth authorization endpoints behind the workspace's
- * managed connections (the `system.ai.*` MCP services and the Catalog
- * Explorer / ingestion connection types). Mirrors the endpoints the
- * workspace web-shared OAuth utilities actually open; extend via
- * settings.json `popup_allowed_origins` rather than editing this list for
- * a private deployment.
+ * managed connections (mirrors what the workspace UI actually opens).
+ * Private deployments extend via settings.json `popup_allowed_origins`.
  */
 const OAUTH_POPUP_ORIGINS = new Set([
   "https://github.com", // GitHub (system.ai.github)
@@ -72,22 +51,15 @@ const SIZE_FEATURE_RE = /(^|,)\s*(width|height)\s*=/i;
  * Decide what to do with a page-initiated window.open / target=_blank.
  *
  * @param {{url: string, disposition?: string, features?: string}} details
- *   The fields Electron's setWindowOpenHandler provides.
- * @param {{
- *   openerOrigin: string | null,
- *   pinnedOrigin: string | null,
- *   extraPopupOrigins?: unknown,
- * }} context `openerOrigin` is the CURRENT top-level origin of the opening
- *   window, `pinnedOrigin` the origin it is pinned to (null when on the
- *   setup page), `extraPopupOrigins` the raw settings.json
- *   `popup_allowed_origins` value (unvalidated user input — non-arrays and
- *   non-string entries are ignored).
- * @returns {{kind: "popup"}
- *   | {kind: "external"}
- *   | {kind: "protocol-consent", scheme: string}
- *   | {kind: "ignore"}} `popup` → allow a hardened child window;
- *   `external` → shell.openExternal; `protocol-consent` → consent dialog;
- *   `ignore` → unparseable URL, nothing safe to open.
+ *   Fields from Electron's setWindowOpenHandler.
+ * @param {{openerOrigin: string | null, pinnedOrigin: string | null,
+ *   extraPopupOrigins?: unknown}} context The opener window's current
+ *   top-level origin, its pinned origin, and the raw settings.json
+ *   `popup_allowed_origins` value (unvalidated — non-arrays are ignored).
+ * @returns {{kind: "popup"} | {kind: "external"}
+ *   | {kind: "protocol-consent", scheme: string} | {kind: "ignore"}}
+ *   popup → hardened child window; external → shell.openExternal;
+ *   protocol-consent → consent dialog; ignore → unparseable URL.
  */
 function decideWindowOpen(details, context) {
   let parsed;
@@ -117,17 +89,12 @@ function decideWindowOpen(details, context) {
 
 /**
  * Response headers that sever a popup's `window.opener`. A main-frame
- * response carrying ``Cross-Origin-Opener-Policy: same-origin`` moves the
- * popup into a new browsing-context group: the opener's handle to the popup
- * starts reporting ``closed === true`` and the popup's ``window.opener``
- * becomes permanently null — which kills the OAuth handshake this popup
- * exists for (the callback page can never postMessage the code back, and
- * web-shared's closed-poll misreads the severed handle as "user closed the
- * window" within ~1s). slack.com serves exactly this header on its sign-in
- * pages (verified live), which is why a FIRST Slack sign-in — the one that
- * routes through those pages — flaked while retries (session cookie set,
- * straight 302 to the callback) worked. The Report-Only variant doesn't
- * sever; it is stripped only to keep violation noise out of the flow.
+ * ``COOP: same-origin`` hop (slack.com's sign-in pages serve one) moves
+ * the popup into a new browsing-context group: the opener's handle reports
+ * closed=true and the popup's window.opener is permanently nulled — which
+ * kills the handshake this popup exists for, and only on FIRST sign-ins
+ * (retries skip the sign-in page via the provider session cookie).
+ * Report-Only doesn't sever; stripped just to keep violation noise out.
  */
 const OPENER_SEVERING_HEADERS = new Set([
   "cross-origin-opener-policy",
@@ -138,9 +105,8 @@ const OPENER_SEVERING_HEADERS = new Set([
  * Strip opener-severing headers from a webRequest response-headers object.
  *
  * @param {Record<string, string[]> | undefined} responseHeaders
- * @returns {Record<string, string[]> | null} A copy without the COOP
- *   headers, or null when there was nothing to strip (caller should leave
- *   the response untouched).
+ * @returns {Record<string, string[]> | null} Copy without COOP headers, or
+ *   null when there was nothing to strip.
  */
 function stripCrossOriginOpenerHeaders(responseHeaders) {
   if (!responseHeaders) return null;

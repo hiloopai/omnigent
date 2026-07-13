@@ -1,9 +1,6 @@
-// Deliberately empty preload for OAuth popup child windows (see the
-// setWindowOpenHandler / hardenOauthPopup pair in main.js). A child window
-// created by an allowed window.open would otherwise inherit the SHELL's
-// preload.js, exposing the omnigentDesktop/omnigentSetup IPC bridges to
-// whatever third-party sign-in page the popup shows. Pointing the child at
-// this no-op file guarantees the popup gets NO bridge, independent of
-// Electron's webPreferences-inheritance defaults.
+// Deliberately empty preload for OAuth popup windows: a window.open child
+// can inherit the SHELL's preload.js, whose omnigentDesktop/omnigentSetup
+// IPC bridges must never reach third-party sign-in pages. Pointing the
+// child here guarantees no bridge, whatever Electron's inheritance defaults.
 
 "use strict";

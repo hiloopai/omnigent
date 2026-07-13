@@ -57,24 +57,18 @@ describe("workspace chrome injection wiring (src/main.js)", () => {
 });
 
 // Wiring guards for the window-open policy (src/popupPolicy.js decides,
-// main.js enforces). The policy's BEHAVIOR is unit-tested in
-// popupPolicy.test.js; these guard the enforcement half no behavior test
-// can see: that main.js still routes window.open through the policy, and
-// that an allowed OAuth popup is created HARDENED (no shell preload,
-// sandboxed) and then run through hardenOauthPopup. Losing any of these
-// silently reopens the chromeless-credential-window hole the policy exists
-// to close.
+// main.js enforces; policy behavior is unit-tested in popupPolicy.test.js).
+// Losing any of these silently reopens the chromeless-credential-window
+// hole the policy exists to close.
 describe("window-open policy wiring (src/main.js)", () => {
   it("routes setWindowOpenHandler decisions through decideWindowOpen as live code", () => {
     assert.match(
       liveCode,
       /setWindowOpenHandler\(\s*\(\{\s*url,\s*disposition,\s*features\s*\}\)\s*=>\s*\{[\s\S]{0,200}decideWindowOpen\(/,
       [
-        "src/main.js no longer passes window.open through decideWindowOpen (src/popupPolicy.js).",
-        "Without the policy, either every popup is denied (OAuth sign-in breaks again — the",
-        "callback needs window.opener + the opener's localStorage) or, worse, popups are",
-        "allowed without the pinned-opener/https/allowlist conditions. Restore the",
-        "decideWindowOpen dispatch; do not inline a weaker check.",
+        "src/main.js no longer passes window.open through decideWindowOpen. Either every",
+        "popup is denied (OAuth sign-in breaks) or popups open without the",
+        "pinned-opener/https/allowlist conditions. Restore the dispatch.",
       ].join(" "),
     );
   });
@@ -84,10 +78,9 @@ describe("window-open policy wiring (src/main.js)", () => {
       liveCode,
       /preload:\s*POPUP_PRELOAD[\s\S]{0,120}sandbox:\s*true/,
       [
-        "The allowed-popup overrideBrowserWindowOptions no longer force preload: POPUP_PRELOAD",
-        "and sandbox: true. Without them the child window can inherit the SHELL preload",
-        "(omnigentDesktop/omnigentSetup IPC bridges) and run unsandboxed while showing",
-        "third-party sign-in pages. Restore both overrides (see popup_preload.js).",
+        "Allowed popups no longer force preload: POPUP_PRELOAD + sandbox: true, so a child",
+        "window can inherit the SHELL preload's IPC bridges while showing third-party",
+        "sign-in pages. Restore both overrides (see popup_preload.js).",
       ].join(" "),
     );
   });
@@ -97,31 +90,26 @@ describe("window-open policy wiring (src/main.js)", () => {
       liveCode,
       /did-create-window[\s\S]{0,120}hardenOauthPopup\(/,
       [
-        "src/main.js no longer runs allowed popups through hardenOauthPopup on",
-        "did-create-window. That call stamps the current host into the popup's title",
-        "(the only origin indicator a chromeless window has), and denies",
-        "popups-from-popups. Re-add the wiring; do not delete this test.",
+        "Allowed popups no longer run through hardenOauthPopup (host-stamped title, no",
+        "popups-from-popups, localhost-trust registration). Re-add the wiring.",
       ].join(" "),
     );
   });
 });
 
-// Guards for the popup ↔ localhost-trust bridge. E2E-verified failure mode
-// when this wiring is lost: Okta FastPass runs INSIDE the OAuth popup,
-// queries the Local Network Access permission for its localhost helper,
-// receives "denied" (the popup is deliberately not a shell window), and
-// fails closed — "The browser is blocking communication with Okta Verify" —
-// which blocks sign-in for every Okta-fronted provider.
+// Guards for the popup ↔ localhost-trust bridge. E2E-verified failure when
+// lost: Okta FastPass queries the LNA permission from inside the popup,
+// gets "denied" (a popup is not a shell window), and fails closed —
+// blocking sign-in for every Okta-fronted provider.
 describe("OAuth popup localhost trust wiring (src/main.js)", () => {
   it("registers popups in oauthPopups inside hardenOauthPopup as live code", () => {
     assert.match(
       liveCode,
       /function hardenOauthPopup\(child\)\s*\{[\s\S]{0,120}oauthPopups\.add\(child\)/,
       [
-        "hardenOauthPopup no longer registers the popup in oauthPopups (with a matching",
-        "closed → delete). Without the registry entry, isCurrentPopupOrigin never matches,",
-        "the popup's IdP pages get a denied LNA answer, and Okta FastPass fails closed",
-        "inside every sign-in popup. Restore the oauthPopups.add(child) + cleanup.",
+        "hardenOauthPopup no longer registers the popup in oauthPopups, so",
+        "isCurrentPopupOrigin never matches and Okta FastPass fails closed inside every",
+        "sign-in popup. Restore oauthPopups.add(child) + the closed → delete cleanup.",
       ].join(" "),
     );
   });
@@ -131,22 +119,17 @@ describe("OAuth popup localhost trust wiring (src/main.js)", () => {
       liveCode,
       /function isLocalhostTrustedOrigin\(origin\)\s*\{[\s\S]{0,300}isCurrentPopupOrigin\(origin\)/,
       [
-        "isLocalhostTrustedOrigin no longer consults isCurrentPopupOrigin. The popup's",
-        "current top-level page needs the same auth-surface localhost trust as a shell",
-        "window's (Okta FastPass probes its localhost helper from inside the popup);",
-        "without this line the popup OAuth flow breaks for every Okta-fronted provider.",
+        "isLocalhostTrustedOrigin no longer consults isCurrentPopupOrigin, so popup IdP",
+        "pages get a denied LNA answer and Okta FastPass fails closed. Restore the check.",
       ].join(" "),
     );
   });
 });
 
-// Guard for the COOP-strip wiring. E2E-verified failure mode when lost: a
-// provider sign-in page serving Cross-Origin-Opener-Policy: same-origin
-// (slack.com does) severs the popup's window.opener mid-flow — the app's
-// handle reports closed=true (the web cancel-poll fails the flow in ~1s)
-// and the OAuth callback can never postMessage the code back — i.e. every
-// FIRST sign-in through such a provider fails and only retries (session
-// cookie already set) succeed.
+// Guard for the COOP-strip wiring. E2E-verified failure when lost: a
+// COOP: same-origin sign-in hop (slack.com) severs the popup's
+// window.opener, so every FIRST sign-in through such a provider fails and
+// only retries succeed.
 describe("OAuth popup COOP-strip wiring (src/main.js)", () => {
   it("composes popupResponseHeadersHook into the localhost-CORS registration as live code", () => {
     assert.match(
@@ -154,10 +137,9 @@ describe("OAuth popup COOP-strip wiring (src/main.js)", () => {
       /registerLocalhostCors\(\s*session\.defaultSession,\s*isLocalhostTrustedOrigin,\s*popupResponseHeadersHook,?\s*\)/,
       [
         "registerLocalhostAccess no longer passes popupResponseHeadersHook to",
-        "registerLocalhostCors. Electron allows ONE onHeadersReceived listener per session",
-        "(localhost_cors owns it), so the popup COOP strip MUST compose in there — without",
-        "it, COOP-serving sign-in pages (slack.com) sever window.opener and first-time",
-        "OAuth sign-ins fail. Restore the third argument.",
+        "registerLocalhostCors (which owns the session's single onHeadersReceived),",
+        "so COOP-serving sign-in pages sever window.opener and first-time OAuth",
+        "sign-ins fail. Restore the third argument.",
       ].join(" "),
     );
   });
@@ -167,10 +149,9 @@ describe("OAuth popup COOP-strip wiring (src/main.js)", () => {
       liveCode,
       /function popupResponseHeadersHook\(details\)\s*\{[\s\S]{0,200}resourceType[\s\S]{0,240}isOauthPopupWebContentsId\(/,
       [
-        "popupResponseHeadersHook lost its mainFrame/tracked-popup scoping. The COOP strip",
-        "must apply ONLY to main-frame responses inside live OAuth popups — stripping COOP",
-        "for shell windows or subresources would disable a real isolation protection on",
-        "ordinary browsing. Restore the resourceType + isOauthPopupWebContentsId guards.",
+        "popupResponseHeadersHook lost its mainFrame/tracked-popup scoping — stripping",
+        "COOP anywhere else disables a real isolation protection on ordinary browsing.",
+        "Restore the resourceType + isOauthPopupWebContentsId guards.",
       ].join(" "),
     );
   });

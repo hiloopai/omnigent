@@ -1,15 +1,8 @@
 // Tests for the window-open policy (src/popupPolicy.js), run with
-// `node --test`. Pure function — no Electron needed.
-//
-// The security property under test: page content must NEVER get an
-// arbitrary URL opened in a chromeless Electron window. A real child
-// window is allowed ONLY for the OAuth sign-in shape — popup-styled
-// window.open, from a pinned window currently on its pinned origin, to an
-// https allowlisted sign-in host — because the workspace OAuth callback
-// needs window.opener + the opener's localStorage to deliver the
-// authorization code. Everything else must keep today's behavior: web
-// links leave for the external browser, non-web schemes need consent,
-// unparseable URLs are ignored.
+// `node --test`. Pure function — no Electron needed. Security property:
+// page content must NEVER get an arbitrary URL opened in a chromeless
+// Electron window — a child window is allowed only for the OAuth sign-in
+// shape; everything else keeps leaving the shell.
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");

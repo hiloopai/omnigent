@@ -101,9 +101,8 @@ function headerValue(headers, name) {
  *
  * NOTE: Electron allows only ONE listener per webRequest event per session,
  * so this module must stay the sole owner of onBeforeSendHeaders /
- * onHeadersReceived / onCompleted / onErrorOccurred on the shell session.
- * That is also why `responseHeadersHook` composes in HERE: any other
- * caller registering onHeadersReceived would silently replace ours.
+ * onHeadersReceived / onCompleted / onErrorOccurred on the shell session —
+ * which is why `responseHeadersHook` composes in here.
  *
  * @param {Electron.Session} ses The session to hook (the shell's default
  *   session).
@@ -111,14 +110,12 @@ function headerValue(headers, name) {
  *   page origins may reach localhost. Called per localhost-bound request
  *   with the requesting page's origin (e.g. ``"https://my-server.example"``).
  * @param {(details: Electron.OnHeadersReceivedListenerDetails) =>
- *   Electron.HeadersReceivedResponse | null} [responseHeadersHook] Optional
- *   first-look hook for EVERY response (the shell uses it to strip
- *   opener-severing COOP headers inside OAuth popups — see main.js). A
- *   non-null return answers the request outright; null falls through to
- *   the localhost-CORS logic. Providing the hook widens the
- *   onHeadersReceived registration from localhost URLs to all URLs; the
- *   CORS injection itself stays scoped exactly as before (only requests
- *   the localhost-filtered onBeforeSendHeaders admitted into `inflight`).
+ *   Electron.HeadersReceivedResponse | null} [responseHeadersHook]
+ *   Optional first look at every response (the shell strips COOP inside
+ *   OAuth popups — see main.js): non-null answers the request, null falls
+ *   through to the CORS logic. Providing it widens the onHeadersReceived
+ *   registration to all URLs; CORS stays scoped to requests the
+ *   localhost-filtered onBeforeSendHeaders admitted into `inflight`.
  */
 function registerLocalhostCors(ses, isTrustedPageOrigin, responseHeadersHook) {
   /**
@@ -199,10 +196,7 @@ function registerLocalhostCors(ses, isTrustedPageOrigin, responseHeadersHook) {
     callback({ responseHeaders });
   };
   if (responseHeadersHook) {
-    // The hook needs to see every response (popup sign-in chains traverse
-    // arbitrary provider/IdP hosts), so no URL filter. The CORS branch
-    // above still exits early for anything onBeforeSendHeaders (which
-    // keeps its localhost filter) didn't admit into `inflight`.
+    // Popup sign-in chains traverse arbitrary hosts → no URL filter.
     ses.webRequest.onHeadersReceived(handleHeadersReceived);
   } else {
     ses.webRequest.onHeadersReceived(LOCALHOST_URL_FILTER, handleHeadersReceived);

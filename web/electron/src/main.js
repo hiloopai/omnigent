@@ -68,9 +68,8 @@ const FIND_BAR_INSET = 16;
 const ERR_ABORTED = -3;
 
 /**
- * Absolute path to the deliberately empty preload attached to OAuth popup
- * child windows, so they never inherit the shell preload's IPC bridges —
- * see popup_preload.js and hardenOauthPopup.
+ * No-op preload for OAuth popup windows — children must never inherit the
+ * shell preload's IPC bridges. See popup_preload.js.
  */
 const POPUP_PRELOAD = path.join(__dirname, "popup_preload.js");
 
@@ -342,17 +341,12 @@ function registerPermissions() {
  * frame through SSO/IdP origins that can't be known in advance (e.g.
  * ``abc.aws.databricksapps.com`` → an SSO domain that probes a localhost
  * helper), and this is what lets those pages reach localhost while the
- * user is actually on them. The reachable set stays narrow because it is
- * scoped to SHELL windows: this iterates `windows`, and an OAuth popup —
- * the one window.open the shell allows (see popupPolicy.js) — is a child
- * window that is never entered there, so nothing a popup shows can match;
- * links and every other window.open still leave for the external browser.
- * A popup does keep `window.opener` (the OAuth handshake requires it) and
- * could therefore navigate a shell window's main frame — the same
- * transitive-trust class as the SSO redirect chains this model already
- * accepts, bounded by popup content starting on allowlisted sign-in
- * hosts. Unpinned windows (the setup page) confer nothing, and an iframe
- * never matches because this checks the main frame's origin only.
+ * user is actually on them. The reachable set stays narrow because this
+ * iterates `windows`, which OAuth popups never join (they get their own,
+ * equally narrow trust — see isCurrentPopupOrigin) — and links and every
+ * other window.open leave for the external browser. Unpinned windows (the
+ * setup page) confer nothing, and an iframe never matches because this
+ * checks the main frame's origin only.
  *
  * @param {string} origin e.g. ``"https://login.example.com"``.
  * @returns {boolean}
@@ -366,14 +360,11 @@ function isCurrentWindowOrigin(origin) {
 }
 
 /**
- * True when an origin is the CURRENT top-level page of a live OAuth popup
- * (hardenOauthPopup). The popup counterpart of isCurrentWindowOrigin, with
- * the same rationale: a sign-in chain redirects through IdP origins that
- * can't be known in advance, and device-trust scripts on those pages (Okta
- * FastPass) must reach their localhost helper while the user is actually on
- * them. Scope stays narrow the same way: popups only ever START on
- * allowlisted sign-in hosts (popupPolicy.js), only the main frame counts,
- * and a closed popup confers nothing.
+ * Popup counterpart of isCurrentWindowOrigin, same rationale: IdP
+ * device-trust scripts (Okta FastPass) must reach their localhost helper
+ * from inside the sign-in popup too, and fail closed when denied. Same
+ * narrowness: popups only START on allowlisted hosts (popupPolicy.js),
+ * only the main frame counts, and a closed popup confers nothing.
  *
  * @param {string} origin e.g. ``"https://company.okta.com"``.
  * @returns {boolean}
@@ -391,12 +382,11 @@ function isCurrentPopupOrigin(origin) {
  * (registerLocalhostAccess) and the Local Network Access permission answer
  * (lnaPermissionGranted). An origin is trusted when it is: an origin some
  * window is pinned to (a server the user explicitly connected to), the
- * current top-level page of a pinned window (SSO/IdP pages reached via
- * auth redirects — see isCurrentWindowOrigin), the current top-level page
- * of a live OAuth popup (the same IdP device-trust checks run inside the
- * sign-in popup — see isCurrentPopupOrigin), or hand-listed in
- * settings.json under ``localhost_allowed_origins`` (escape hatch for
- * pages that need localhost while NOT being the visible top-level page).
+ * current top-level page of a pinned window or of a live OAuth popup
+ * (SSO/IdP pages reached via auth redirects — see isCurrentWindowOrigin /
+ * isCurrentPopupOrigin), or hand-listed in settings.json under
+ * ``localhost_allowed_origins`` (escape hatch for pages that need
+ * localhost while NOT being the visible top-level page).
  *
  * @param {string | null} origin e.g. ``"https://login.example.com"``.
  * @returns {boolean}
@@ -411,8 +401,7 @@ function isLocalhostTrustedOrigin(origin) {
 }
 
 /**
- * True when a webContents id belongs to a live OAuth popup — the scoping
- * predicate for popup-only response rewriting (popupResponseHeadersHook).
+ * True when a webContents id belongs to a live OAuth popup.
  *
  * @param {number} webContentsId
  * @returns {boolean}
@@ -426,17 +415,11 @@ function isOauthPopupWebContentsId(webContentsId) {
 
 /**
  * First-look response hook (composed into localhost_cors's single
- * onHeadersReceived registration): strip Cross-Origin-Opener-Policy from
- * main-frame responses INSIDE tracked OAuth popups, so a provider sign-in
- * page can't sever `window.opener` mid-flow. COOP: same-origin on any hop
- * (slack.com's sign-in pages — verified live) moves the popup into a new
- * browsing-context group: the app's handle reports closed=true (web-shared's
- * cancel poll then fails the flow within ~1s) and the popup's window.opener
- * is permanently nulled, so the OAuth callback can never deliver the code.
- * That is exactly the "first sign-in fails, retry works" flake: once the
- * provider session cookie exists, later runs 302 straight to the callback
- * and never touch the COOP page. Every window that is not a tracked popup
- * keeps provider COOP untouched.
+ * onHeadersReceived registration): strip COOP from main-frame responses
+ * inside tracked OAuth popups so a sign-in hop can't sever window.opener —
+ * the "first sign-in fails, retry works" flake (see
+ * OPENER_SEVERING_HEADERS in popupPolicy.js). Every other window keeps
+ * provider COOP untouched.
  *
  * @param {Electron.OnHeadersReceivedListenerDetails} details
  * @returns {Electron.HeadersReceivedResponse | null}
@@ -453,9 +436,8 @@ function popupResponseHeadersHook(details) {
  * Allow pages on trusted origins to call localhost services (auth helpers,
  * local runners) by injecting CORS/preflight headers on localhost responses
  * — see localhost_cors.js for the mechanism and isLocalhostTrustedOrigin
- * for the trust scope. Also composes in the OAuth-popup COOP strip
- * (popupResponseHeadersHook): Electron allows one onHeadersReceived
- * listener per session, and localhost_cors owns it.
+ * for the trust scope. The OAuth-popup COOP strip composes in here because
+ * Electron allows one onHeadersReceived listener per session.
  */
 function registerLocalhostAccess() {
   registerLocalhostCors(session.defaultSession, isLocalhostTrustedOrigin, popupResponseHeadersHook);
@@ -543,16 +525,11 @@ function applyDockIcon() {
 const windows = new Map();
 
 /**
- * Live OAuth popup child windows (see hardenOauthPopup). Tracked SEPARATELY
- * from `windows` on purpose: a popup must never gain shell-window privileges
- * (badge/notification IPC, session-expiry reloads, protocol always-allow
- * grants), but its main frame IS an auth surface — IdP device-trust checks
- * (Okta FastPass) run INSIDE the popup and probe a localhost helper exactly
- * like main-frame SSO does, and fail closed when the LNA permission answer
- * is "denied" (verified: FastPass shows "browser is blocking communication
- * with Okta Verify"). isLocalhostTrustedOrigin therefore extends the same
- * while-the-user-is-on-it trust to a popup's CURRENT top-level origin via
- * isCurrentPopupOrigin — and nothing else.
+ * Live OAuth popup child windows (see hardenOauthPopup). Tracked apart
+ * from `windows` on purpose: a popup gains NO shell-window privileges —
+ * its only grant is localhost trust for its CURRENT top-level page
+ * (isCurrentPopupOrigin), because IdP device-trust checks (Okta FastPass)
+ * probe a localhost helper from inside the popup too.
  *
  * @type {Set<BrowserWindow>}
  */
@@ -951,29 +928,15 @@ function cascadeIfCovering(win) {
 }
 
 /**
- * Harden an OAuth popup child window the window-open policy allowed
- * (popupPolicy.js). The popup deliberately keeps `window.opener` and the
- * opener's session — that's the whole point (the OAuth callback posts the
- * authorization code to the opener) — so the hardening addresses what a
- * chromeless window is missing instead:
- *
- *   - Origin visibility: the window title always leads with the CURRENT
- *     host, refreshed on every navigation. The page controls
- *     document.title but can never control the prefix, so a user typing
- *     credentials has an indicator of where they are. (A real URL bar —
- *     an app-drawn strip view like the find bar — is the planned upgrade.)
- *   - No popups-from-popups: a window.open from the child leaves the shell
- *     (external browser); non-web schemes from a third-party page are
- *     dropped outright — no consent dialog, unlike the shell window, since
- *     there is no pinned-origin trust to anchor one.
- *
- * The child is NEVER entered in `windows`, so it can't acquire shell-window
- * privileges (badge/notification IPC, session-expiry reloads, protocol
- * always-allow grants). It IS tracked in `oauthPopups`: sign-in chains
- * redirect through IdPs whose device-trust checks (Okta FastPass) probe a
- * localhost helper from inside the popup, so the popup's current top-level
- * origin gets the same auth-surface localhost trust as a shell window's —
- * see isCurrentPopupOrigin and the `oauthPopups` doc.
+ * Harden an OAuth popup the window-open policy allowed (popupPolicy.js).
+ * The popup deliberately keeps `window.opener` and the opener's session —
+ * that IS the handshake — so hardening covers what a chromeless window
+ * lacks: the title always leads with the CURRENT host (the page controls
+ * document.title, never the prefix; an app-drawn URL strip is the planned
+ * upgrade), and window.open from the child leaves the shell — no popup
+ * chains, and no consent dialog for non-web schemes since a third-party
+ * page has no pinned-origin trust to anchor one. Tracked in `oauthPopups`
+ * (localhost trust only), never in `windows`.
  *
  * @param {BrowserWindow} child The freshly created popup window.
  */
@@ -1099,15 +1062,11 @@ function createWindow(targetUrl, opts = {}) {
     void win.loadFile(SETUP_PAGE, search.size > 0 ? { search: search.toString() } : undefined);
   }
 
-  // Page-initiated window.open / target=_blank. Default: leave the shell —
-  // web links open in the user's real browser, non-web schemes get a consent
-  // dialog. Narrow exception: OAuth sign-in popups from the pinned origin to
-  // allowlisted sign-in hosts open as real (hardened) child windows, because
-  // the workspace's OAuth callback hands the authorization code back via
-  // window.opener.postMessage + a localStorage nonce — both exist only in a
-  // same-profile child; in an external browser the code is stranded and the
-  // flow dies. Full conditions in popupPolicy.js; child hardening in
-  // hardenOauthPopup (wired via did-create-window below).
+  // Page-initiated window.open / target=_blank: web links open in the
+  // user's real browser and non-web schemes get a consent dialog. The one
+  // exception — an OAuth sign-in popup, whose callback needs window.opener
+  // and the opener's localStorage — opens as a hardened child window.
+  // Conditions in popupPolicy.js; hardening in hardenOauthPopup.
   win.webContents.setWindowOpenHandler(({ url, disposition, features }) => {
     const decision = decideWindowOpen(
       { url, disposition, features },
@@ -1123,9 +1082,8 @@ function createWindow(targetUrl, opts = {}) {
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
           webPreferences: {
-            // Third-party sign-in pages must not see the shell's IPC
-            // bridges (preload.js) — attach a guaranteed no-op instead of
-            // relying on Electron's inheritance defaults.
+            // Never inherit the shell preload's IPC bridges into
+            // third-party sign-in pages.
             preload: POPUP_PRELOAD,
             sandbox: true,
             contextIsolation: true,
