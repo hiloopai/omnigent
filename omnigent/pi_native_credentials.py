@@ -532,25 +532,32 @@ def _cli_config_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
     if transport is None:
         return None
     api_key = f"!{transport.auth_command}"
-    # Derive the workspace base URL from the AI Gateway URL. Used for both the
-    # serving-endpoints OpenAI Completions base URL and the model-catalog API
-    # call. Falls back gracefully when the URL lacks the ai-gateway label.
-    workspace_url = _gateway_workspace_url(transport.base_url)
-    # Fetch the live model list. Run the auth command once to get the current
-    # token — Pi will refresh per request via the !command apiKey.
+    # The AI Gateway hostname (e.g. ``<id>.ai-gateway.cloud.databricks.com``)
+    # is NOT the workspace hostname — stripping ``ai-gateway.`` produces an
+    # NXDOMAIN. Instead, resolve workspace credentials from the DEFAULT
+    # ~/.databrickscfg profile, which is what cli-config users have. Fall back
+    # gracefully (empty model lists → Pi shows only the selected model).
     claude_models: list[dict[str, Any]] = []
     openai_models: list[dict[str, Any]] = []
-    if workspace_url and transport.auth_command:
-        token = _run_auth_command(transport.auth_command)
-        if token:
-            claude_models, openai_models = _fetch_pi_model_lists(workspace_url, token)
+    real_workspace_url: str | None = None
+    try:
+        from omnigent.runtime.credentials.databricks import resolve_databricks_workspace
+
+        ws_creds = resolve_databricks_workspace(None)
+        real_workspace_url = ws_creds.host
+        claude_models, openai_models = _fetch_pi_model_lists(ws_creds.host, ws_creds.token)
+    except Exception:  # noqa: BLE001 — credential/network failure must not break launch
+        _LOGGER.info(
+            "pi-native: cli-config path could not resolve workspace credentials "
+            "for model listing; Pi will show only the selected model"
+        )
     additional: dict[str, Any] = (
         {
             _PI_OPENAI_PROVIDER_ID: _databricks_openai_provider(
-                api_key, f"{workspace_url}/serving-endpoints", openai_models
+                api_key, f"{real_workspace_url}/serving-endpoints", openai_models
             )
         }
-        if workspace_url and openai_models
+        if real_workspace_url and openai_models
         else {}
     )
     return PiProviderConfig(
