@@ -677,15 +677,30 @@ def resolve_pi_native_provider(
         if resolved is None:
             # The provider matched a translatable kind but its details could not
             # be resolved (e.g. a Databricks gateway whose codex config table is
-            # missing). Don't swallow it silently — a future user mystified by an
-            # "OpenRouter auth error despite configuring Databricks" needs this.
+            # missing). Try the databricks-kind provider as a fallback — a common
+            # setup has a cli-config pi default alongside a databricks-kind
+            # provider that carries the actual workspace credentials.
             _LOGGER.warning(
                 "pi-native: configured provider %r (kind %r) could not be translated "
-                "into native Pi config; Pi will use its own login (which may hold "
-                "unrelated/stale credentials).",
+                "into native Pi config; trying databricks-kind fallback.",
                 entry.name,
                 entry.kind,
             )
+            from omnigent.onboarding.provider_config import _parse_provider
+
+            providers = config.get("providers") or {}
+            db_entry = next(
+                (
+                    _parse_provider(name, raw)  # type: ignore[arg-type]
+                    for name, raw in (providers.items() if isinstance(providers, dict) else [])
+                    if isinstance(raw, dict) and raw.get("kind") == DATABRICKS_KIND
+                ),
+                None,
+            )
+            if db_entry is not None:
+                resolved = _databricks_pi_provider(db_entry, model=model)
+            if resolved is None:
+                _LOGGER.warning("pi-native: no usable provider found; Pi will use its own login.")
         return resolved
     except Exception:  # noqa: BLE001 — any resolution failure must not break launch
         # Any failure (malformed config, duplicate per-family default, or an
