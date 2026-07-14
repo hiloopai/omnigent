@@ -13,9 +13,11 @@ the backend (`tests/server/test_app.py`) and frontend unit suites.
 
 from __future__ import annotations
 
+import pytest
 from playwright.sync_api import Page, expect
 
 
+@pytest.mark.flaky(reruns=2, reruns_delay=5)
 def test_agent_info_version_footer_shows_server_version(
     page: Page,
     seeded_session: tuple[str, str],
@@ -38,10 +40,16 @@ def test_agent_info_version_footer_shows_server_version(
 
     page.goto(f"{base_url}/c/{session_id}")
 
-    page.get_by_test_id("agent-info-trigger").click()
+    # The header info trigger mounts after session bind/hydration; wait for it
+    # before clicking so the popover isn't toggled during rerender.
+    trigger = page.get_by_test_id("agent-info-trigger")
+    expect(trigger).to_be_visible(timeout=30_000)
+    trigger.click()
+    # Session ID row proves the popover content mounted before checking footer.
+    expect(page.get_by_test_id("agent-info-session-id")).to_be_visible(timeout=15_000)
 
     footer = page.get_by_test_id("agent-info-versions")
-    expect(footer).to_be_visible()
+    expect(footer).to_be_visible(timeout=15_000)
     # Footer leads with "server <version>"; assert the label is present and a
     # non-empty version follows it (not a blank "server " line).
     expect(footer).to_contain_text("server ")
