@@ -593,18 +593,24 @@ def _to_item(row: SqlConversationItem) -> ConversationItem:
     )
 
 
-def _ranked_latest_message_item_ids(conversation_ids: list[str]) -> Subquery:
+def _ranked_latest_message_items(conversation_ids: list[str]) -> Subquery:
     """
-    Build a ranked latest-message-id subquery for multiple conversations.
+    Build a ranked latest-message subquery for multiple conversations.
+
+    Selects all ``SqlConversationItem`` columns plus a per-conversation
+    ``row_num`` so the caller can filter to the top-N rows without a
+    join back to the base table. Avoiding the join is critical: the
+    primary key is ``(workspace_id, conversation_id, id)``, so a join
+    on ``id`` alone forces a full table scan.
 
     :param conversation_ids: Conversation ids to fetch messages for,
         e.g. ``["conv_child1", "conv_child2"]``.
-    :returns: SQLAlchemy subquery with ``item_id`` and per-conversation
-        ``row_num`` columns, newest message first.
+    :returns: SQLAlchemy subquery with all item columns plus per-conversation
+        ``row_num``, newest message first.
     """
     return (
         select(
-            SqlConversationItem.id.label("item_id"),
+            SqlConversationItem,
             func.row_number()
             .over(
                 partition_by=SqlConversationItem.conversation_id,
@@ -1719,25 +1725,14 @@ class SqlAlchemyConversationStore(ConversationStore):
             return result
 
         with self._conv_session() as session:
-            ranked = _ranked_latest_message_item_ids(unique_ids)
-            rows = (
-                session.execute(
-                    select(SqlConversationItem)
-                    .join(ranked, SqlConversationItem.id == ranked.c.item_id)
-                    .where(
-                        SqlConversationItem.workspace_id == current_workspace_id(),
-                        ranked.c.row_num <= per_conversation_limit,
-                    )
-                    .order_by(
-                        SqlConversationItem.conversation_id,
-                        desc(SqlConversationItem.position),
-                    )
-                )
-                .scalars()
-                .all()
-            )
+            ranked = _ranked_latest_message_items(unique_ids)
+            rows = session.execute(
+                select(ranked)
+                .where(ranked.c.row_num <= per_conversation_limit)
+                .order_by(ranked.c.conversation_id, ranked.c.position.desc())
+            ).all()
             for row in rows:
-                result[row.conversation_id].append(_to_item(row))
+                result[row.conversation_id].append(_to_item(row))  # type: ignore[arg-type]
         return result
 
     def append(
