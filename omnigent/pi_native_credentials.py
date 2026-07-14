@@ -238,30 +238,6 @@ def _databricks_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
     )
 
 
-def _gateway_workspace_url(gateway_base_url: str) -> str | None:
-    """Derive the Databricks workspace base URL from an AI Gateway URL.
-
-    The AI Gateway hostname carries an ``ai-gateway`` DNS label that the
-    workspace host does not (e.g. ``12345.ai-gateway.cloud.databricks.com`` →
-    ``12345.cloud.databricks.com``). The workspace URL is the root for both
-    ``/api/2.0/serving-endpoints`` (model catalog) and ``/serving-endpoints``
-    (OpenAI Completions base URL).
-
-    :param gateway_base_url: An AI Gateway base URL, e.g.
-        ``"https://<id>.ai-gateway.cloud.databricks.com/codex/v1"``.
-    :returns: ``https://<workspace>``, or ``None`` when the URL doesn't carry
-        the expected ``ai-gateway`` label.
-    """
-    parsed = urlparse(gateway_base_url)
-    if not parsed.hostname:
-        return None
-    labels = parsed.hostname.split(".")
-    if _DATABRICKS_AI_GATEWAY_LABEL not in labels:
-        return None
-    labels.remove(_DATABRICKS_AI_GATEWAY_LABEL)
-    return f"https://{'.'.join(labels)}"
-
-
 def _databricks_openai_provider(
     api_key: str,
     serving_endpoints_url: str,
