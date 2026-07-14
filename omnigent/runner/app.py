@@ -1707,6 +1707,7 @@ def _build_pi_native_args(
     extension_path: Path,
     session_dir: Path,
     external_session_id: str | None,
+    approve: bool = False,
 ) -> list[str]:
     """
     Build Pi CLI args for a runner-owned native TUI session.
@@ -1715,19 +1716,18 @@ def _build_pi_native_args(
     :param extension_path: Generated Omnigent Pi extension path.
     :param session_dir: Per-Omnigent-session Pi session directory.
     :param external_session_id: Captured Pi session id, if any.
+    :param approve: When ``True``, pass ``--approve`` to pre-accept Pi's
+        project-folder trust dialog (supported from Pi 0.79+).
     :returns: Complete Pi arg vector excluding the executable.
     """
     user_args = list(terminal_launch_args or [])
-    args = [
-        "--extension",
-        str(extension_path),
-        # Pre-accept the project-folder trust dialog. Pi 0.80+ shows a blocking
-        # TUI prompt ("Trust project folder?") on first launch in a directory
-        # that has .pi/ resources. In a web-UI-driven native session there is
-        # nobody at the terminal to answer it, so we approve unconditionally —
-        # mirroring how ensure_claude_workspace_trusted handles Claude's dialog.
-        "--approve",
-    ]
+    args = ["--extension", str(extension_path)]
+    if approve:
+        # Pre-accept the project-folder trust dialog. Pi 0.79+ shows a
+        # blocking TUI prompt on first launch in a directory with .pi/
+        # resources. In a web-UI-driven session there is nobody at the
+        # terminal to answer it — mirroring ensure_claude_workspace_trusted.
+        args.append("--approve")
     if not _pi_args_have_session_control(user_args):
         args.extend(["--session-dir", str(session_dir)])
         if external_session_id:
@@ -1977,11 +1977,14 @@ async def _auto_create_pi_terminal(
         workspace=launch_config.workspace,
         server_client=server_client,
     )
+    from omnigent.pi_native import pi_supports_approve
+
     pi_args = _build_pi_native_args(
         terminal_launch_args=launch_config.terminal_launch_args,
         extension_path=pi_extension,
         session_dir=session_dir,
         external_session_id=resume_session_id,
+        approve=pi_supports_approve(pi_command),
     )
     pi_env = {
         PI_NATIVE_CONFIG_ENV_VAR: str(config),
