@@ -24,6 +24,7 @@ import {
   FolderMinusIcon,
   FolderOpenIcon,
   GitBranchIcon,
+  Grid2X2Icon,
   InboxIcon,
   ListChecksIcon,
   Loader2Icon,
@@ -45,6 +46,7 @@ import {
   Trash2Icon,
   XIcon,
 } from "lucide-react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -134,6 +136,7 @@ import { absoluteTime, relativeTime } from "@/lib/relativeTime";
 import { MOD_KEY } from "@/components/KeyboardShortcutsDialog";
 import { isCurrentServerLocal } from "@/lib/serverOrigin";
 import { SettingsSidebarBody, useSettingsRoute, useTrackSettingsReturn } from "./settingsNav";
+import { MAX_CONVERSATION_PANES, useConversationLayout } from "./conversationLayout";
 import {
   type ActiveChatOverride,
   COLLAPSED_SIDEBAR_SECTIONS_STORAGE_KEY,
@@ -923,6 +926,7 @@ function ConversationList({
   getVisibleConversationsRef,
   onVisibleCountChange,
 }: ConversationListProps) {
+  const conversationLayout = useConversationLayout();
   // All loaded conversations from the single paginated list (for pinned
   // backfill, normalization, and the flat session list).
   const allConversations = useMemo(
@@ -1166,7 +1170,15 @@ function ConversationList({
       const dragged = activeDrag;
       setActiveDrag(null);
       if (!dragged) return;
-      const target = (event.over?.data.current as SidebarDropTarget | undefined) ?? null;
+      const target =
+        (event.over?.data.current as
+          | SidebarDropTarget
+          | { type: "conversation-canvas" }
+          | undefined) ?? null;
+      if (target?.type === "conversation-canvas") {
+        conversationLayout.addConversation(dragged.id);
+        return;
+      }
       const action = resolveSidebarDrop(
         { id: dragged.id, project: dragged.project, isPinned: dragged.isPinned },
         target,
@@ -1209,7 +1221,7 @@ function ConversationList({
         })();
       }
     },
-    [activeDrag, moveToProject, expandProject, onTogglePinned],
+    [activeDrag, moveToProject, expandProject, onTogglePinned, conversationLayout],
   );
 
   // "Expand all" opens every project folder at once and remembers the set that
@@ -1558,6 +1570,7 @@ function ConversationList({
           </>
         )}
       </div>
+      <ConversationCanvasDropZone activeDrag={activeDrag} />
       {/* The dragged row's preview follows the pointer (rendered in a portal),
           a compact card showing the session's title. */}
       <DragOverlay dropAnimation={null}>
@@ -1615,6 +1628,62 @@ function ConversationList({
         </DialogContent>
       </Dialog>
     </DndContext>
+  );
+}
+
+function ConversationCanvasDropZone({
+  activeDrag,
+}: {
+  activeDrag: { id: string; label: string } | null;
+}) {
+  const layout = useConversationLayout();
+  const { setNodeRef, isOver } = useDroppable({
+    id: "conversation-layout-canvas",
+    data: { type: "conversation-canvas" },
+    disabled: activeDrag === null,
+  });
+  if (!activeDrag || typeof document === "undefined") return null;
+  const target = document.getElementById("conversation-canvas");
+  if (!target) return null;
+
+  const alreadyOpen = layout.conversationIds.includes(activeDrag.id);
+  const full = layout.conversationIds.length >= MAX_CONVERSATION_PANES;
+  const canAdd = layout.canAddConversation(activeDrag.id);
+  const message = alreadyOpen
+    ? "Already in this view"
+    : full
+      ? "Four conversations are already open"
+      : `Add ${activeDrag.label} to this view`;
+
+  return createPortal(
+    <div
+      ref={setNodeRef}
+      data-testid="conversation-canvas-drop-zone"
+      className={cn(
+        "absolute inset-2 z-50 flex items-center justify-center rounded-xl border-2 border-dashed bg-background/90 p-6 backdrop-blur-sm transition-colors",
+        isOver && canAdd ? "border-primary bg-primary/5" : "border-border-strong",
+      )}
+    >
+      <div className="flex max-w-sm flex-col items-center gap-2 text-center">
+        <span
+          className={cn(
+            "flex size-10 items-center justify-center rounded-lg border bg-card shadow-sm",
+            isOver && canAdd && "border-primary text-primary",
+          )}
+        >
+          <Grid2X2Icon className="size-5" aria-hidden />
+        </span>
+        <span className="font-medium text-sm">{message}</span>
+        {canAdd && (
+          <span className="text-muted-foreground text-xs">
+            {layout.conversationIds.length === 0
+              ? "Drop to open this conversation"
+              : `Drop to open ${layout.conversationIds.length + 1} conversations at once`}
+          </span>
+        )}
+      </div>
+    </div>,
+    target,
   );
 }
 

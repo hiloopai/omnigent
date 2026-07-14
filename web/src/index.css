@@ -97,6 +97,91 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Multi-conversation canvas. Desktop uses an intentional 2/3/4-pane mosaic;
+   narrow screens turn the same panes into a swipeable strip. */
+.conversation-canvas {
+  padding-top: calc(3.5rem + var(--omnigent-inset-top));
+}
+
+.conversation-canvas-toolbar {
+  border-top: 1px solid var(--border);
+}
+
+.conversation-grid {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0 0.5rem 0.5rem;
+}
+
+.conversation-grid[data-count="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.conversation-grid[data-count="3"],
+.conversation-grid[data-count="4"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.conversation-grid[data-count="3"] > :nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.conversation-grid-pane .chat-conversation-content,
+.conversation-pane-shell .chat-conversation-content {
+  padding-top: 1.25rem;
+}
+
+.conversation-grid-pane {
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    opacity 160ms ease,
+    filter 160ms ease;
+}
+
+.conversation-grid[data-has-focus="true"] .conversation-grid-pane[data-dimmed="true"] {
+  filter: saturate(0.72);
+  opacity: 0.62;
+}
+
+.conversation-grid-pane[data-drag-over="true"] {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 28%, transparent);
+}
+
+.conversation-grid-pane[data-dragging="true"] {
+  opacity: 0.45;
+}
+
+.conversation-grid[data-reordering="true"] iframe {
+  pointer-events: none;
+}
+
+.conversation-pane-drag-overlay {
+  max-width: min(20rem, calc(100vw - 2rem));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-grid-pane {
+    transition: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .conversation-grid {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+  }
+
+  .conversation-grid-pane {
+    flex: 0 0 calc(100% - 1.5rem);
+    scroll-snap-align: center;
+  }
+}
+
 /* Apple system-blue accent (hue 256, matches iOS / macOS systemBlue —
  * ~#007AFF light, ~#0A84FF dark). Reserved for focus rings, charts,
  * unread state, and the active sidebar highlight; surfaces and primary

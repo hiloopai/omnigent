@@ -23,6 +23,7 @@ import {
 } from "./lib/uiFontPreferences";
 import { applyThemePalette, readThemePalette } from "./lib/themePalette";
 import { initChatStore } from "./store/chatStore";
+import { isConversationPaneWindow } from "./shell/conversationLayout";
 import "./index.css";
 
 // Start tracing before any request fires so fetch/XHR are patched in time
@@ -99,7 +100,7 @@ void _bootProbe.then((info) => {
       <CapabilitiesProvider info={info}>
         <QueryClientProvider client={queryClient}>
           <ThemeProvider>
-            <PWAUpdateBanner />
+            {!isConversationPaneWindow() && <PWAUpdateBanner />}
             <TooltipProvider>
               <ImageLightboxProvider>
                 <BrowserRouter>

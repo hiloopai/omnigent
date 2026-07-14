@@ -90,6 +90,12 @@ import { ForkDialogContextProvider, type ForkDialogContextValue } from "./ForkDi
 import { InlineTerminalsSection } from "./InlineTerminalsSection";
 import { WorkspacePanel } from "./WorkspacePanel";
 import type { RightRailTab } from "./railTabs";
+import { ConversationCanvas } from "./ConversationCanvas";
+import {
+  ConversationLayoutProvider,
+  isConversationPaneWindow,
+  useConversationLayout,
+} from "./conversationLayout";
 
 /**
  * Top-level layout. The sidebar and right panels are responsive:
@@ -129,6 +135,29 @@ import type { RightRailTab } from "./railTabs";
  * more than one agent (the root has at least one child).
  */
 export function AppShell() {
+  if (isConversationPaneWindow()) return <ConversationPaneShell />;
+  return (
+    <ConversationLayoutProvider>
+      <FullAppShell />
+    </ConversationLayoutProvider>
+  );
+}
+
+function ConversationPaneShell() {
+  return (
+    <div className="conversation-pane-shell flex h-dvh min-h-0 bg-background text-foreground">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <Outlet />
+      </main>
+      <Toaster />
+    </div>
+  );
+}
+
+function FullAppShell() {
+  const { conversationIds: layoutConversationIds } = useConversationLayout();
+  const conversationLayoutActive = layoutConversationIds.length > 1;
+
   // Cmd/Ctrl+Enter accepts the pending harness approval prompt. Bound once
   // here so it works on every chat route, regardless of where focus sits.
   useApproveHotkey();
@@ -1280,9 +1309,9 @@ export function AppShell() {
                   hasAgentInfo={hasAgentInfo}
                   onAgentInfo={() => setAgentInfoOpen(true)}
                   hasHeaderMenu={hasHeaderMenu}
-                  showFilesPanel={showFilesPanel}
-                  hasRailContent={hasRailContent}
-                  rightPanelOpen={rightPanelOpen}
+                  showFilesPanel={showFilesPanel && !conversationLayoutActive}
+                  hasRailContent={hasRailContent && !conversationLayoutActive}
+                  rightPanelOpen={rightPanelOpen && !conversationLayoutActive}
                   onToggleRightPanel={toggleRightPanel}
                   mobileMenu={{
                     fileViewerOpen,
@@ -1311,7 +1340,7 @@ export function AppShell() {
                   }}
                 />
                 <main className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                  <Outlet />
+                  <ConversationCanvas />
                 </main>
 
                 {/* Right workspace card — gated on conversationId (panels have
@@ -1325,6 +1354,7 @@ export function AppShell() {
               Sits inside the group so the header overlay spans it; the
               push panels below sit outside the group. */}
                 {conversationId &&
+                  !conversationLayoutActive &&
                   hasRailContent &&
                   rightPanelOpen &&
                   (terminalFirst || !panelOpen) &&
