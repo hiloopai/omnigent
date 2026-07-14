@@ -140,7 +140,9 @@ class _CodexGoalRunnerRouter:
     def __init__(self, client: _CodexGoalRunnerClient | None) -> None:
         self.client = client
 
-    def client_for_session_resources(self, session_id: str) -> _CodexGoalRoutedRunner:
+    def client_for_session_resources(
+        self, session_id: str, check_circuit: bool = True
+    ) -> _CodexGoalRoutedRunner:
         if self.client is None or session_id == "conv_codex_no_runner":
             raise LookupError(session_id)
         return _CodexGoalRoutedRunner(self.client)

@@ -457,7 +457,9 @@ async def test_session_snapshot_uses_router_when_singleton_unset(
         def __init__(self) -> None:
             self.resolved_for: list[str] = []
 
-        def client_for_session_resources(self, conversation_id: str) -> RoutedRunner:
+        def client_for_session_resources(
+            self, conversation_id: str, check_circuit: bool = True
+        ) -> RoutedRunner:
             self.resolved_for.append(conversation_id)
             return RoutedRunner(runner_id="runner_test", client=fake_client)  # type: ignore[arg-type]
 
@@ -1222,7 +1224,9 @@ async def test_session_snapshot_prefers_router_over_singleton(
     singleton_client = _Client("idle")
 
     class _FakeRouter:
-        def client_for_session_resources(self, conversation_id: str) -> RoutedRunner:
+        def client_for_session_resources(
+            self, conversation_id: str, check_circuit: bool = True
+        ) -> RoutedRunner:
             return RoutedRunner(runner_id="runner_test", client=router_client)  # type: ignore[arg-type]
 
     monkeypatch.setattr(

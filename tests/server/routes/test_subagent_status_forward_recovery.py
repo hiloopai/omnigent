@@ -299,7 +299,9 @@ async def test_recover_real_body_retry_resolves_healed_runner() -> None:
     class _Router:
         """Re-reads the conv's CURRENT runner_id; resolves only the live one."""
 
-        def client_for_session_resources(self, conversation_id: str) -> Any:
+        def client_for_session_resources(
+            self, conversation_id: str, check_circuit: bool = True
+        ) -> Any:
             runner_id = convs[conversation_id].runner_id
             if runner_id != "R_live":
                 raise LookupError(f"runner {runner_id} offline")
