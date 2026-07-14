@@ -28,12 +28,13 @@ from omnigent.update_check import (
 
 
 def test_find_repo_root_finds_git_dir() -> None:
-    """``_find_repo_root`` returns the repo root when a ``.git/`` exists."""
+    """``_find_repo_root`` returns the repo root when a ``.git`` entry exists."""
     root = _find_repo_root()
-    # The test itself runs inside the repo, so root must be non-None
-    # and contain a .git directory.
+    # The test itself runs inside the repo (or a worktree), so root must be
+    # non-None and contain a .git entry (directory in a normal clone, file in
+    # a git worktree).
     assert root is not None
-    assert (root / ".git").is_dir()
+    assert (root / ".git").exists()
 
 
 def test_find_repo_root_no_git_integration(

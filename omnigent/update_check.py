@@ -685,7 +685,9 @@ def _find_repo_root() -> Path | None:
     """
     package_dir = Path(__file__).resolve().parent  # <candidate>/omnigent/
     candidate = package_dir.parent
-    if (candidate / ".git").is_dir() and (candidate / "pyproject.toml").is_file():
+    # In a git worktree, .git is a file (gitfile) rather than a directory;
+    # accept both so dev work in worktrees is classified as a dev clone.
+    if (candidate / ".git").exists() and (candidate / "pyproject.toml").is_file():
         return candidate
     return None
 
