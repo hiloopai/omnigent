@@ -639,6 +639,18 @@ class SqlConversationItem(ConversationBase):
             "response_id",
             "id",
         ),
+        # Latest-message previews scan one type per conversation ordered by
+        # position DESC (list_latest_message_items_for_conversations). Ordering
+        # type before position lets the scan seek to (workspace_id,
+        # conversation_id, type) and walk position DESC directly, avoiding a
+        # heap recheck on type — which no other index covers.
+        Index(
+            "ix_conversation_items_conv_type_position",
+            "workspace_id",
+            "conversation_id",
+            "type",
+            text("position DESC"),
+        ),
         CheckConstraint(
             "type IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)",
             name="ck_conversation_items_type",
