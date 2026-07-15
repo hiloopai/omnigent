@@ -244,8 +244,8 @@ def _databricks_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
             api_key, f"{host}/ai-gateway/codex/v1", gpt_models
         )
     if completions_models:
-        additional[_PI_COMPLETIONS_PROVIDER_ID] = _databricks_completions_provider(
-            api_key, f"{host}/serving-endpoints", completions_models
+        additional[_PI_COMPLETIONS_PROVIDER_ID] = _databricks_openai_provider(
+            api_key, f"{host}/serving-endpoints", completions_models, api_type="openai-completions"
         )
     return PiProviderConfig(
         provider_id=_PI_PROVIDER_ID,
@@ -264,30 +264,36 @@ def _databricks_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
 
 def _databricks_openai_provider(
     api_key: str,
-    gateway_codex_url: str,
+    base_url: str,
     models: list[dict[str, Any]],
+    api_type: str = "openai-responses",
 ) -> dict[str, Any]:
-    """Build a Pi OpenAI Responses provider config for the Databricks AI Gateway.
+    """Build a Pi OpenAI provider config for Databricks models.
 
-    GPT/non-Claude models use the Databricks AI Gateway's OpenAI Responses API
-    (``/ai-gateway/codex/v1``). The Responses API supports function tools;
-    the raw serving-endpoints ``/chat/completions`` path rejects tool calls with
-    a 400 for models like ``databricks-gpt-5-5``. Pi's ``openai-responses``
-    api type posts to ``{baseUrl}/responses``.
+    ``api_type`` selects the wire protocol:
+
+    * ``"openai-responses"`` — AI Gateway codex surface
+      (``/ai-gateway/codex/v1``). Required for newer GPT models (gpt-5.5,
+      gpt-5.6-*) that reject function tool calls via ``/chat/completions``.
+    * ``"openai-completions"`` — workspace serving-endpoints surface. Works
+      for Kimi, Llama, GLM, Gemini, and older GPT models.
 
     ``authHeader`` sends ``Authorization: Bearer {token}`` (Databricks requires
     this; without it the OpenAI SDK uses ``api-key`` which is rejected).
     """
     return {
-        "baseUrl": gateway_codex_url,
+        "baseUrl": base_url,
         "apiKey": api_key,
-        "api": "openai-responses",
+        "api": api_type,
         "authHeader": True,
         "compat": {
             "supportsDeveloperRole": False,
             "supportsStore": False,
             "supportsStrictMode": False,
             "supportsReasoningEffort": False,
+            # stream_options is OpenAI-specific; Gemini and other non-OpenAI
+            # models reject it with 400.
+            "supportsUsageInStreaming": False,
         },
         "models": models,
     }
@@ -323,32 +329,7 @@ def _run_auth_command(auth_command: str, *, timeout: float = 15.0) -> str | None
         return None
 
 
-def _databricks_completions_provider(
-    api_key: str,
-    serving_endpoints_url: str,
-    models: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Build a Pi OpenAI Completions provider for non-GPT Databricks models.
-
-    Kimi, Llama, GLM, Gemini, and older GPT models support function tools via
-    ``/chat/completions`` at the workspace serving-endpoints URL.
-    """
-    return {
-        "baseUrl": serving_endpoints_url,
-        "apiKey": api_key,
-        "api": "openai-completions",
-        "authHeader": True,
-        "compat": {
-            "supportsDeveloperRole": False,
-            "supportsStore": False,
-            "supportsStrictMode": False,
-            "supportsReasoningEffort": False,
-        },
-        "models": models,
-    }
-
-
-def _needs_responses_api(model_id: str) -> bool:
+def _needs_responses_api(model_id_lower: str) -> bool:
     """Return True when a Databricks model requires the Responses API for tools.
 
     Newer GPT models (gpt-5.5, gpt-5.6-*, gpt-5.3-codex) reject function tool
@@ -357,9 +338,11 @@ def _needs_responses_api(model_id: str) -> bool:
     models have ``gpt-5.5``, ``gpt-5.6``, or ``gpt-5.3-codex`` in their id.
     Non-GPT models (Kimi, Llama, GLM, Gemini) and older GPT (5.4, 5.2, …) work
     fine with ``/chat/completions`` + tools.
+
+    Expects a pre-lowercased model id (the caller typically has ``name_lower``
+    already computed).
     """
-    lower = model_id.lower()
-    return any(token in lower for token in ("gpt-5-5", "gpt-5-6", "gpt-5-3-codex"))
+    return any(token in model_id_lower for token in ("gpt-5-5", "gpt-5-6", "gpt-5-3-codex"))
 
 
 def _fetch_pi_model_lists(
@@ -441,7 +424,7 @@ def _fetch_pi_model_lists(
         entry: dict[str, Any] = {"id": name, "input": ["text", "image"]}
         if "claude" in name_lower:
             claude.append(entry)
-        elif _needs_responses_api(name):
+        elif _needs_responses_api(name_lower):
             gpt_responses.append(entry)
         else:
             completions.append(entry)
@@ -683,8 +666,8 @@ def _cli_config_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
             api_key, codex_gateway_url, gpt_models
         )
     if completions_models and workspace_completions_url:
-        additional[_PI_COMPLETIONS_PROVIDER_ID] = _databricks_completions_provider(
-            api_key, workspace_completions_url, completions_models
+        additional[_PI_COMPLETIONS_PROVIDER_ID] = _databricks_openai_provider(
+            api_key, workspace_completions_url, completions_models, api_type="openai-completions"
         )
     return PiProviderConfig(
         provider_id=_PI_PROVIDER_ID,
