@@ -307,7 +307,7 @@ jobs:
           {
             echo "## Next steps"
             echo ""
-            echo "1. Dispatch the secure-release repo on this tag (EMU account):"
+            echo "1. Dispatch the secure-release repo on this tag:"
             echo '   ```'
             echo "   gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \\"
             echo "     -f ref=${TAG} -f destination=pypi -f dry-run=true    # gates rehearsal"
@@ -337,6 +337,19 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -euo pipefail
+          # A cut below main's current line (a throwaway rehearsal rc, or
+          # resurrecting an old series for a backport) must not walk main's
+          # version backwards.
+          MAIN_VERSION="$(gh api -H "Accept: application/vnd.github.raw+json" \
+            "repos/${GITHUB_REPOSITORY}/contents/pyproject.toml?ref=main" \
+            | sed -n 's/^version = "\(.*\)"$/\1/p' | head -1)"
+          export MAIN_VERSION
+          python3 -m pip install --quiet --disable-pip-version-check packaging
+          if ! python3 -c 'import os, sys; from packaging.version import Version; sys.exit(0 if Version(os.environ["VERSION"]) > Version(os.environ["MAIN_VERSION"]) else 1)'; then
+            echo "Released ${VERSION} sorts below main's ${MAIN_VERSION} — skipping the main bump." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           gh workflow run bump-version.yml --repo "$GITHUB_REPOSITORY" \
             -f mode=post-release -f "new_version=${VERSION}" -f base_branch=main
           echo "Dispatched bump-version.yml (post-release ${VERSION}) — review and merge the main bump PR." \

@@ -25,7 +25,7 @@ every dispatch requires the **admin or maintain** role on this repo.
   on the public repo).
 - **Publishing to PyPI**: the central **secure-release repo**
   **`databricks/secure-public-registry-releases-eng`**, `omnigent` workflow —
-  use the **Databricks EMU account**. Publishing runs on hardened runner
+  use whichever account has access to that repo. Publishing runs on hardened runner
   groups with **OIDC Trusted Publishing (no stored secrets)** and a **mandatory
   dependency scan**. This is why we don't publish from `omnigent-ai/omnigent`,
   and why the pipeline is two dispatches per phase rather than one.
@@ -103,7 +103,7 @@ What it does (all idempotent):
 **2. Publish to PyPI — dispatch the secure repo (EMU account).**
 
 ```bash
-gh auth switch --user <emu-account>
+gh auth switch --user <secure-repo-account>
 gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
   -f ref=v0.6.0rc1 -f destination=pypi -f dry-run=true    # gates rehearsal
 gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
@@ -195,6 +195,62 @@ can never be reused. So:
   `twine` rejects re-uploading an existing version.
 - Publishing uses **OIDC Trusted Publishing (no stored secrets)**, so a failed
   run leaks nothing — fix forward to the next version.
+
+---
+
+## Rehearsing the pipeline (throwaway release to TestPyPI)
+
+To exercise the whole flow end to end without touching users, release a
+deliberately **below-latest** rc (e.g. `0.0.1rc1`) and publish it to
+**TestPyPI**. A below-latest rc is inert everywhere that matters: the GitHub
+draft stays unpublished, Docker publishes only the immutable `:v0.0.1rc1`
+image tag (`:latest` / `:latest-rc` only move for the highest version), the
+notes/site/homebrew workflows ignore rc tags, `bump-main` skips itself (the
+version sorts below main's), and nothing on TestPyPI is ever resolved by a
+default `pip install`.
+
+1. **Plan (read-only)** — dry run is the default:
+
+   ```bash
+   gh workflow run release.yml --repo omnigent-ai/omnigent -f version=0.0.1rc1
+   ```
+
+2. **Execute**: re-run with `-f dry_run=false`. Expect `branch-0.0` + tag
+   `v0.0.1rc1` pushed, the tag firing the draft-release and image workflows,
+   and CI running on the branch push.
+3. **Idempotency**: dispatch the exact same command again — it must no-op
+   ("already at the converged release commit").
+4. **Secure-repo publish**, pointed at TestPyPI instead of PyPI:
+
+   ```bash
+   gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
+     -f ref=v0.0.1rc1 -f destination=test-pypi -f dry-run=true    # gates only
+   gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
+     -f ref=v0.0.1rc1 -f destination=test-pypi -f dry-run=false   # real TestPyPI upload
+   ```
+
+   test-pypi runs skip the tag/version prod gate and the post-publish
+   `validate` job (TestPyPI lacks the dependency closure) and bind the shared
+   `test-pypi` environment. If an upload leg fails with an invalid-publisher
+   error, add the missing TestPyPI Trusted Publisher for that package and
+   re-dispatch — already-uploaded legs are skipped.
+5. **Publish idempotency**: re-dispatch step 4's second command — all three
+   packages must skip as already published.
+6. **Finalize gates (no side effects)**:
+   `gh workflow run finalize-release.yml -f tag=v0.0.1rc1` must fail fast
+   ("not a final tag"), and `-f tag=v0.5.1` (any already-published release)
+   must no-op as already published.
+
+Cleanup — delete everything the rehearsal minted:
+
+```bash
+gh release delete v0.0.1rc1 --repo omnigent-ai/omnigent --cleanup-tag --yes
+gh api -X DELETE repos/omnigent-ai/omnigent/git/refs/heads/branch-0.0
+```
+
+Optionally delete the `v0.0.1rc1` image versions from GHCR. TestPyPI needs no
+cleanup — the version number is burned there only, which is what TestPyPI is
+for.
 
 ---
 
