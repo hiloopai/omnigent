@@ -72,6 +72,7 @@ import { readDefaultBaseBranch } from "@/lib/baseBranchPreferences";
 import { readHarnessOptions, writeHarnessOption } from "@/lib/modePreferences";
 import { useBrainHarnessLabels } from "@/lib/agentLabels";
 import { CLAUDE_NATIVE_MODELS } from "@/lib/claudeNativeModels";
+import { CODEX_NATIVE_PRESESSION_MODELS } from "@/lib/codexNativeModels";
 import { sortAgentsForDisplay } from "@/lib/agentGrouping";
 import { cn } from "@/lib/utils";
 import {
@@ -1395,7 +1396,7 @@ function AgentHarnessPicker({
         : "";
     const codexModelValue = isSelected
       ? pickedModel
-      : stored.model != null && CODEX_NATIVE_MODELS.some((m) => m.id === stored.model)
+      : stored.model != null && CODEX_NATIVE_PRESESSION_MODELS.some((m) => m.id === stored.model)
         ? stored.model
         : "";
     const effortValue = isSelected
@@ -1454,7 +1455,7 @@ function AgentHarnessPicker({
                   setPickedModel(m);
                 }}
               >
-                {CODEX_NATIVE_MODELS.map((m) => (
+                {CODEX_NATIVE_PRESESSION_MODELS.map((m) => (
                   <DropdownMenuRadioItem
                     key={m.id}
                     value={m.id}

@@ -1,6 +1,22 @@
 import type { CodexModelOption } from "./types";
 
 /**
+ * Static Codex model list for the new-session picker, shown before a session
+ * exists and its live ``model/list`` can be fetched. Mirrors the in-session
+ * picker's dynamic options; once a session is live the snapshot's
+ * ``codexModelOptions`` take over. No default is pre-selected — leaving it
+ * unset lets Codex fall back to its own configured model.
+ *
+ * Keep in sync with the backend static catalog in
+ * ``omnigent/model_catalog.py`` (``_CODEX_STATIC_MODELS``).
+ */
+export const CODEX_NATIVE_PRESESSION_MODELS: readonly { id: string; label: string }[] = [
+  { id: "gpt-5.5", label: "GPT-5.5" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
+  { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
+];
+
+/**
  * Find the Codex option matching a raw Codex model id.
  *
  * @param options - Codex model options from the session snapshot.
