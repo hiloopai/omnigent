@@ -169,6 +169,10 @@ class ConversationNotFoundError(Exception):
     """
 
 
+class ConversationAlreadyExistsError(Exception):
+    """Raised when a caller-supplied conversation id is already in use."""
+
+
 class NameAlreadyExistsError(Exception):
     """
     Raised by ``create_conversation`` when the requested
@@ -243,6 +247,7 @@ class ConversationStore(ABC):
         workspace: str | None = None,
         git_branch: str | None = None,
         terminal_launch_args: list[str] | None = None,
+        conversation_id: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation. Generates a unique
@@ -295,6 +300,9 @@ class ConversationStore(ABC):
             the column NULL; a list (including ``[]``) is persisted
             so the runner applies it when it auto-launches the
             terminal.
+        :param conversation_id: Optional caller-supplied identifier.
+            ``None`` generates a new random id. Reserved for flows that
+            require database-enforced idempotency.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is not ``None`` and a
@@ -303,6 +311,8 @@ class ConversationStore(ABC):
         :raises ConversationNotFoundError: If
             ``parent_conversation_id`` is set but the parent
             row does not exist (root id can't be inherited).
+        :raises ConversationAlreadyExistsError: If a caller-supplied
+            ``conversation_id`` is already in use.
         """
         ...
 

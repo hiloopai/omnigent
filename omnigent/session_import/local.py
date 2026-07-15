@@ -71,6 +71,10 @@ def load_claude_session(
         )
         for item in parsed.items
     )
+    if not items:
+        raise SessionImportNotFoundError(
+            f"Claude Code session {session_id!r} has no importable history"
+        )
     return LocalSessionImport(
         source="claude",
         external_session_id=session_id,
@@ -136,12 +140,12 @@ def _codex_tool_output(value: object) -> str | None:
         return value
     if not isinstance(value, list):
         return None
-    text = "".join(
+    text_blocks = [
         block["text"]
         for block in value
         if isinstance(block, dict) and isinstance(block.get("text"), str)
-    )
-    return text or None
+    ]
+    return "".join(text_blocks) if text_blocks else None
 
 
 def _codex_response_item(
@@ -182,6 +186,20 @@ def _codex_response_item(
     )
 
 
+def _find_archived_codex_rollout(codex_home: Path, session_id: str) -> Path | None:
+    """Return the newest archived Codex rollout matching a session id."""
+    archived_sessions = codex_home / "archived_sessions"
+    if not archived_sessions.is_dir():
+        return None
+    suffix = f"-{session_id}.jsonl"
+    matches = [
+        path
+        for path in archived_sessions.glob("rollout-*.jsonl")
+        if path.name.endswith(suffix) and path.is_file()
+    ]
+    return max(matches, key=lambda path: path.stat().st_mtime) if matches else None
+
+
 def load_codex_session(
     session_id: str,
     *,
@@ -191,7 +209,9 @@ def load_codex_session(
     configured_home = os.environ.get("CODEX_HOME")
     home = codex_home or (Path(configured_home).expanduser() if configured_home else None)
     home = home or Path.home() / ".codex"
-    rollout_path = _find_codex_rollout(home, session_id)
+    rollout_path = _find_codex_rollout(home, session_id) or _find_archived_codex_rollout(
+        home, session_id
+    )
     if rollout_path is None:
         raise SessionImportNotFoundError(f"Codex session {session_id!r} was not found")
 
@@ -223,6 +243,8 @@ def load_codex_session(
             if item is not None:
                 items.append(item)
 
+    if not items:
+        raise SessionImportNotFoundError(f"Codex session {session_id!r} has no importable history")
     return LocalSessionImport(
         source="codex",
         external_session_id=session_id,
@@ -267,6 +289,10 @@ def load_cursor_session(
             )
         )
 
+    if not items:
+        raise SessionImportNotFoundError(
+            f"Cursor session {session_id!r} has no importable history"
+        )
     return LocalSessionImport(
         source="cursor",
         external_session_id=session_id,

@@ -58,6 +58,20 @@ def test_create_and_get(conversation_store: SqlAlchemyConversationStore) -> None
     assert fetched.id == conv.id
 
 
+def test_create_with_existing_caller_supplied_id_raises(db_uri: str) -> None:
+    """A stable caller id turns a retry from another store into a typed conflict."""
+    from omnigent.stores.conversation_store import ConversationAlreadyExistsError
+
+    conversation_id = "a" * 32
+    first_store = SqlAlchemyConversationStore(db_uri)
+    second_store = SqlAlchemyConversationStore(db_uri)
+    created = first_store.create_conversation(conversation_id=conversation_id)
+
+    assert created.id == conversation_id
+    with pytest.raises(ConversationAlreadyExistsError):
+        second_store.create_conversation(conversation_id=conversation_id)
+
+
 def test_get_nonexistent(conversation_store: SqlAlchemyConversationStore) -> None:
     assert conversation_store.get_conversation("conv_none") is None
 

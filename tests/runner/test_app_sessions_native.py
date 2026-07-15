@@ -2323,21 +2323,24 @@ async def test_auto_create_codex_terminal_fork_clones_rollout_and_resumes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source_thread",
+    [None, "019e96aa-0be2-7343-8d3b-6f914d60936b"],
+    ids=["sdk-source", "missing-codex-rollout"],
+)
 async def test_auto_create_codex_terminal_fork_builds_rollout_from_items_and_resumes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    source_thread: str | None,
 ) -> None:
-    """A forked codex clone from an SDK source builds its rollout from items.
+    """A forked codex clone builds from items when its source rollout is unavailable.
 
-    When the clone carries the carry-history directive but has NO source
-    Codex thread to clone (an SDK source, so no rollout on disk), the runner
-    must build the clone's rollout from its OWN copied Omnigent items under a
-    freshly minted thread id, pre-set that id on the Omnigent session, and launch
-    ``codex resume <minted_id>``. A regression launches fresh and the clone
-    loses the SDK source's conversation history.
+    This covers both a non-Codex source with no source thread id and an imported
+    Codex source whose rollout lives outside Omnigent's private ``CODEX_HOME``.
 
     :param tmp_path: Temporary directory for isolated bridge state.
     :param monkeypatch: Pytest monkeypatch fixture.
+    :param source_thread: Optional unavailable source Codex thread id.
     :returns: None.
     """
     import omnigent.codex_native_app_server as codex_app_mod
@@ -2346,6 +2349,7 @@ async def test_auto_create_codex_terminal_fork_builds_rollout_from_items_and_res
     from omnigent.codex_native_bridge import bridge_dir_for_bridge_id, codex_home_for_bridge_dir
     from omnigent.stores.conversation_store import (
         FORK_CARRY_HISTORY_LABEL_KEY,
+        FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY,
         FORK_SOURCE_LABEL_KEY,
     )
 
@@ -2384,16 +2388,17 @@ async def test_auto_create_codex_terminal_fork_builds_rollout_from_items_and_res
             """
             del timeout
             if url == f"/v1/sessions/{session_id}":
-                # SDK source: carry-history set, but NO source external
-                # session id → the runner must build from items, not clone.
+                labels = {
+                    FORK_SOURCE_LABEL_KEY: source_id,
+                    FORK_CARRY_HISTORY_LABEL_KEY: "1",
+                }
+                if source_thread is not None:
+                    labels[FORK_SOURCE_EXTERNAL_SESSION_LABEL_KEY] = source_thread
                 return httpx.Response(
                     200,
                     json={
                         "external_session_id": None,
-                        "labels": {
-                            FORK_SOURCE_LABEL_KEY: source_id,
-                            FORK_CARRY_HISTORY_LABEL_KEY: "1",
-                        },
+                        "labels": labels,
                     },
                     request=httpx.Request("GET", url),
                 )

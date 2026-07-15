@@ -81,6 +81,7 @@ from omnigent.stores.conversation_store import (
     FORK_SOURCE_LABEL_KEY,
     PROJECT_LABEL_KEY,
     SWITCH_PREVIOUS_BUILTIN_LABEL_KEY,
+    ConversationAlreadyExistsError,
     ConversationNotFoundError,
     ConversationStore,
     CreatedSession,
@@ -820,6 +821,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         workspace: str | None = None,
         git_branch: str | None = None,
         terminal_launch_args: list[str] | None = None,
+        conversation_id: str | None = None,
     ) -> Conversation:
         """
         Create a new conversation in the database.
@@ -866,12 +868,16 @@ class SqlAlchemyConversationStore(ConversationStore):
             the column NULL; a list (including ``[]``) is JSON-encoded
             so the runner applies it when it auto-launches the
             terminal.
+        :param conversation_id: Optional caller-supplied identifier.
+            ``None`` generates a new random id.
         :returns: The newly created :class:`Conversation`.
         :raises NameAlreadyExistsError: If
             ``parent_conversation_id`` is set and a sibling row
             with the same ``title`` already exists.
         :raises IntegrityError: If ``host_id`` is set without
             ``workspace`` (the check constraint catches it).
+        :raises ConversationAlreadyExistsError: If a caller-supplied
+            ``conversation_id`` is already in use.
         """
         from sqlalchemy.exc import IntegrityError
 
@@ -881,7 +887,7 @@ class SqlAlchemyConversationStore(ConversationStore):
         )
 
         now = now_epoch()
-        new_id = generate_conversation_id()
+        new_id = conversation_id if conversation_id is not None else generate_conversation_id()
         try:
             # Get parent's root from AP, then write AP row and Omnigent meta separately.
             root_id = new_id
@@ -939,6 +945,29 @@ class SqlAlchemyConversationStore(ConversationStore):
             # check, which would misclassify any future unique
             # constraint added to the conversations table.
             msg = str(exc).lower()
+            is_id_unique_violation = conversation_id is not None and (
+                "conversations_pkey" in msg
+                or "agent_configuration_pkey" in msg
+                or ("duplicate entry" in msg and "for key 'primary'" in msg)
+                or (
+                    "unique" in msg
+                    and (
+                        (
+                            "conversations.workspace_id" in msg
+                            and "conversations.id" in msg
+                            and "parent_conversation_id" not in msg
+                        )
+                        or (
+                            "agent_configuration.workspace_id" in msg
+                            and "agent_configuration.conversation_id" in msg
+                        )
+                    )
+                )
+            )
+            if is_id_unique_violation:
+                raise ConversationAlreadyExistsError(
+                    f"conversation id {conversation_id!r} already exists"
+                ) from exc
             is_title_unique_violation = "ix_conversations_parent_title_unique" in msg or (
                 "unique" in msg and "parent_conversation_id" in msg and "title" in msg
             )

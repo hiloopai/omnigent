@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from omnigent.session_import import (
     title_from_items,
 )
 from omnigent.stores import AgentStore, ConversationStore
+from omnigent.stores.conversation_store import ConversationAlreadyExistsError
 from omnigent.stores.permission_store import PermissionStore
 
 
@@ -53,7 +55,7 @@ class ImportSessionRequest(BaseModel):
     source: ImportSource
     external_session_id: str = Field(min_length=1, max_length=128)
     workspace: str | None = Field(default=None, max_length=2048)
-    items: list[ImportItemInput] = Field(max_length=100_000)
+    items: list[ImportItemInput] = Field(min_length=1, max_length=100_000)
 
     @field_validator("external_session_id")
     @classmethod
@@ -83,6 +85,12 @@ class _ImportLockEntry:
 
 _IMPORT_LOCKS: dict[tuple[ImportSource, str], _ImportLockEntry] = {}
 _IMPORT_LOCKS_GUARD = threading.Lock()
+
+
+def _import_conversation_id(source: ImportSource, external_session_id: str) -> str:
+    """Derive one stable database identity for an imported source session."""
+    value = f"import:{source}:{external_session_id}"
+    return hashlib.sha256(value.encode()).hexdigest()[:32]
 
 
 async def _serialize_source_import(body: ImportSessionRequest) -> AsyncIterator[None]:
@@ -158,12 +166,19 @@ def create_imports_router(
                 code=ErrorCode.INTERNAL_ERROR,
             )
 
-        conversation = await asyncio.to_thread(
-            conversation_store.create_conversation,
-            title=title_from_items(items),
-            agent_id=agent_id,
-            workspace=body.workspace,
-        )
+        try:
+            conversation = await asyncio.to_thread(
+                conversation_store.create_conversation,
+                title=title_from_items(items),
+                agent_id=agent_id,
+                workspace=body.workspace,
+                conversation_id=_import_conversation_id(body.source, body.external_session_id),
+            )
+        except ConversationAlreadyExistsError as exc:
+            raise OmnigentError(
+                "This source session has already been imported",
+                code=ErrorCode.CONFLICT,
+            ) from exc
         try:
             await asyncio.to_thread(
                 conversation_store.set_external_session_id,

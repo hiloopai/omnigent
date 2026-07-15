@@ -93,6 +93,17 @@ def test_load_claude_session_normalizes_parent_transcript(tmp_path: Path) -> Non
     assert imported.items[3].data.model_dump()["agent"] == "claude-native-ui"
 
 
+def test_load_claude_session_rejects_empty_history(tmp_path: Path) -> None:
+    """An empty Claude transcript cannot create a claimed import."""
+    session_id = "a1b2c3d4-1234-5678-9abc-def012345678"
+    transcript = tmp_path / "projects" / "-repo" / f"{session_id}.jsonl"
+    transcript.parent.mkdir(parents=True)
+    transcript.touch()
+
+    with pytest.raises(SessionImportNotFoundError, match="no importable history"):
+        load_claude_session(session_id, claude_home=tmp_path)
+
+
 def test_load_codex_session_normalizes_response_items(tmp_path: Path) -> None:
     """Codex response items retain turn grouping and omit scaffolding."""
     session_id = "019e96aa-0be2-7343-8d3b-6f914d60936b"
@@ -180,7 +191,7 @@ def test_load_codex_session_normalizes_response_items(tmp_path: Path) -> None:
             "payload": {
                 "type": "custom_tool_call_output",
                 "call_id": "call_2",
-                "output": [{"type": "output_text", "text": "Done!"}],
+                "output": [{"type": "output_text", "text": ""}],
             },
         },
         {
@@ -229,8 +240,53 @@ def test_load_codex_session_normalizes_response_items(tmp_path: Path) -> None:
     }
     assert imported.items[5].data.model_dump() == {
         "call_id": "call_2",
-        "output": "Done!",
+        "output": "",
     }
+
+
+def test_load_codex_session_finds_archived_rollout(tmp_path: Path) -> None:
+    """Archived Codex sessions remain importable by their original id."""
+    session_id = "019e96aa-0be2-7343-8d3b-6f914d60936b"
+    rollout = tmp_path / "archived_sessions" / f"rollout-2026-07-15-{session_id}.jsonl"
+    rollout.parent.mkdir()
+    rollout.write_text(
+        "".join(
+            [
+                json.dumps(
+                    {"type": "session_meta", "payload": {"id": session_id, "cwd": "/repo"}}
+                ),
+                "\n",
+                json.dumps(
+                    {
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "archived prompt"}],
+                        },
+                    }
+                ),
+                "\n",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    imported = load_codex_session(session_id, codex_home=tmp_path)
+
+    assert imported.workspace == "/repo"
+    assert imported.title == "archived prompt"
+
+
+def test_load_codex_session_rejects_empty_history(tmp_path: Path) -> None:
+    """A structurally present but unreadable history must not claim an import."""
+    session_id = "019e96aa-0be2-7343-8d3b-6f914d60936b"
+    rollout = tmp_path / "sessions" / "2026" / "07" / "15" / f"rollout-x-{session_id}.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text("not-json\n", encoding="utf-8")
+
+    with pytest.raises(SessionImportNotFoundError, match="no importable history"):
+        load_codex_session(session_id, codex_home=tmp_path)
 
 
 def test_load_cursor_session_normalizes_visible_blobs(tmp_path: Path) -> None:
@@ -308,3 +364,18 @@ def test_load_cursor_session_requires_original_workspace(tmp_path: Path) -> None
             cursor_home=tmp_path,
             workspace=wrong_workspace,
         )
+
+
+def test_load_cursor_session_rejects_empty_history(tmp_path: Path) -> None:
+    """An empty Cursor store cannot create a claimed import."""
+    session_id = "cursor-chat-123"
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    workspace_hash = hashlib.md5(os.path.realpath(workspace).encode()).hexdigest()
+    store_path = tmp_path / "chats" / workspace_hash / session_id / "store.db"
+    store_path.parent.mkdir(parents=True)
+    with sqlite3.connect(store_path) as connection:
+        connection.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
+
+    with pytest.raises(SessionImportNotFoundError, match="no importable history"):
+        load_cursor_session(session_id, cursor_home=tmp_path, workspace=workspace)

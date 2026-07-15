@@ -1694,6 +1694,7 @@
               "$ref": "#/components/schemas/ImportItemInput"
             },
             "maxItems": 100000,
+            "minItems": 1,
             "title": "Items",
             "type": "array"
           },

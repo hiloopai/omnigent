@@ -84,7 +84,16 @@ async def test_concurrent_identical_imports_return_one_session(
     payload = {
         "source": "claude",
         "external_session_id": "claude-concurrent-1",
-        "items": [],
+        "items": [
+            {
+                "type": "message",
+                "response_id": "claude:turn-1",
+                "data": {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            }
+        ],
     }
 
     first, second = await asyncio.gather(
@@ -97,3 +106,17 @@ async def test_concurrent_identical_imports_return_one_session(
         "claude", "claude-concurrent-1"
     )
     assert imported is not None
+
+
+async def test_import_session_rejects_empty_history(client: httpx.AsyncClient) -> None:
+    """An empty parser result cannot create a permanently claimed session."""
+    response = await client.post(
+        "/v1/imports",
+        json={
+            "source": "codex",
+            "external_session_id": "empty-codex-session",
+            "items": [],
+        },
+    )
+
+    assert response.status_code == 422

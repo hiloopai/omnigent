@@ -73,9 +73,9 @@ def test_cli_imports_claude_chat_into_live_server(live_server: str, tmp_path: Pa
         env=env,
     )
 
-    match = re.search(r"conv_[0-9a-f]{32}", result.stdout)
+    match = re.search(r"Imported \d+ item\(s\) into (\S+)\.", result.stdout)
     assert match is not None, result.stdout
-    session_id = match.group(0)
+    session_id = match.group(1)
     session = httpx.get(
         f"{live_server}/v1/sessions/{session_id}",
         params={"include_items": "false", "include_liveness": "false"},
