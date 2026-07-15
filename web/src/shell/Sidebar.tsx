@@ -17,6 +17,7 @@ import {
   ArchiveRestoreIcon,
   CheckIcon,
   CheckIcon as CheckMarkIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   CircleStopIcon,
   FolderIcon,
@@ -120,6 +121,7 @@ import { useCommentInbox } from "@/hooks/useCommentInbox";
 import { sumPendingApprovals } from "@/lib/inbox";
 import { isSessionStoppable } from "@/lib/sessionStop";
 import { isOwnerLevel } from "@/lib/permissionsApi";
+import { isImeCompositionKeyEvent } from "@/lib/ime";
 import { getSessionState, type SessionState } from "@/hooks/useSessionState";
 import {
   isConversationUnseen,
@@ -1747,16 +1749,35 @@ function SectionHeader({
         onClick={onToggleCollapsed}
         className="group flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
-        {icon}
+        {icon ? (
+          // Headers with a leading icon (project folders) swap the folder for a
+          // chevron on desktop hover/focus, so the caret takes the icon's place
+          // rather than trailing the name. Mobile (no hover) keeps the folder
+          // icon and shows the trailing chevron below.
+          <span className="relative flex size-4 shrink-0 items-center justify-center">
+            <span className="flex md:transition-opacity md:group-hover:opacity-0 md:group-focus-visible:opacity-0">
+              {icon}
+            </span>
+            <ChevronRightIcon
+              className={cn(
+                "absolute size-3.5 opacity-0 transition-[transform,opacity]",
+                !collapsed && "rotate-90",
+                "hidden md:flex md:group-hover:opacity-100 md:group-focus-visible:opacity-100",
+              )}
+            />
+          </span>
+        ) : null}
         <span className="min-w-0 truncate">{title}</span>
-        {/* Chevron sits right after the section name, rotating on expand.
-            Desktop: revealed only on hover/focus of the header; mobile (no
-            hover): always visible. */}
+        {/* Trailing chevron, rotating on expand. Headers without a leading icon
+            reveal it on desktop hover/focus; icon headers show it only on mobile
+            (no hover) since desktop swaps the folder for the chevron above. */}
         <ChevronRightIcon
           className={cn(
             "size-3.5 shrink-0 transition-[transform,opacity]",
             !collapsed && "rotate-90",
-            "md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100",
+            icon
+              ? "md:hidden"
+              : "md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100",
           )}
         />
         {/* A hidden row inside this collapsed section carries a marker — surface
@@ -2043,6 +2064,77 @@ function ConversationMenuItems({
   setMenuOpen: (open: boolean) => void;
   runArchive: () => void;
 }) {
+  // Mobile lacks the horizontal room for a side-opening submenu, so the
+  // project picker replaces the menu body in place instead of flying out
+  // to the side. `view` swaps between the main actions and that sub-view;
+  // desktop always renders the native side-flyout submenu regardless.
+  const isMobile = useIsMobileViewport();
+  const [view, setView] = useState<"main" | "projects">("main");
+
+  // The project pick / create / remove flow — shared verbatim by the desktop
+  // side-flyout submenu and the mobile in-place sub-view so both behave
+  // identically (same moveToProject.mutate, confirmation, and menu close).
+  const handleProjectSelect = (project: string) => {
+    setMenuOpen(false);
+    // Moving to another project is harmless — apply it now, and expand that
+    // (possibly new) project so the session is visible in it rather than
+    // hidden in a collapsed folder.
+    if (project !== "") {
+      moveToProject.mutate({ id: conversation.id, project });
+      onProjectAssigned?.(project);
+      return;
+    }
+    // Removing: only confirm when this is the project's LAST session (removing
+    // it would delete the implicit project). Otherwise remove silently. The
+    // check is server-side so it's accurate regardless of the loaded window.
+    void (async () => {
+      let isLastSession = true;
+      if (currentProject) {
+        try {
+          const ids = await fetchProjectSessionIds(currentProject);
+          isLastSession = ids.every((id) => id === conversation.id);
+        } catch {
+          // If the check fails, fall back to confirming.
+          isLastSession = true;
+        }
+      }
+      if (isLastSession) {
+        setRemoveProjectOpen(true);
+      } else {
+        moveToProject.mutate({ id: conversation.id, project: "" });
+      }
+    })();
+  };
+
+  // Mobile project sub-view: replaces the entire menu body in place (the
+  // "Back" row flips `view` without closing the menu or navigating). Reachable
+  // only via the mobile project item below, which sits behind the same
+  // `canEdit && isOwner` gate.
+  if (isMobile && view === "projects") {
+    return (
+      <>
+        <C.Item
+          data-testid="project-picker-back"
+          className="whitespace-nowrap"
+          // Keep the menu open — just flip back to the main actions.
+          onSelect={(e) => {
+            e.preventDefault();
+            setView("main");
+          }}
+        >
+          <ChevronLeftIcon className="size-3.5" />
+          Back
+        </C.Item>
+        <C.Separator />
+        <ProjectPickerMenu
+          components={C}
+          currentProject={currentProject}
+          onSelect={handleProjectSelect}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       {/* Pin/Unpin — mobile-only (md:hidden); desktop uses the
@@ -2122,56 +2214,42 @@ function ConversationMenuItems({
       )}
       {/* Projects are a My-sessions-only tool, so filing is owner-only — a
           shared session (even editable) shows no project affordance. */}
-      {canEdit && isOwner && (
-        <C.Sub>
-          <C.SubTrigger data-testid="move-to-project" className="whitespace-nowrap">
+      {canEdit &&
+        isOwner &&
+        (isMobile ? (
+          // Mobile: no room for a side flyout, so this item swaps the menu
+          // body to the project picker in place (see the `view === "projects"`
+          // branch above). `preventDefault` keeps the menu open on select.
+          <C.Item
+            data-testid="move-to-project"
+            className="whitespace-nowrap"
+            onSelect={(e) => {
+              e.preventDefault();
+              setView("projects");
+            }}
+          >
             <FolderInputIcon className="size-3.5" />
             {/* "Add to project" until the session is filed, then "Move
                 session" to switch or remove it. */}
             {currentProject ? "Move session" : "Add to project"}
-          </C.SubTrigger>
-          <C.SubContent className="w-56 p-1 [&_[role=menuitem]]:text-xs">
-            {/* A native submenu flyout — no separate popover layer, so no
-                open/dismiss race with the parent menu. */}
-            <ProjectPickerMenu
-              components={C}
-              currentProject={currentProject}
-              onSelect={(project) => {
-                setMenuOpen(false);
-                // Moving to another project is harmless — apply it now,
-                // and expand that (possibly new) project so the session
-                // is visible in it rather than hidden in a collapsed folder.
-                if (project !== "") {
-                  moveToProject.mutate({ id: conversation.id, project });
-                  onProjectAssigned?.(project);
-                  return;
-                }
-                // Removing: only confirm when this is the project's LAST
-                // session (removing it would delete the implicit project).
-                // Otherwise remove silently. The check is server-side so
-                // it's accurate regardless of the loaded window / pins.
-                void (async () => {
-                  let isLastSession = true;
-                  if (currentProject) {
-                    try {
-                      const ids = await fetchProjectSessionIds(currentProject);
-                      isLastSession = ids.every((id) => id === conversation.id);
-                    } catch {
-                      // If the check fails, fall back to confirming.
-                      isLastSession = true;
-                    }
-                  }
-                  if (isLastSession) {
-                    setRemoveProjectOpen(true);
-                  } else {
-                    moveToProject.mutate({ id: conversation.id, project: "" });
-                  }
-                })();
-              }}
-            />
-          </C.SubContent>
-        </C.Sub>
-      )}
+          </C.Item>
+        ) : (
+          <C.Sub>
+            <C.SubTrigger data-testid="move-to-project" className="whitespace-nowrap">
+              <FolderInputIcon className="size-3.5" />
+              {currentProject ? "Move session" : "Add to project"}
+            </C.SubTrigger>
+            <C.SubContent className="w-56 p-1 [&_[role=menuitem]]:text-xs">
+              {/* A native submenu flyout — no separate popover layer, so no
+                  open/dismiss race with the parent menu. */}
+              <ProjectPickerMenu
+                components={C}
+                currentProject={currentProject}
+                onSelect={handleProjectSelect}
+              />
+            </C.SubContent>
+          </C.Sub>
+        ))}
       {/* Stop / Archive / Delete are grouped at the bottom, below a
           divider: lifecycle-ending actions separated from the everyday
           ones above. */}
@@ -3363,6 +3441,10 @@ function ConversationEditRow({ initialTitle, onCommit, onCancel }: ConversationE
   // checks this so we don't double-fire onCommit with the unedited
   // value when the input loses focus as part of unmounting.
   const cancelledRef = useRef(false);
+  // Tracks an active IME composition (e.g. Japanese conversion) so the Enter
+  // that confirms a candidate doesn't commit the rename. Mirrors the chat
+  // composer guard (#132/#243).
+  const isComposingRef = useRef(false);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -3370,6 +3452,7 @@ function ConversationEditRow({ initialTitle, onCommit, onCancel }: ConversationE
   }, []);
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (isImeCompositionKeyEvent(e, isComposingRef.current)) return;
     if (e.key === "Enter") {
       e.preventDefault();
       onCommit(value);
@@ -3396,6 +3479,12 @@ function ConversationEditRow({ initialTitle, onCommit, onCancel }: ConversationE
         type="text"
         value={value}
         onChange={(e) => setValue(e.target.value)}
+        onCompositionStart={() => {
+          isComposingRef.current = true;
+        }}
+        onCompositionEnd={() => {
+          isComposingRef.current = false;
+        }}
         onKeyDown={handleKeyDown}
         onBlur={handleBlur}
         data-testid="rename-conversation-input"
