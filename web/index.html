@@ -7,6 +7,20 @@
     <meta name="theme-color" content="#0d1218" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Keep in sync with src/lib/interfaceDensity.ts. This must run in <head>
+      // so persisted spacing is present before the first stylesheet paint.
+      (() => {
+        let density = "comfortable";
+        try {
+          const stored = localStorage.getItem("omnigent:interface-density");
+          if (stored === "compact" || stored === "spacious") density = stored;
+        } catch {
+          // Storage can be blocked in sandboxed or private contexts.
+        }
+        document.documentElement.dataset.density = density;
+      })();
+    </script>
     <title>Omnigent</title>
   </head>
   <body>

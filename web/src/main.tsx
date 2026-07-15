@@ -15,6 +15,7 @@ import { CapabilitiesProvider } from "./lib/CapabilitiesContext";
 import { resolveIdentity } from "./lib/identity";
 import { initNativeInsets } from "./lib/nativeInsets";
 import { initBrowserTelemetry } from "./lib/telemetry";
+import { applyInterfaceDensity, readInterfaceDensity } from "./lib/interfaceDensity";
 import {
   applyUiFontFamily,
   applyUiFontScale,
@@ -60,6 +61,10 @@ initNativeInsets();
 // Apply the saved UI font size and family before first paint so there's no flash.
 applyUiFontScale(readUiFontSizePx());
 applyUiFontFamily(readUiFontFamily());
+
+// The inline boot script applies this before the stylesheet can paint. Repeat
+// through the typed preference API so non-HTML entry points get the same state.
+applyInterfaceDensity(readInterfaceDensity());
 
 // Apply the saved color palette (data-theme on <html>) before first paint too,
 // so the app renders in the chosen theme rather than flashing the brand default.

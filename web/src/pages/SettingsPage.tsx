@@ -149,6 +149,12 @@ import {
   type CustomTheme,
   writeCustomTheme,
 } from "@/lib/customTheme";
+import {
+  DEFAULT_INTERFACE_DENSITY,
+  type InterfaceDensity,
+  readInterfaceDensity,
+  writeInterfaceDensity,
+} from "@/lib/interfaceDensity";
 import { useIsEmbedded } from "@/lib/embedded";
 import { type CliStatus, getCliStatus, isElectronShell, resetCliPath } from "@/lib/nativeBridge";
 import { cn } from "@/lib/utils";
@@ -242,6 +248,12 @@ const terminalThemeCards: { mode: TerminalThemeMode; label: string; icon: typeof
   { mode: "auto", label: "Match app", icon: MonitorIcon },
   { mode: "light", label: "Light", icon: SunIcon },
   { mode: "dark", label: "Dark", icon: MoonIcon },
+];
+
+const densityCards: { value: InterfaceDensity; label: string }[] = [
+  { value: "compact", label: "Compact" },
+  { value: "comfortable", label: "Comfortable" },
+  { value: "spacious", label: "Spacious" },
 ];
 
 const workspacePanelCards: {
@@ -424,23 +436,97 @@ function ThemeSubsection({
   labelId,
   title,
   helper,
+  action,
   children,
 }: {
   labelId: string;
   title: string;
   helper: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col">
-        <span id={labelId} className="text-sm font-medium">
-          {title}
-        </span>
-        <span className="text-sm text-muted-foreground">{helper}</span>
+    <div className="density-settings-row flex flex-col">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-col">
+          <span id={labelId} className="text-sm font-medium">
+            {title}
+          </span>
+          <span className="text-sm text-muted-foreground">{helper}</span>
+        </div>
+        {action}
       </div>
       {children}
     </div>
+  );
+}
+
+/** Abstract row stack that previews spacing without changing text size. */
+function DensityPreview({ density }: { density: InterfaceDensity }) {
+  const gap = density === "compact" ? 3 : density === "spacious" ? 7 : 5;
+  const rowHeight = density === "compact" ? 7 : density === "spacious" ? 13 : 10;
+  return (
+    <div
+      aria-hidden
+      className="flex h-16 w-full flex-col justify-center rounded-md border border-border bg-background px-3"
+      style={{ gap }}
+    >
+      {[0.76, 0.92, 0.64].map((width) => (
+        <span
+          key={width}
+          className="block rounded-sm bg-muted-foreground/25"
+          style={{ height: rowHeight, width: `${width * 100}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** UI chrome spacing: Compact / Comfortable / Spacious. */
+function InterfaceDensityControl() {
+  const [density, setDensity] = useState<InterfaceDensity>(() => readInterfaceDensity());
+  const labelId = useId();
+  const choose = useCallback((next: InterfaceDensity) => {
+    setDensity(next);
+    writeInterfaceDensity(next);
+  }, []);
+
+  return (
+    <ThemeSubsection
+      labelId={labelId}
+      title="Interface density"
+      helper="Adjust spacing in navigation, controls, and workspace chrome. Text size is unchanged."
+      action={
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          disabled={density === DEFAULT_INTERFACE_DENSITY}
+          onClick={() => choose(DEFAULT_INTERFACE_DENSITY)}
+          data-testid="density-reset"
+        >
+          Reset
+        </Button>
+      }
+    >
+      <CardRadioGroup<InterfaceDensity>
+        labelledBy={labelId}
+        value={density}
+        onSelect={choose}
+        className="grid grid-cols-1 gap-3 sm:grid-cols-3"
+        cardClassName="gap-2 p-2"
+        items={densityCards.map((card) => ({
+          value: card.value,
+          testId: `density-${card.value}`,
+          body: (
+            <>
+              <DensityPreview density={card.value} />
+              <span className="text-center text-sm font-medium">{card.label}</span>
+            </>
+          ),
+        }))}
+      />
+    </ThemeSubsection>
   );
 }
 
@@ -800,7 +886,7 @@ function AppearanceSection() {
 
   return (
     <Section title="Appearance" description="Choose how Omnigent looks on this device.">
-      <div className="flex flex-col gap-8">
+      <div className="density-settings-list flex flex-col">
         {isEmbedded ? (
           <div className="flex flex-col gap-3">
             <span className="text-sm font-medium">Theme</span>
@@ -815,6 +901,8 @@ function AppearanceSection() {
         <TerminalThemeControl />
 
         {!isEmbedded && <ColorThemeControl />}
+
+        <InterfaceDensityControl />
 
         <WorkspacePanelDefaultControl />
 

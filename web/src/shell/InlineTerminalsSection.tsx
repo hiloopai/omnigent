@@ -46,7 +46,7 @@ export function InlineTerminalsSection({ conversationId, onExpand }: InlineTermi
           <button
             key={terminalTabKey(t)}
             type="button"
-            className="flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-accent/60"
+            className="density-workspace-row flex w-full items-center gap-2 px-2 text-left hover:bg-accent/60"
             onClick={() => onExpand(terminalTabKey(t))}
           >
             <TerminalIcon className="size-3.5 shrink-0 text-muted-foreground" />

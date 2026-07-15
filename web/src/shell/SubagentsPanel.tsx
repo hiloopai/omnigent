@@ -172,7 +172,7 @@ function ViewModeToggle({
   onViewModeChange: (mode: ViewMode) => void;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-end gap-0.5 border-b px-2 py-1">
+    <div className="density-workspace-toolbar flex shrink-0 items-center justify-end gap-0.5 border-b">
       <Button
         variant={viewMode === "list" ? "secondary" : "ghost"}
         size="icon-xs"

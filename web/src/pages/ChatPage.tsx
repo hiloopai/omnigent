@@ -4570,7 +4570,7 @@ export function Composer({
     <form
       onSubmit={handleSubmit}
       className={cn(
-        "chat-composer-form px-4 md:px-6",
+        "chat-composer-form density-composer-shell",
         isTerminalFirst ? "terminal-first-composer-form pb-1.5" : "pb-3",
       )}
     >
@@ -4697,7 +4697,7 @@ export function Composer({
               ref={backdropRef}
               aria-hidden
               data-testid="composer-highlight-overlay"
-              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words px-4 pt-3 pb-2 text-sm text-foreground"
+              className="density-composer-input pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-sm text-foreground"
             >
               {(() => {
                 const split = splitSlashCommand(value);
@@ -4779,7 +4779,7 @@ export function Composer({
             disabled={disabled || isReadOnly || unreachable || hasPendingElicitation}
             data-slash-command={composerIsCommand ? "true" : undefined}
             className={cn(
-              "relative w-full resize-none bg-transparent px-4 pt-3 pb-2 text-sm outline-none placeholder:text-muted-foreground disabled:opacity-60",
+              "density-composer-input relative w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground disabled:opacity-60",
               // Hand glyph painting to the overlay while a command is drafted;
               // the caret stays visible via caret-foreground.
               composerIsCommand && "text-transparent caret-foreground",
@@ -4859,14 +4859,13 @@ export function Composer({
             {commandError}
           </div>
         )}
-        <div className="flex items-center justify-between gap-2 px-2 pb-2">
+        <div className="density-composer-actions flex items-center justify-between gap-2">
           {/* Attach + mic — left side of the action row */}
           <div className="flex shrink-0 items-center gap-0.5">
             <Button
               type="button"
               size="icon"
               variant="ghost"
-              className="size-9 md:size-8"
               disabled={disabled || isReadOnly || hasPendingElicitation}
               onClick={() => fileInputRef.current?.click()}
               title="Attach files"
@@ -4909,7 +4908,7 @@ export function Composer({
                     size="sm"
                     variant={codexPlanMode ? "secondary" : "ghost"}
                     className={cn(
-                      "h-9 gap-1.5 px-2 text-xs md:h-8",
+                      "h-[var(--density-button-height)] gap-[var(--density-control-gap)] px-[var(--density-button-padding-x)] text-xs",
                       codexPlanMode && "border border-ring/30 text-foreground",
                     )}
                     disabled={isReadOnly || planModeBusy}
@@ -4960,7 +4959,7 @@ export function Composer({
               // overrides the base 50% disabled-opacity so the affordance
               // reads as "waiting for input", not "almost active".
               className={cn(
-                "size-9 shrink-0 rounded-full md:size-8",
+                "size-[var(--density-button-icon)] shrink-0 rounded-full",
                 !showInterruptButton && "hover:bg-primary/90 disabled:opacity-30",
               )}
               // Interrupt stays live during a pending elicitation —

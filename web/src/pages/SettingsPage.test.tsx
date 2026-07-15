@@ -196,6 +196,7 @@ afterEach(() => {
   // The palette picker sets data-theme on <html>; clear it so a palette
   // selected in one test doesn't leak into the next.
   document.documentElement.removeAttribute("data-theme");
+  document.documentElement.removeAttribute("data-density");
   document.documentElement.removeAttribute("data-custom-translucent-sidebar");
   for (const property of Array.from(document.documentElement.style)) {
     if (property.startsWith("--custom-")) document.documentElement.style.removeProperty(property);
@@ -212,6 +213,29 @@ describe("SettingsPage", () => {
     expect(mocks.setTheme).toHaveBeenCalledWith("dark");
   });
 
+  it("applies and persists all interface density choices and resets to Comfortable", () => {
+    renderPage("/settings/appearance");
+
+    expect(screen.getByRole("radiogroup", { name: "Interface density" })).toBeInTheDocument();
+    expect(screen.getByTestId("density-comfortable")).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("density-reset")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("density-compact"));
+    expect(document.documentElement).toHaveAttribute("data-density", "compact");
+    expect(localStorage.getItem("omnigent:interface-density")).toBe("compact");
+    expect(screen.getByTestId("density-compact")).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByTestId("density-spacious"));
+    expect(document.documentElement).toHaveAttribute("data-density", "spacious");
+    expect(localStorage.getItem("omnigent:interface-density")).toBe("spacious");
+    expect(screen.getByTestId("density-spacious")).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(screen.getByTestId("density-reset"));
+    expect(document.documentElement).toHaveAttribute("data-density", "comfortable");
+    expect(localStorage.getItem("omnigent:interface-density")).toBeNull();
+    expect(screen.getByTestId("density-comfortable")).toHaveAttribute("aria-checked", "true");
+  });
+
   it("renders the Terminal theme radiogroup with auto selected by default", () => {
     renderPage("/settings/appearance");
     expect(screen.getByRole("radiogroup", { name: "Terminal theme" })).toBeInTheDocument();
@@ -221,11 +245,13 @@ describe("SettingsPage", () => {
     expect(localStorage.getItem("omnigent:terminal-theme")).toBeNull();
   });
 
-  it("renders Terminal theme before Color theme", () => {
+  it("renders Interface density below the theme controls", () => {
     renderPage("/settings/appearance");
     const terminal = screen.getByText("Terminal theme");
     const color = screen.getByText("Color theme");
+    const density = screen.getByText("Interface density");
     expect(terminal.compareDocumentPosition(color) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(color.compareDocumentPosition(density) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("persists dark and light terminal theme choices on card click", () => {

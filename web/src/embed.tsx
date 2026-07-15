@@ -35,6 +35,7 @@ import { resolveServerInfo, type ServerInfo } from "./lib/capabilities";
 import { EmbeddedProvider } from "./lib/embedded";
 import { type OmnigentHostConfig, setEmbedRoot, setOmnigentHostConfig } from "./lib/host";
 import { resolveIdentity } from "./lib/identity";
+import { applyInterfaceDensity, readInterfaceDensity } from "./lib/interfaceDensity";
 import {
   type RoutingApi,
   RoutingProvider,
@@ -173,6 +174,7 @@ function OmnigentProviders({
   // `.dark` token overrides too.
   const scopeRef = useCallback((el: HTMLDivElement | null) => {
     setEmbedRoot(el);
+    if (el) applyInterfaceDensity(readInterfaceDensity());
   }, []);
 
   return (

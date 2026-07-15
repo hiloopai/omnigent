@@ -302,7 +302,7 @@ export function WorkspacePanel({
             overflow-x-auto) and the file region just overflows into it.
           overflow-y stays hidden so overflow-x:auto can't spawn a vertical
           scrollbar that eats horizontal space. */}
-      <div className="shrink-0 flex items-center overflow-x-auto overflow-y-hidden border-b border-border px-2 py-1.5 [scrollbar-width:thin] @min-[500px]/rail:overflow-x-hidden [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
+      <div className="density-workspace-toolbar shrink-0 flex items-center overflow-x-auto overflow-y-hidden border-b border-border [scrollbar-width:thin] @min-[500px]/rail:overflow-x-hidden [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border [&::-webkit-scrollbar-track]:bg-transparent">
         <Tabs
           // Static group — never compresses (shrink-0) so it stays anchored on
           // the left in the ≥500px case and contributes its full width to the

@@ -356,7 +356,7 @@ export function FilesPanel({
       )}
     >
       {/* Header — single row: [title · workingDir] [eye] [close?] */}
-      <div className="flex shrink-0 items-center gap-2 px-3 py-2">
+      <div className="density-workspace-toolbar flex shrink-0 items-center gap-2">
         <span className="shrink-0 font-medium text-sm">Working folder</span>
         {workingDir && <WorkingDirLabel dir={workingDir} />}
         <div className="ml-auto flex items-center gap-1">
@@ -386,7 +386,7 @@ export function FilesPanel({
               scroll container so negative margins aren't clipped. */}
       {flatView && (
         <div
-          className="shrink-0 flex items-center gap-2 px-2 py-1.5 @max-[400px]/filespanel:flex-col @max-[400px]/filespanel:items-stretch"
+          className="density-workspace-toolbar shrink-0 flex items-center gap-2 @max-[400px]/filespanel:flex-col @max-[400px]/filespanel:items-stretch"
           onClick={(e) => e.stopPropagation()}
         >
           <FileScopeSwitch flatView={flatView} onChange={onFlatViewChange} count={changedCount} />
@@ -408,7 +408,7 @@ export function FilesPanel({
       )}
       {!flatView && (
         <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-          <div className="flex items-center gap-2 px-2 py-1.5 @max-[400px]/filespanel:flex-col @max-[400px]/filespanel:items-stretch">
+          <div className="density-workspace-toolbar flex items-center gap-2 @max-[400px]/filespanel:flex-col @max-[400px]/filespanel:items-stretch">
             <FileScopeSwitch flatView={flatView} onChange={onFlatViewChange} count={changedCount} />
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <div className="flex min-w-0 flex-1 items-center gap-[6px] rounded-full border border-border px-[10px] py-[4px] transition-colors focus-within:border-border-strong">

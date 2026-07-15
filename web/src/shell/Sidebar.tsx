@@ -1751,7 +1751,7 @@ function SectionHeader({
         type="button"
         aria-expanded={!collapsed}
         onClick={onToggleCollapsed}
-        className="group flex w-full items-center gap-1 rounded-md px-2 py-1 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
+        className="density-sidebar-row group flex w-full items-center gap-1 rounded-md px-2 text-left text-sm text-muted-foreground transition-colors hover:text-foreground"
       >
         {icon ? (
           // Headers with a leading icon (project folders) swap the folder for a
@@ -2678,7 +2678,7 @@ function ConversationRow({
     <Link
       to={selectionMode ? "#" : `/c/${conversation.id}`}
       className={cn(
-        "relative flex w-full flex-col gap-0.5 rounded-md px-2 py-2 text-left text-sm hover:bg-muted",
+        "density-sidebar-row relative flex w-full flex-col gap-0.5 rounded-md px-2 text-left text-sm hover:bg-muted",
         !selectionMode && (sessionState?.kind === "awaiting" ? "pr-48 md:pr-29" : "pr-28 md:pr-16"),
         selectionMode && "pr-10",
         isActive && "bg-muted",
@@ -3101,7 +3101,7 @@ function DeletingRow({
   if (isError) {
     return (
       <div
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-sm"
+        className="density-sidebar-row flex w-full items-center gap-1.5 rounded-md px-2 text-sm"
         data-testid="conversation-delete-failed"
         role="alert"
       >
@@ -3131,7 +3131,7 @@ function DeletingRow({
   }
   return (
     <div
-      className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-sm text-muted-foreground opacity-70"
+      className="density-sidebar-row flex w-full items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground opacity-70"
       data-testid="conversation-deleting"
       aria-live="polite"
     >
@@ -3154,7 +3154,7 @@ function DeletingRow({
 function ArchivingRow({ label }: { label: string }) {
   return (
     <div
-      className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-sm text-muted-foreground opacity-70"
+      className="density-sidebar-row flex w-full items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground opacity-70"
       data-testid="conversation-archiving"
       aria-live="polite"
     >

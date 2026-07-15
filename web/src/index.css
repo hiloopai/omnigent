@@ -109,6 +109,37 @@
    * the whole rem-based UI scales. Overridden at runtime on documentElement. */
   --ui-font-scale: 1;
 
+  /* Interface density changes chrome geometry only. Comfortable mirrors the
+   * pre-setting metrics; semantic consumers below keep spacing coordinated. */
+  --density-button-height: 2rem;
+  --density-button-height-xs: 1.5rem;
+  --density-button-height-sm: 1.75rem;
+  --density-button-height-lg: 2.25rem;
+  --density-button-icon: 2rem;
+  --density-button-icon-xs: 1.5rem;
+  --density-button-icon-sm: 1.75rem;
+  --density-button-icon-lg: 2.25rem;
+  --density-button-padding-x: 0.625rem;
+  --density-button-padding-x-xs: 0.5rem;
+  --density-button-padding-x-sm: 0.625rem;
+  --density-button-padding-x-lg: 0.625rem;
+  --density-control-gap: 0.375rem;
+  --density-control-gap-sm: 0.25rem;
+  --density-sidebar-row-padding-y: 0.5rem;
+  --density-toolbar-padding-x: 0.5rem;
+  --density-toolbar-padding-y: 0.75rem;
+  --density-toolbar-gap: 0.25rem;
+  --density-composer-padding-x: 1rem;
+  --density-composer-outer-x: 1.5rem;
+  --density-composer-padding-top: 0.75rem;
+  --density-composer-padding-bottom: 0.5rem;
+  --density-composer-actions-padding: 0.5rem;
+  --density-settings-gap: 2rem;
+  --density-settings-row-gap: 0.75rem;
+  --density-workspace-padding-x: 0.5rem;
+  --density-workspace-padding-y: 0.375rem;
+  --density-workspace-row-padding-y: 0.375rem;
+
   /* User-controlled UI font family (see Appearance settings /
    * lib/uiFontPreferences.ts). Deliberately left unset here so the `html` rule's
    * `var(--ui-font-family, var(--font-sans))` falls back to the system stack;
@@ -243,6 +274,71 @@
   --sidebar-accent-foreground: #04355d;
   --sidebar-border: #e8ecf0;
   --sidebar-ring: #2272b4;
+}
+
+:root[data-density="spacious"] {
+  --density-button-height: 2.25rem;
+  --density-button-height-xs: 1.75rem;
+  --density-button-height-sm: 2rem;
+  --density-button-height-lg: 2.5rem;
+  --density-button-icon: 2.25rem;
+  --density-button-icon-xs: 1.75rem;
+  --density-button-icon-sm: 2rem;
+  --density-button-icon-lg: 2.5rem;
+  --density-button-padding-x: 0.875rem;
+  --density-button-padding-x-xs: 0.625rem;
+  --density-button-padding-x-sm: 0.75rem;
+  --density-button-padding-x-lg: 0.875rem;
+  --density-control-gap: 0.5rem;
+  --density-control-gap-sm: 0.375rem;
+  --density-sidebar-row-padding-y: 0.75rem;
+  --density-toolbar-padding-x: 0.75rem;
+  --density-toolbar-padding-y: 0.625rem;
+  --density-toolbar-gap: 0.375rem;
+  --density-composer-padding-x: 1.25rem;
+  --density-composer-outer-x: 2rem;
+  --density-composer-padding-top: 1rem;
+  --density-composer-padding-bottom: 0.75rem;
+  --density-composer-actions-padding: 0.75rem;
+  --density-settings-gap: 2.5rem;
+  --density-settings-row-gap: 1rem;
+  --density-workspace-padding-x: 0.75rem;
+  --density-workspace-padding-y: 0.5rem;
+  --density-workspace-row-padding-y: 0.5rem;
+}
+
+/* Compact is desktop-only so phone-sized controls keep their current targets. */
+@media (width >= 48rem) {
+  :root[data-density="compact"] {
+    --density-button-height: 1.75rem;
+    --density-button-height-xs: 1.375rem;
+    --density-button-height-sm: 1.5rem;
+    --density-button-height-lg: 2rem;
+    --density-button-icon: 1.75rem;
+    --density-button-icon-xs: 1.375rem;
+    --density-button-icon-sm: 1.5rem;
+    --density-button-icon-lg: 2rem;
+    --density-button-padding-x: 0.5rem;
+    --density-button-padding-x-xs: 0.375rem;
+    --density-button-padding-x-sm: 0.5rem;
+    --density-button-padding-x-lg: 0.5rem;
+    --density-control-gap: 0.25rem;
+    --density-control-gap-sm: 0.1875rem;
+    --density-sidebar-row-padding-y: 0.25rem;
+    --density-toolbar-padding-x: 0.375rem;
+    --density-toolbar-padding-y: 0.5rem;
+    --density-toolbar-gap: 0.1875rem;
+    --density-composer-padding-x: 0.75rem;
+    --density-composer-outer-x: 1rem;
+    --density-composer-padding-top: 0.5rem;
+    --density-composer-padding-bottom: 0.375rem;
+    --density-composer-actions-padding: 0.375rem;
+    --density-settings-gap: 1.5rem;
+    --density-settings-row-gap: 0.5rem;
+    --density-workspace-padding-x: 0.375rem;
+    --density-workspace-padding-y: 0.25rem;
+    --density-workspace-row-padding-y: 0.25rem;
+  }
 }
 
 .dark {
@@ -795,6 +891,45 @@
   html {
     font-size: calc(1.125em * var(--ui-font-scale));
   }
+  :root {
+    --density-button-icon: 2.5rem;
+    --density-composer-outer-x: 1rem;
+  }
+}
+
+/* Semantic density consumers. These are intentionally limited to chrome;
+ * message prose, Monaco, xterm, and rendered file content never opt in. */
+.density-sidebar-row {
+  padding-block: var(--density-sidebar-row-padding-y);
+}
+.density-toolbar {
+  padding-inline: var(--density-toolbar-padding-x);
+  padding-block: var(--density-toolbar-padding-y);
+  gap: var(--density-toolbar-gap);
+}
+.density-composer-input {
+  padding-inline: var(--density-composer-padding-x);
+  padding-top: var(--density-composer-padding-top);
+  padding-bottom: var(--density-composer-padding-bottom);
+}
+.density-composer-shell {
+  padding-inline: var(--density-composer-outer-x);
+}
+.density-composer-actions {
+  padding: var(--density-composer-actions-padding);
+}
+.density-settings-list {
+  gap: var(--density-settings-gap);
+}
+.density-settings-row {
+  gap: var(--density-settings-row-gap);
+}
+.density-workspace-toolbar {
+  padding-inline: var(--density-workspace-padding-x);
+  padding-block: var(--density-workspace-padding-y);
+}
+.density-workspace-row {
+  padding-block: var(--density-workspace-row-padding-y);
 }
 
 /* Geist Mono renders wider than Geist Sans at the same point size, making
