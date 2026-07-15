@@ -245,7 +245,7 @@ def _databricks_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
         additional_providers=(
             {
                 _PI_OPENAI_PROVIDER_ID: _databricks_openai_provider(
-                    api_key, f"{host}/serving-endpoints", openai_models
+                    api_key, f"{host}/ai-gateway/codex/v1", openai_models
                 )
             }
             if openai_models
@@ -256,19 +256,25 @@ def _databricks_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
 
 def _databricks_openai_provider(
     api_key: str,
-    serving_endpoints_url: str,
+    gateway_codex_url: str,
     models: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build a Pi OpenAI Completions provider config for the Databricks gateway.
+    """Build a Pi OpenAI Responses provider config for the Databricks AI Gateway.
 
-    GPT models on the Databricks workspace are served via the OpenAI
-    Completions API at ``/serving-endpoints``. The ``compat`` block disables
-    OpenAI-specific features the Databricks endpoint doesn't support.
+    GPT/non-Claude models use the Databricks AI Gateway's OpenAI Responses API
+    (``/ai-gateway/codex/v1``). The Responses API supports function tools;
+    the raw serving-endpoints ``/chat/completions`` path rejects tool calls with
+    a 400 for models like ``databricks-gpt-5-5``. Pi's ``openai-responses``
+    api type posts to ``{baseUrl}/responses``.
+
+    ``authHeader`` sends ``Authorization: Bearer {token}`` (Databricks requires
+    this; without it the OpenAI SDK uses ``api-key`` which is rejected).
     """
     return {
-        "baseUrl": serving_endpoints_url,
+        "baseUrl": gateway_codex_url,
         "apiKey": api_key,
-        "api": "openai-completions",
+        "api": "openai-responses",
+        "authHeader": True,
         "compat": {
             "supportsDeveloperRole": False,
             "supportsStore": False,
@@ -598,13 +604,26 @@ def _cli_config_pi_provider(entry: ProviderEntry, *, model: str | None) -> PiPro
             _LOGGER.info(
                 "pi-native: auth command produced no token; Pi will show only the selected model"
             )
+    # Derive the AI Gateway codex URL for the openai-responses provider. For
+    # workspace-hosted URLs the transport base is already the codex path;
+    # for dedicated-subdomain URLs we build it from the workspace URL.
+    if _DATABRICKS_AI_GATEWAY_LABEL in gateway_labels:
+        # Dedicated subdomain: transport.base_url is the codex gateway URL.
+        # Strip trailing path suffixes to get the codex base, not /anthropic.
+        codex_gateway_url = transport.base_url.rstrip("/")
+        if codex_gateway_url.endswith(_DATABRICKS_GATEWAY_CODEX_SUFFIX):
+            codex_gateway_url = codex_gateway_url[: -len(_DATABRICKS_GATEWAY_CODEX_SUFFIX)]
+        codex_gateway_url = f"{codex_gateway_url}{_DATABRICKS_GATEWAY_CODEX_SUFFIX}"
+    else:
+        # Workspace-hosted gateway: build from workspace hostname.
+        codex_gateway_url = f"https://{parsed_gateway.hostname}/ai-gateway/codex/v1"
     additional: dict[str, Any] = (
         {
             _PI_OPENAI_PROVIDER_ID: _databricks_openai_provider(
-                api_key, f"{real_workspace_url}/serving-endpoints", openai_models
+                api_key, codex_gateway_url, openai_models
             )
         }
-        if real_workspace_url and openai_models
+        if openai_models
         else {}
     )
     return PiProviderConfig(
