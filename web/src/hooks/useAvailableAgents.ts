@@ -136,11 +136,11 @@ async function fetchBuiltinAgents(): Promise<AvailableAgent[]> {
     description: a.description ?? null,
     harness: a.harness ?? null,
     skills: a.skills ?? [],
-    // Raw passthrough (not coerced): an absent value stays undefined so
-    // older servers degrade to "protected" and existing strict-equality
-    // tests (which ignore undefined props) are unaffected.
-    builtin: a.builtin,
-    created_at: a.created_at,
+    // Omit rather than set to undefined so toEqual comparisons aren't
+    // sensitive to absent-vs-undefined. Logic that reads builtin treats
+    // undefined as "protected" (same as true), so omission is safe.
+    ...(a.builtin !== undefined ? { builtin: a.builtin } : {}),
+    ...(a.created_at !== undefined ? { created_at: a.created_at } : {}),
   }));
 }
 
@@ -235,7 +235,7 @@ export async function prefetchAvailableAgentDetails(
     const json = (await res.json()) as AgentObjectWire;
     queryClient.setQueryData<AvailableAgent[]>(["available-agents"], (prev) => {
       if (!prev) return prev;
-      return prev.map((a) =>
+      const enriched = prev.map((a) =>
         a.id !== agent.id
           ? a
           : {
@@ -246,6 +246,21 @@ export async function prefetchAvailableAgentDetails(
               skills: json.skills ?? [],
             },
       );
+      // If enrichment reveals this agent is a native coding agent (e.g. a
+      // kiro-native session with a non-canonical name), remove it when a
+      // seeded built-in with the same native key already exists so it doesn't
+      // surface as a duplicate picker row.
+      const enrichedAgent = enriched.find((a) => a.id === agent.id);
+      const enrichedKey = enrichedAgent
+        ? nativeCodingAgentForAvailableAgent(enrichedAgent)?.key
+        : undefined;
+      if (enrichedKey) {
+        const builtinExists = enriched.some(
+          (a) => a.id !== agent.id && nativeCodingAgentForAvailableAgent(a)?.key === enrichedKey,
+        );
+        if (builtinExists) return enriched.filter((a) => a.id !== agent.id);
+      }
+      return enriched;
     });
   } catch {
     // Best-effort — agent stays name-only on failure.
