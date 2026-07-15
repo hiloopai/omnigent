@@ -599,8 +599,8 @@ export function ChatPage() {
     isLoading: agentsLoading,
     error: agentsError,
     refetch: refetchAgents,
-  } = useAgents();
-  const { data: conversationsData } = useConversations();
+  } = useAgents({ enabled: !!urlConvId });
+  const { data: conversationsData } = useConversations("", true);
   const conversations = useMemo(
     () => conversationsData?.pages.flatMap((p) => p.data),
     [conversationsData],
