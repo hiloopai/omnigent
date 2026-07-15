@@ -43,9 +43,9 @@ never double-publishes. Use the secure repo for real releases.
   (e.g. `0.6.0.dev0`) — never a clean released number. This matches
   MLflow / Delta / Unity Catalog and keeps every `main` build PEP 440-ordered as
   "ahead of the last release, not yet the next one".
-- Releases are cut on **per-minor release branches** (`branch-X.Y`) and tagged
+- Releases are cut on **per-minor release branches** (`release/vX.Y.0`) and tagged
   there (`vX.Y.Z`, rc tags `vX.Y.ZrcN`); patches (`vX.Y.1`, `vX.Y.2`, …) are
-  cherry-picked onto the same `branch-X.Y`. `main` is never tagged.
+  cherry-picked onto the same `release/vX.Y.0`. `main` is never tagged.
 - Every release ships as an **rc first** (`0.6.0rc1` → … → `0.6.0`). rcs go to
   **real PyPI** as PEP 440 pre-releases — a default `pip install omnigent`
   never resolves them, and testers install with exact pins. TestPyPI is no
@@ -78,7 +78,7 @@ live site. At finalize time, the whole batch goes live at once (step 4 below).
 ```bash
 gh workflow run release.yml --repo omnigent-ai/omnigent \
   -f version=0.6.0rc1 -f dry_run=false
-# optional: -f ref=<sha> to cut branch-0.6 from a specific commit (rc1 only);
+# optional: -f ref=<sha> to cut release/v0.6.0 from a specific commit (rc1 only);
 # dry_run defaults to true — run once without -f dry_run to preview the plan.
 ```
 
@@ -87,7 +87,7 @@ What it does (all idempotent):
 - asserts green CI on the base commit (escape hatch: `-f skip_ci_check=true`,
   use deliberately — needed for a flaky check, or when the base commit ran no
   checks at all, e.g. a cherry-pick that only touched `paths-ignore`d files);
-- creates `branch-0.6` from `ref` (rc1) or reuses the existing branch head
+- creates `release/v0.6.0` from `ref` (rc1) or reuses the existing branch head
   (rc2+, final, patches — `ref` is ignored then);
 - stamps the lockstep version via `scripts/update_versions.py` and regenerates
   `uv.lock` with a clean public-PyPI resolution — **never hand-edit `uv.lock`
@@ -126,13 +126,13 @@ python -m venv /tmp/omni-rc && /tmp/omni-rc/bin/pip install \
 ```
 
 The rc's GitHub draft stays **unpublished** — rc drafts are never published.
-Need another candidate? Repeat with `0.6.0rc2` (fixes land on `branch-0.6`
-first, via cherry-pick PRs or direct pushes; CI runs on `branch-*` pushes).
+Need another candidate? Repeat with `0.6.0rc2` (fixes land on `release/v0.6.0`
+first, via cherry-pick PRs or direct pushes; CI runs on `release/v*` pushes).
 
 ### Final phase (example: `0.6.0`)
 
 1. **Cut + tag**: `gh workflow run release.yml -f version=0.6.0 -f dry_run=false`
-   — same as above; builds from the `branch-0.6` head.
+   — same as above; builds from the `release/v0.6.0` head.
 2. **Publish to PyPI**: same secure-repo dispatches on `ref=v0.6.0`.
 3. **Curate**: merge the `CHANGELOG.md` PR that `draft-release-notes.yml`
    opened, and review/trim the curated notes in the `v0.6.0` draft on the
@@ -157,7 +157,7 @@ first, via cherry-pick PRs or direct pushes; CI runs on `branch-*` pushes).
 
 ### Patch release (example: `0.6.1`)
 
-Cherry-pick the fixes onto `branch-0.6` (CI runs on the push), then run the
+Cherry-pick the fixes onto `release/v0.6.0` (CI runs on the push), then run the
 same flow with `version=0.6.1` — an rc first if the patch warrants one. `main`
 does not change for a patch, and a patch never needs a new branch.
 
@@ -198,62 +198,76 @@ can never be reused. So:
 
 ---
 
-## Rehearsing the pipeline (throwaway release to TestPyPI)
+## Rehearsing the pipeline (throwaway rc release)
 
 To exercise the whole flow end to end without touching users, release a
-deliberately **below-latest** rc (e.g. `0.0.1rc1`) and publish it to
-**TestPyPI**. A below-latest rc is inert everywhere that matters: the GitHub
-draft stays unpublished, Docker publishes only the immutable `:v0.0.1rc1`
-image tag (`:latest` / `:latest-rc` only move for the highest version), the
-notes/site/homebrew workflows ignore rc tags, `bump-main` skips itself (the
-version sorts below main's), and nothing on TestPyPI is ever resolved by a
-default `pip install`.
+deliberately **below-latest** rc on the dead `0.0` line. A below-latest rc is
+inert everywhere that matters: the GitHub draft stays unpublished, Docker
+publishes only the immutable version image tag (`:latest` / `:latest-rc` only
+move for the highest version), the notes/site/homebrew workflows ignore rc
+tags, `bump-main` skips itself (the version sorts below main's), and a
+PEP 440 pre-release is never resolved by a default `pip install` — on real
+PyPI or TestPyPI alike.
+
+**Pick a version that has never touched the destination index.** PyPI
+filenames are burned forever — even for yanked releases — so reusing a number
+fails the upload with "File already exists". (`0.0.1rc1` itself is spent: it
+reserved the PyPI project names in June 2026.) Confirm before starting; a 404
+means the version is free:
+
+```bash
+curl -fsS https://pypi.org/pypi/omnigent/0.0.1rc2/json   # expect 404
+```
+
+The examples below use `0.0.1rc2`; substitute the next free number.
 
 1. **Plan (read-only)** — dry run is the default:
 
    ```bash
-   gh workflow run release.yml --repo omnigent-ai/omnigent -f version=0.0.1rc1
+   gh workflow run release.yml --repo omnigent-ai/omnigent -f version=0.0.1rc2
    ```
 
-2. **Execute**: re-run with `-f dry_run=false`. Expect `branch-0.0` + tag
-   `v0.0.1rc1` pushed, the tag firing the draft-release and image workflows,
+2. **Execute**: re-run with `-f dry_run=false`. Expect `release/v0.0.0` + tag
+   `v0.0.1rc2` pushed, the tag firing the draft-release and image workflows,
    and CI running on the branch push. If the CI gate rejects main's head
    (failing or still-pending checks), that's the gate working — wait, or
    re-dispatch with `-f ref=<green sha>` / `-f skip_ci_check=true`.
    Cancelled (superseded) runs only warn.
 3. **Idempotency**: dispatch the exact same command again — it must no-op
    ("already at the converged release commit").
-4. **Secure-repo publish**, pointed at TestPyPI instead of PyPI:
+4. **Secure-repo publish.** Real PyPI is safe for a below-latest rc and is
+   the only destination that exercises the post-publish `validate` job — so
+   rehearse against `destination=pypi` (it binds the per-package reviewer
+   environments; approve all three). `destination=test-pypi` also works, but
+   skips the prod tag gate and `validate`, and needs TestPyPI Trusted
+   Publishers configured.
 
    ```bash
    gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
-     -f ref=v0.0.1rc1 -f destination=test-pypi -f dry-run=true    # gates only
+     -f ref=v0.0.1rc2 -f destination=pypi -f dry-run=true    # gates only
    gh workflow run omnigent.yml --repo databricks/secure-public-registry-releases-eng \
-     -f ref=v0.0.1rc1 -f destination=test-pypi -f dry-run=false   # real TestPyPI upload
+     -f ref=v0.0.1rc2 -f destination=pypi -f dry-run=false   # publish + validate
    ```
 
-   test-pypi runs skip the tag/version prod gate and the post-publish
-   `validate` job (TestPyPI lacks the dependency closure) and bind the shared
-   `test-pypi` environment. If an upload leg fails with an invalid-publisher
-   error, add the missing TestPyPI Trusted Publisher for that package and
-   re-dispatch — already-uploaded legs are skipped.
 5. **Publish idempotency**: re-dispatch step 4's second command — all three
-   packages must skip as already published.
+   legs must skip as already published (twine `--skip-existing`) and the run
+   stays green.
 6. **Finalize gates (no side effects)**:
-   `gh workflow run finalize-release.yml -f tag=v0.0.1rc1` must fail fast
+   `gh workflow run finalize-release.yml -f tag=v0.0.1rc2` must fail fast
    ("not a final tag"), and `-f tag=v0.5.1` (any already-published release)
    must no-op as already published.
 
-Cleanup — delete everything the rehearsal minted:
+Cleanup — delete everything the rehearsal minted on GitHub:
 
 ```bash
-gh release delete v0.0.1rc1 --repo omnigent-ai/omnigent --cleanup-tag --yes
-gh api -X DELETE repos/omnigent-ai/omnigent/git/refs/heads/branch-0.0
+gh release delete v0.0.1rc2 --repo omnigent-ai/omnigent --cleanup-tag --yes
+gh api -X DELETE 'repos/omnigent-ai/omnigent/git/refs/heads/release/v0.0.0'
 ```
 
-Optionally delete the `v0.0.1rc1` image versions from GHCR. TestPyPI needs no
-cleanup — the version number is burned there only, which is what TestPyPI is
-for.
+Optionally delete the rehearsal image versions from GHCR. The PyPI side needs
+no cleanup: the rc is invisible to default installs and only the version
+number is spent — optionally yank it (*Manage → Releases → Yank*) for
+tidiness.
 
 ---
 
@@ -263,7 +277,7 @@ If the workflows are unavailable, the flow can be driven by hand — but keep tw
 rules even then:
 
 1. **Never hand-edit `uv.lock` and never run `uv lock` behind a proxy.** Use
-   `bump-version.yml` (mode `pre-release`, `base_branch=branch-X.Y`) to
+   `bump-version.yml` (mode `pre-release`, `base_branch=release/vX.Y.0`) to
    produce the bump as a PR with a cleanly regenerated lockfile, and merge it.
 2. **Push tags from an account, not automation you improvised** — the tag push
    must fire `github-release.yml` et al., which a `GITHUB_TOKEN`-authored push
@@ -271,11 +285,11 @@ rules even then:
 
 ```bash
 gh auth switch --user <oss-account>
-git fetch origin && git checkout -b branch-0.6 origin/main   # rc1 only
+git fetch origin && git checkout -b release/v0.6.0 origin/main   # rc1 only
 gh workflow run bump-version.yml -f mode=pre-release -f new_version=0.6.0rc1 \
-  -f base_branch=branch-0.6                                  # then merge the PR
-git fetch origin && git checkout branch-0.6 && git pull
-git tag v0.6.0rc1 && git push origin branch-0.6 v0.6.0rc1    # explicit tag, NOT --tags
+  -f base_branch=release/v0.6.0                                  # then merge the PR
+git fetch origin && git checkout release/v0.6.0 && git pull
+git tag v0.6.0rc1 && git push origin release/v0.6.0 v0.6.0rc1    # explicit tag, NOT --tags
 ```
 
 Then continue from step 2 of the standard flow (secure-repo dispatches). If the
