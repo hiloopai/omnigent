@@ -948,7 +948,14 @@ class SqlAlchemyConversationStore(ConversationStore):
             is_id_unique_violation = conversation_id is not None and (
                 "conversations_pkey" in msg
                 or "agent_configuration_pkey" in msg
-                or ("duplicate entry" in msg and "for key 'primary'" in msg)
+                or (
+                    "duplicate entry" in msg
+                    and (
+                        "for key 'primary'" in msg
+                        or "for key 'conversations.primary'" in msg
+                        or "for key 'agent_configuration.primary'" in msg
+                    )
+                )
                 or (
                     "unique" in msg
                     and (
