@@ -217,7 +217,10 @@ default `pip install`.
 
 2. **Execute**: re-run with `-f dry_run=false`. Expect `branch-0.0` + tag
    `v0.0.1rc1` pushed, the tag firing the draft-release and image workflows,
-   and CI running on the branch push.
+   and CI running on the branch push. If the CI gate rejects main's head
+   (failing or still-pending checks), that's the gate working — wait, or
+   re-dispatch with `-f ref=<green sha>` / `-f skip_ci_check=true`.
+   Cancelled (superseded) runs only warn.
 3. **Idempotency**: dispatch the exact same command again — it must no-op
    ("already at the converged release commit").
 4. **Secure-repo publish**, pointed at TestPyPI instead of PyPI:

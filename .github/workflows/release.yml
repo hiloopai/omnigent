@@ -123,8 +123,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          branch_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" --jq .object.sha 2>/dev/null || true)"
-          if [ -n "$branch_sha" ]; then
+          # `gh api` prints the error body to STDOUT on 404, so capturing with
+          # `|| true` would treat the "Not Found" JSON as an existing ref —
+          # gate on the exit code instead.
+          if branch_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${BRANCH}" --jq .object.sha 2>/dev/null)"; then
             branch_exists=true
             base_sha="$branch_sha"
             # `ref` only applies at branch creation. An explicit non-default ref
@@ -144,8 +146,7 @@ jobs:
           # Tag state: absent -> normal; at the converged release commit ->
           # no-op; anywhere else -> refuse (never silently move a tag).
           already_done=false
-          tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null || true)"
-          if [ -n "$tag_sha" ]; then
+          if tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.sha 2>/dev/null)"; then
             tag_type="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq .object.type)"
             if [ "$tag_type" = "tag" ]; then
               tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_sha}" --jq .object.sha)"
@@ -180,7 +181,10 @@ jobs:
             --paginate --jq '.check_runs[] | [.name, .status, .conclusion // "-"] | @tsv')"
           total="$(printf '%s' "$runs" | grep -c . || true)"
           pending="$(printf '%s' "$runs" | awk -F'\t' '$2 != "completed"' || true)"
-          bad="$(printf '%s' "$runs" | awk -F'\t' '$3 ~ /^(failure|timed_out|cancelled|action_required|startup_failure)$/' || true)"
+          # Cancelled runs are chronically present on main (superseded
+          # benchmark/eval runs) — warn, don't block; real failures still gate.
+          bad="$(printf '%s' "$runs" | awk -F'\t' '$3 ~ /^(failure|timed_out|action_required|startup_failure)$/' || true)"
+          cancelled="$(printf '%s' "$runs" | awk -F'\t' '$3 == "cancelled"' || true)"
           if [ -n "$bad" ]; then
             echo "::error::Failing check runs on ${BASE_SHA}:"; printf '%s\n' "$bad"; exit 1
           fi
@@ -190,6 +194,10 @@ jobs:
           if [ "$total" -eq 0 ]; then
             echo "::error::No check runs found on ${BASE_SHA}. Wait for CI on that commit, or re-dispatch with skip_ci_check=true if you are sure."
             exit 1
+          fi
+          if [ -n "$cancelled" ]; then
+            echo "::warning::Cancelled (superseded) check runs on ${BASE_SHA} — not blocking:"
+            printf '%s\n' "$cancelled"
           fi
           echo "CI green on ${BASE_SHA} (${total} completed check runs, none failing)." \
             | tee -a "$GITHUB_STEP_SUMMARY"
