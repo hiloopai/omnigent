@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { authenticatedFetch } from "@/lib/identity";
 import { agentRootName } from "@/lib/forkHarness";
 import { capitalizeAgentName } from "@/lib/agentLabels";
@@ -39,6 +39,10 @@ export interface AvailableAgent {
   // immutable, so it is the stable signal. Omitted on older servers and on
   // session-derived agents (whose recency comes from the scanned session).
   created_at?: number | null;
+  // Session id used to fetch the full agent spec on hover. Only set on
+  // session-discovered agents (custom uploads); absent on catalog agents
+  // whose full data is already present from GET /v1/agents.
+  sessionId?: string;
 }
 
 const DISPLAY_NAMES: Record<string, string> = {
@@ -195,8 +199,8 @@ interface AgentObjectWire {
 
 /**
  * Build an AvailableAgent from session scan data alone — no extra fetch.
- * description, harness, and skills are null/empty; enrichInBackground fills
- * them in asynchronously so the picker renders immediately.
+ * description, harness, and skills are null/empty and filled in on hover
+ * via prefetchAvailableAgentDetails.
  */
 function sessionAgentFromScan(scanned: ScannedSessionAgent): AvailableAgent {
   return {
@@ -206,6 +210,7 @@ function sessionAgentFromScan(scanned: ScannedSessionAgent): AvailableAgent {
     description: null,
     harness: null,
     skills: [],
+    sessionId: scanned.sessionId,
     // builtin/created_at intentionally omitted: session-derived agents never
     // seed the catalog, and their recency comes from the scanned session's
     // createdAt (used directly in the dedup), not from this object.
@@ -213,60 +218,38 @@ function sessionAgentFromScan(scanned: ScannedSessionAgent): AvailableAgent {
 }
 
 /**
- * Fetch description, harness, and skills for each session-discovered agent
- * in the background and patch the ["available-agents"] cache when done.
- * The picker has already rendered with name-only data; this update fills in
- * harness-dependent UI (model picker, routing, unconfigured-host warnings)
- * without blocking the initial render.
+ * Fetch harness, description, and skills for a session-discovered agent and
+ * patch them into the ["available-agents"] cache. Call on hover so the data
+ * is ready before the user clicks — zero cost for agents they never hover.
  */
-async function enrichInBackground(
-  candidates: ScannedSessionAgent[],
+export async function prefetchAvailableAgentDetails(
+  agent: AvailableAgent,
   queryClient: QueryClient,
 ): Promise<void> {
-  if (candidates.length === 0) return;
-  const results = await Promise.allSettled(
-    candidates.map(async (scanned) => {
-      const res = await authenticatedFetch(
-        `/v1/sessions/${encodeURIComponent(scanned.sessionId)}/agent`,
+  if (!agent.sessionId || agent.harness !== null || agent.description !== null) return;
+  try {
+    const res = await authenticatedFetch(
+      `/v1/sessions/${encodeURIComponent(agent.sessionId)}/agent`,
+    );
+    if (!res.ok) return;
+    const json = (await res.json()) as AgentObjectWire;
+    queryClient.setQueryData<AvailableAgent[]>(["available-agents"], (prev) => {
+      if (!prev) return prev;
+      return prev.map((a) =>
+        a.id !== agent.id
+          ? a
+          : {
+              ...a,
+              display_name: displayNameForAgent(json.name, json.harness),
+              description: json.description ?? null,
+              harness: json.harness ?? null,
+              skills: json.skills ?? [],
+            },
       );
-      if (!res.ok) return null;
-      const json = (await res.json()) as AgentObjectWire;
-      return { agentId: scanned.agentId, json };
-    }),
-  );
-  const enriched = new Map<
-    string,
-    {
-      description: string | null;
-      harness: string | null;
-      skills: { name: string; description: string }[];
-    }
-  >();
-  for (const r of results) {
-    if (r.status === "fulfilled" && r.value) {
-      const { agentId, json } = r.value;
-      enriched.set(agentId, {
-        description: json.description ?? null,
-        harness: json.harness ?? null,
-        skills: json.skills ?? [],
-      });
-    }
-  }
-  if (enriched.size === 0) return;
-  queryClient.setQueryData<AvailableAgent[]>(["available-agents"], (prev) => {
-    if (!prev) return prev;
-    return prev.map((agent) => {
-      const data = enriched.get(agent.id);
-      if (!data) return agent;
-      return {
-        ...agent,
-        display_name: displayNameForAgent(agent.name, data.harness),
-        description: data.description,
-        harness: data.harness,
-        skills: data.skills,
-      };
     });
-  });
+  } catch {
+    // Best-effort — agent stays name-only on failure.
+  }
 }
 
 /**
@@ -302,7 +285,7 @@ async function enrichInBackground(
  * rather than blanking the picker — catalog availability must not be hostage
  * to the discovery extension.
  */
-async function fetchAvailableAgents(queryClient: QueryClient): Promise<AvailableAgent[]> {
+async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
   const [catalog, scanned] = await Promise.all([
     fetchBuiltinAgents(),
     scanSessionAgents().catch(() => [] as ScannedSessionAgent[]),
@@ -362,13 +345,8 @@ async function fetchAvailableAgents(queryClient: QueryClient): Promise<Available
     }
   }
 
-  const scannedCandidates: ScannedSessionAgent[] = [];
   const resolved = Array.from(byName.values())
-    .map((c) => {
-      if (c.template !== null) return c.template;
-      scannedCandidates.push(c.scanned!);
-      return sessionAgentFromScan(c.scanned!);
-    })
+    .map((c) => (c.template !== null ? c.template : sessionAgentFromScan(c.scanned!)))
     .filter((agent) => {
       const nativeKey = nativeCodingAgentForAvailableAgent(agent)?.key;
       return nativeKey !== "kiro" || !hasKiroBuiltin;
@@ -377,12 +355,6 @@ async function fetchAvailableAgents(queryClient: QueryClient): Promise<Available
   // first. NewChatDialog's display-order sort is stable, so unranked names
   // keep this relative order.
   resolved.sort((a, b) => recencyOf(b) - recencyOf(a));
-
-  // Fire enrichment in the background — don't await. The picker renders
-  // immediately with name-only data; harness/description/skills fill in
-  // once the per-session fetches complete.
-  void enrichInBackground(scannedCandidates, queryClient);
-
   return [...seeded, ...resolved];
 }
 
@@ -391,10 +363,9 @@ interface UseAvailableAgentsOptions {
 }
 
 export function useAvailableAgents(options: UseAvailableAgentsOptions = {}) {
-  const queryClient = useQueryClient();
   return useQuery({
     queryKey: ["available-agents"],
-    queryFn: () => fetchAvailableAgents(queryClient),
+    queryFn: fetchAvailableAgents,
     enabled: options.enabled ?? true,
     staleTime: 30_000,
   });

@@ -88,7 +88,11 @@ import {
   onHostStatusChanged,
   type HostIdentity,
 } from "@/lib/nativeBridge";
-import { useAvailableAgents, type AvailableAgent } from "@/hooks/useAvailableAgents";
+import {
+  useAvailableAgents,
+  prefetchAvailableAgentDetails,
+  type AvailableAgent,
+} from "@/hooks/useAvailableAgents";
 import { useAutoGrowTextarea } from "@/hooks/useAutoGrowTextarea";
 import { useRecentWorkspaces } from "@/hooks/useRecentWorkspaces";
 import { useDirectorySessions } from "@/hooks/useDirectorySessions";
@@ -1300,6 +1304,7 @@ function AgentHarnessPicker({
   // Controlled so clicking a knobbed row can commit the pick and close the
   // menu (see the sub-trigger onClick below) without diving into the submenu.
   const [open, setOpen] = useState(false);
+  const queryClient = useQueryClient();
 
   // Touch devices can't hover, so the desktop knob flyout (a Radix sub-menu
   // that opens on hover) is unreachable there. On mobile we instead swap the
@@ -1503,6 +1508,7 @@ function AgentHarnessPicker({
           data-testid={`new-chat-landing-agent-${agent.id}`}
           data-active={active ? "true" : undefined}
           onSelect={() => onSelectAgent(agent)}
+          onMouseEnter={() => void prefetchAvailableAgentDetails(agent, queryClient)}
           className="items-start gap-2 rounded-sm px-2 py-1.5 text-13 data-[active=true]:bg-accent/60 data-[active=true]:text-foreground"
         >
           {renderRowInner(agent, true)}
@@ -1530,6 +1536,7 @@ function AgentHarnessPicker({
             onSelectAgent(agent);
             setMobileKnobsAgentId(agent.id);
           }}
+          onMouseEnter={() => void prefetchAvailableAgentDetails(agent, queryClient)}
           className="items-start gap-2 rounded-sm px-2 py-1.5 text-13 data-[active=true]:bg-accent/60 data-[active=true]:text-foreground"
         >
           {renderRowInner(agent, false)}
@@ -1553,6 +1560,7 @@ function AgentHarnessPicker({
             onSelectAgent(agent);
             setOpen(false);
           }}
+          onMouseEnter={() => void prefetchAvailableAgentDetails(agent, queryClient)}
           className="items-start gap-2 rounded-sm px-2 py-1.5 text-13 data-[active=true]:bg-accent/60 data-[active=true]:text-foreground"
         >
           {renderRowInner(agent, false)}
