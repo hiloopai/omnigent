@@ -236,7 +236,11 @@ async function enrichInBackground(
   );
   const enriched = new Map<
     string,
-    { description: string | null; harness: string | null; skills: { name: string; description: string }[] }
+    {
+      description: string | null;
+      harness: string | null;
+      skills: { name: string; description: string }[];
+    }
   >();
   for (const r of results) {
     if (r.status === "fulfilled" && r.value) {
