@@ -31,22 +31,30 @@ on:
         description: Final release tag to (re)open the tap PR for, e.g. v0.3.0
         required: true
         type: string
-  # Iterate on a branch without merging: on PRs touching the homebrew files,
-  # run the generator against the latest final release on public PyPI (no
-  # cross-repo PR) and upload the formula as an artifact. Mirrors the
-  # CI-test-on-PR pattern in release-omnigent.yml. `pull_request` runs the
-  # workflow definition from the PR head, so the branch's version is what runs.
+  # Iterate on a branch without merging. `pull_request` runs the workflow
+  # definition from the PR head, so the branch's version is what runs. Two
+  # modes:
+  #   - opened/synchronize/reopened (paths-filtered to the homebrew files):
+  #     the `validate` dry-run regenerates the formula against the latest final
+  #     release on public PyPI and uploads it as an artifact — no cross-repo
+  #     PR. Mirrors the CI-test-on-PR pattern in release-omnigent.yml.
+  #   - labeled with `homebrew-test` (NOT paths-filtered): a maintainer opts in
+  #     to opening a REAL PR on omnigent-ai/homebrew-tap so the tap's
+  #     `brew test-bot` builds the bottles. Deliberate, so it doesn't fire on
+  #     every push; remove + re-add the label to retrigger.
   pull_request:
     paths:
       - ".github/workflows/homebrew-tap-pr.yml"
       - ".github/scripts/homebrew/**"
+    types: [opened, synchronize, reopened, labeled]
 
 permissions:
   contents: read
 
-# Serialize per tag so two triggers can't race the same formula PR.
+# Serialize per tag (or per PR for the label-triggered branch test) so two
+# triggers can't race the same formula PR.
 concurrency:
-  group: homebrew-tap-pr-${{ github.event.release.tag_name || inputs.tag }}
+  group: homebrew-tap-pr-${{ github.event.release.tag_name || inputs.tag || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
@@ -64,9 +72,18 @@ jobs:
           EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
           PRERELEASE: ${{ github.event.release.prerelease }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-$EVENT_TAG}"
+          # On a pull_request (e.g. the `homebrew-test` label to test the real
+          # PR-open path) there's no release/input tag — fall back to the latest
+          # final release so generation has a real, installable target.
+          if [ -z "$tag" ]; then
+            tag="$(gh release list --repo "$GITHUB_REPOSITORY" \
+              --exclude-drafts --exclude-pre-releases --limit 1 \
+              --json tagName --jq '.[0].tagName')"
+            fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           is_final=true
@@ -86,9 +103,11 @@ jobs:
   validate:
     name: Generate formula (PR dry-run)
     # Branch iteration loop: run the generator against the latest final release
-    # on public PyPI on every PR touching the homebrew files — no merge needed.
-    # Not gated on the repo so it runs on forks too; it opens no PR anywhere.
-    if: github.event_name == 'pull_request'
+    # on public PyPI on PR code changes (opened/synchronize/reopened) — no
+    # merge needed, no cross-repo PR. Not gated on the repo so it runs on forks
+    # too; it opens no PR anywhere. Skipped on `labeled` (the label runs the
+    # real `pr` job instead).
+    if: github.event_name == 'pull_request' && github.event.action != 'labeled'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -151,8 +170,20 @@ jobs:
     name: Open homebrew-tap formula PR
     needs: resolve
     runs-on: ubuntu-latest
-    # Canonical repo only — forks/mirrors have no PyPI release or the App token.
-    if: needs.resolve.outputs.is_final == 'true' && github.repository == 'omnigent-ai/omnigent'
+    # Runs on a real release (release: published) or a manual dispatch, OR when
+    # a maintainer labels a PR `homebrew-test` to open a REAL tap PR from a
+    # branch (so the tap's brew test-bot builds the bottles). Canonical repo
+    # only — forks/mirrors have no PyPI release or the App token.
+    if: >-
+      needs.resolve.outputs.is_final == 'true' &&
+      github.repository == 'omnigent-ai/omnigent' &&
+      (
+        github.event_name == 'release' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request' &&
+         github.event.action == 'labeled' &&
+         contains(github.event.pull_request.labels.*.name, 'homebrew-test'))
+      )
     env:
       TAG: ${{ needs.resolve.outputs.tag }}
       VERSION: ${{ needs.resolve.outputs.version }}
