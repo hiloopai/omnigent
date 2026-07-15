@@ -1,9 +1,9 @@
 # Cut or advance a release deterministically (designs/RELEASE-AUTOMATION.md):
 #
-#   dispatch with version=0.6.0rc1  ->  create branch-0.6 from `ref`, stamp the
+#   dispatch with version=0.6.0rc1  ->  create release/v0.6.0 from `ref`, stamp the
 #   lockstep version (scripts/update_versions.py + `uv lock`), tag v0.6.0rc1,
 #   push branch + tag. Later dispatches (0.6.0rc2, 0.6.0, 0.6.1) reuse the
-#   existing branch-0.6 head and ignore `ref`.
+#   existing release/v0.6.0 head and ignore `ref`.
 #
 # The branch + tag are pushed with the omnigent-ci App token, NOT GITHUB_TOKEN:
 # GITHUB_TOKEN-pushed tags trigger no workflows by GitHub policy, and the whole
@@ -28,7 +28,7 @@ on:
         required: true
         type: string
       ref:
-        description: "Branch/tag/SHA to cut branch-X.Y from. Only consulted when the branch does not exist yet (rc1); later phases build from the existing branch head."
+        description: "Branch/tag/SHA to cut release/vX.Y.0 from. Only consulted when the branch does not exist yet (rc1); later phases build from the existing branch head."
         required: false
         default: main
         type: string
@@ -48,7 +48,7 @@ permissions:
   contents: read
 
 # Serialize all release runs: two concurrent cuts (even of different versions)
-# could race the same branch-X.Y head.
+# could race the same release/vX.Y.0 head.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -108,7 +108,7 @@ jobs:
           {
             echo "version=${VERSION}"
             echo "tag=v${VERSION}"
-            echo "branch=branch-${major}.${minor}"
+            echo "branch=release/v${major}.${minor}.0"
             echo "prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
 

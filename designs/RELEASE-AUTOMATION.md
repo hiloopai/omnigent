@@ -21,7 +21,7 @@ suggests. Per release step:
 
 | Step | Mechanism today | Deterministic? |
 | --- | --- | --- |
-| Cut `branch-X.Y` from green main/SHA | human CLI | ❌ manual |
+| Cut `release/vX.Y.0` from green main/SHA | human CLI | ❌ manual |
 | Lockstep bump (3 `pyproject.toml` + `omnigent/version.py` + `uv.lock`) | `scripts/update_versions.py` (+ `bump-version.yml` wrapper) | ✅ exists, but human-invoked; RELEASING.md still says "hand-edit `uv.lock`" (CI `uv lock` has no proxy problem) |
 | Tag `vX.Y.Z[rcN]` + push | human CLI | ❌ manual |
 | Bump main to next `.dev0` | human CLI (or `bump-version.yml` post-release) | 🟡 semi |
@@ -75,8 +75,8 @@ click. Rejected.
 
 - `version` — `0.6.0rc1` | `0.6.0` | `0.6.1` (no leading `v`; `.dev` rejected)
 - `ref` — default `main`; branch/tag/SHA to cut from. **Only consulted when
-  `branch-X.Y` does not exist yet** (i.e. at rc1). Later rcs, the final, and
-  patches always build from the existing `branch-X.Y` head; passing a `ref` that
+  `release/vX.Y.0` does not exist yet** (i.e. at rc1). Later rcs, the final, and
+  patches always build from the existing `release/vX.Y.0` head; passing a `ref` that
   disagrees with it fails loudly instead of silently retargeting.
 - `dry_run` — default `true` (repo convention, matches the vscode workflows):
   run the whole plan, print it, push nothing.
@@ -84,14 +84,14 @@ click. Rejected.
 Jobs:
 
 1. **plan** (always): validate version shape (reuse `bump-version.yml`'s PEP 440
-   regex minus `.dev`); derive `branch-X.Y` + `vX.Y.Z[rcN]`; resolve the base SHA
+   regex minus `.dev`); derive `release/vX.Y.0` + `vX.Y.Z[rcN]`; resolve the base SHA
    (existing branch head, else `ref`); assert the tag doesn't exist (or already
    points at the fully-converged state → declare no-op); assert the resolved
    SHA's check suites are green (not just "some run on main succeeded"); for a
    final, warn if no `vX.Y.*rc*` tag exists on the branch. Write the plan to the
    step summary.
 2. **execute** (`dry_run == false`): mint the omnigent-ci App token; create
-   `branch-X.Y` at the base SHA if missing; `update_versions.py pre-release
+   `release/vX.Y.0` at the base SHA if missing; `update_versions.py pre-release
    --new-version $VERSION`; `uv lock` (runner resolves against real PyPI — this
    *retires the hand-edit-uv.lock ritual entirely*); `update_versions.py check`;
    commit `release: vX.Y.Z` (skip when already stamped); tag; push branch + tag
@@ -319,7 +319,7 @@ unattended. Relevant mechanics:
   the just-published artifact + run it). The `validate` job in the secure repo
   puts omnigent ahead of both, not just at parity.
 - **Neither has an rc→final concept** — both rebuild rather than promote.
-  Rebuilding the final from the same `branch-X.Y` (rather than promoting rc
+  Rebuilding the final from the same `release/vX.Y.0` (rather than promoting rc
   artifacts) is also what our model does; PyPI's no-reupload rule makes
   rebuild-and-restamp the pragmatic norm.
 - Both decouple docs publishing from the release pipeline structurally — which
@@ -364,7 +364,7 @@ PR is the approval gate; `publish-jetbrains.yml` fires on the merge, with a
 dispatch fallback for re-runs; rc tags chain `-rc.1 … -rc.15 → stable`.
 
 **Considered variant for omnigent** (from the JetBrains pattern): have
-`release.yml` open a bump *PR* onto `branch-X.Y` instead of pushing directly,
+`release.yml` open a bump *PR* onto `release/vX.Y.0` instead of pushing directly,
 making the merge a second-person cut-approval and running CI on the bump
 commit. Rejected as the default: the bump is deterministic robot output
 (`update_versions.py` + `check`), the cut is fully reversible, the secure
@@ -426,7 +426,7 @@ effects. Worth stealing:
 - **Nobody has versioned docs** — all continuous-deploy latest-only. The
   `X.Y-docs` staging design has no prior art to borrow; it's already built and
   just needs the sweep gate.
-- **Nobody has a backport/patch-branch story** as good as `branch-X.Y` +
+- **Nobody has a backport/patch-branch story** as good as `release/vX.Y.0` +
   cherry-pick; cline maintains one frozen legacy branch, kilocode has nothing.
 - Pre-publish smoke against built artifacts (kilocode) ≈ the secure repo's
   existing smoke-install gate. Parity, not a gap.
@@ -436,7 +436,7 @@ effects. Worth stealing:
 - rc→final promotion is rebuild-from-the-pinned-ref everywhere it exists at
   all (goose canary→stable, kilocode JetBrains) — never artifact relabeling.
   Validates our model: the final independently re-runs build+scan+publish
-  from `branch-X.Y`, which the mandatory dependency scan requires anyway.
+  from `release/vX.Y.0`, which the mandatory dependency scan requires anyway.
 - omnigent's mandatory scan-gates-publish + separate-org publisher is
   **stricter than every peer surveyed** (goose's scan isn't a gate; hermes's
   review gate was self-merged around; opencode/kilocode publish unattended).
