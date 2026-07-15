@@ -573,6 +573,12 @@ class HarnessProcessManager:
         # ``get_client``; uncontested after the first spawn for a
         # given conv_id.
         self._spawn_locks: dict[str, asyncio.Lock] = {}
+        # Per-conversation release generation. ``get_client`` samples this
+        # before waiting on the spawn lock; ``release`` bumps it under that
+        # lock. Waiters queued behind a release see a mismatch and fail
+        # instead of respawning after teardown, while a fresh ``get_client``
+        # started after release samples the new generation and may respawn.
+        self._release_generations: dict[str, int] = {}
         # Top-level lock for ``_entries`` / ``_spawn_locks`` dict
         # mutations themselves (the entries within are guarded by
         # their per-conv locks).
@@ -688,19 +694,31 @@ class HarnessProcessManager:
             :class:`httpx.AsyncClient` bound to the
             per-conversation Unix socket.
         :raises RuntimeError: If ``start()`` was not called first
-            (process manager not initialized) or the spawn fails
-            to produce a usable socket within the readiness
+            (process manager not initialized), the manager is shutting
+            down, a ``release`` invalidated this waiter, or the spawn
+            fails to produce a usable socket within the readiness
             timeout.
         """
         if not self._started:
             raise RuntimeError("HarnessProcessManager.get_client called before start()")
+        # Sample before waiting so a ``release`` that runs while we are
+        # queued (behind the holder or behind that release) invalidates
+        # this call. A later ``get_client`` after release samples the
+        # bumped generation and is allowed to respawn.
+        async with self._registry_lock:
+            start_generation = self._release_generations.get(conversation_id, 0)
         spawn_lock = await self._get_spawn_lock(conversation_id)
         async with spawn_lock:
             # ``release`` / ``shutdown`` take this same lock, so a teardown
             # that started while we were waiting cannot race the spawn below.
             if self._shutting_down:
+                raise RuntimeError("HarnessProcessManager.get_client called during shutdown")
+            async with self._registry_lock:
+                current_generation = self._release_generations.get(conversation_id, 0)
+            if current_generation != start_generation:
                 raise RuntimeError(
-                    "HarnessProcessManager.get_client called during shutdown"
+                    f"harness for conversation {conversation_id!r} was released "
+                    "while get_client waited"
                 )
             entry = self._entries.get(conversation_id)
             if entry is not None and entry.process.returncode is not None:
@@ -765,7 +783,9 @@ class HarnessProcessManager:
                 entry = await self._spawn_entry(conversation_id, harness, env)
                 # Shutdown may have begun while we awaited readiness; discard
                 # rather than registering a process that ``shutdown``'s entry
-                # walk would miss.
+                # walk would miss. Release bumps generation only while holding
+                # this spawn lock, so a concurrent release cannot invalidate
+                # mid-spawn — it runs after we drop the lock.
                 if self._shutting_down:
                     await self._close_entry(entry)
                     raise RuntimeError(
@@ -958,10 +978,14 @@ class HarnessProcessManager:
         Acquires the per-conversation spawn lock before touching
         ``_entries`` so a ``release`` that arrives while ``get_client``
         is still awaiting readiness cannot return early (no entry yet)
-        and then lose to a late registration. Lock order is spawn lock
-        then ``_registry_lock`` — never the reverse while holding both —
-        so this cannot deadlock with ``_get_spawn_lock`` (registry only,
-        briefly, before the spawn lock is acquired).
+        and then lose to a late registration. Bumps the per-conversation
+        release generation under that lock so waiters queued behind this
+        release fail instead of respawning after teardown; a fresh
+        ``get_client`` started after release samples the new generation
+        and may respawn. Lock order is spawn lock then ``_registry_lock``
+        — never the reverse while holding both — so this cannot deadlock
+        with ``_get_spawn_lock`` (registry only, briefly, before the
+        spawn lock is acquired).
 
         :param conversation_id: AP-allocated conversation id.
         """
@@ -981,6 +1005,9 @@ class HarnessProcessManager:
                             conversation_id,
                         )
                         return
+                self._release_generations[conversation_id] = (
+                    self._release_generations.get(conversation_id, 0) + 1
+                )
                 entry = self._entries.pop(conversation_id, None)
                 # NOTE: ``_spawn_locks[conversation_id]`` intentionally
                 # NOT popped — see this method's docstring for the
