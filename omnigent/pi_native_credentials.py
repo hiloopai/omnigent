@@ -336,13 +336,30 @@ def _needs_responses_api(model_id_lower: str) -> bool:
     calls via ``/chat/completions`` with 400; they work via the Responses API at
     the AI Gateway (``/ai-gateway/codex/v1/responses``). Detected by name: these
     models have ``gpt-5.5``, ``gpt-5.6``, or ``gpt-5.3-codex`` in their id.
-    Non-GPT models (Kimi, Llama, GLM, Gemini) and older GPT (5.4, 5.2, …) work
-    fine with ``/chat/completions`` + tools.
+    Non-GPT models (Kimi, Llama, GLM) and older GPT (5.4, 5.2, …) work fine
+    with ``/chat/completions`` + tools.
 
     Expects a pre-lowercased model id (the caller typically has ``name_lower``
     already computed).
     """
     return any(token in model_id_lower for token in ("gpt-5-5", "gpt-5-6", "gpt-5-3-codex"))
+
+
+def _unsupported_in_pi(model_id_lower: str) -> bool:
+    """Return True for models Pi can't handle via openai-completions or responses.
+
+    Gemini 2.5 thinking models return ``content`` as an array
+    (``[{"type":"text","text":"...","thoughtSignature":"..."}]``) in streaming
+    responses when tools are present. Pi's ``openai-completions`` handler
+    expects ``content`` to be a string; receiving an array causes a JavaScript
+    ``[object Object]`` parse error — effectively a silent 400 from Pi's
+    perspective. The Responses API doesn't support Gemini at all.
+    Exclude these models from both providers so the picker can show them but
+    Pi doesn't try to call them with tools.
+
+    Expects a pre-lowercased model id.
+    """
+    return "gemini-2-5" in model_id_lower
 
 
 def _fetch_pi_model_lists(
@@ -426,7 +443,7 @@ def _fetch_pi_model_lists(
             claude.append(entry)
         elif _needs_responses_api(name_lower):
             gpt_responses.append(entry)
-        else:
+        elif not _unsupported_in_pi(name_lower):
             completions.append(entry)
 
     if not claude and not gpt_responses and not completions:
