@@ -454,8 +454,21 @@ effects. Worth stealing:
 
 ## Decisions (2026-07-14)
 
+> **Correction (2026-07-16, after two live failures):** the
+> skip-existing / partial-publish-healing idea below is **withdrawn**. Every
+> skip mechanism must first *read* the index, and the release runners have
+> no egress to pypi.org's JSON API — the curl probe silently never matched,
+> and twine's `--skip-existing` pre-checks that same API client-side and
+> crashed every upload (secure-repo run 29459796204), including brand-new
+> versions. The publish leg is **write-only**: re-uploads hard-fail
+> ("File already exists") and a partial publish is recovered by yank + next
+> version, as it always was. The peer-survey skip-existing citations stand
+> as facts about those projects; they don't transfer to egress-restricted
+> runners.
+
 1. **Secure-repo restructure: approved direction** — gates → env-approval →
-   publish (skip-existing) → validate, one dispatch per phase.
+   publish (skip-existing — *withdrawn, see correction above*) → validate,
+   one dispatch per phase.
 2. **rc GH drafts are never published** — keep today's pattern exactly.
 3. **bump PRs move to the App token** so CI runs on them (empty-commit
    workaround retired).

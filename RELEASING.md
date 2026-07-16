@@ -249,9 +249,13 @@ The examples below use `0.0.1rc2`; substitute the next free number.
      -f ref=v0.0.1rc2 -f destination=pypi -f dry-run=false   # publish + validate
    ```
 
-5. **Publish idempotency**: re-dispatch step 4's second command — all three
-   legs must skip as already published (twine `--skip-existing`) and the run
-   stays green.
+5. **No-double-publish check** (optional): re-dispatching step 4's second
+   command must FAIL every leg with "File already exists" — PyPI
+   immutability doing its job. The publish is deliberately **write-only**:
+   the release runners cannot read the index, so there is no
+   already-published skip (a curl probe and twine's `--skip-existing` both
+   failed live for exactly that reason). A real partial publish is recovered
+   by yank + next version (see "If a publish goes wrong").
 6. **Finalize gates (no side effects)**:
    `gh workflow run finalize-release.yml -f tag=v0.0.1rc2` must fail fast
    ("not a final tag"), and `-f tag=v0.5.1` (any already-published release)
