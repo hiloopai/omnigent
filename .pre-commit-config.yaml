@@ -115,6 +115,13 @@ repos:
         files: ^omnigent/api/routing/v1/routing(\.proto|_pb2\.pyi?)$
         pass_filenames: false
 
+      - id: hiloop-session-pb2-fresh
+        name: Hiloop session protobuf bindings are up to date
+        language: system
+        entry: .venv/bin/python scripts/gen_hiloop_session_pb2.py --check
+        files: ^omnigent/api/hiloop/v1/sandbox_session(\.proto|_pb2(_grpc)?\.py|_pb2\.pyi)$
+        pass_filenames: false
+
   # ── File hygiene ────────────────────────────────────────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.6.0

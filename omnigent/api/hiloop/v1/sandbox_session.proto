@@ -1,0 +1,199 @@
+syntax = "proto3";
+
+package hiloop.api.v1;
+
+// Mirrored from Hiloop's public sandbox_session.proto contract. Keep this file byte-for-byte
+// compatible with that schema; scripts/gen_hiloop_session_pb2.py owns the Python bindings.
+
+enum SandboxSessionKind {
+  SANDBOX_SESSION_KIND_UNSPECIFIED = 0;
+  SANDBOX_SESSION_KIND_TCP = 1;
+  SANDBOX_SESSION_KIND_SSH = 2;
+}
+
+enum SandboxSessionState {
+  SANDBOX_SESSION_STATE_UNSPECIFIED = 0;
+  SANDBOX_SESSION_STATE_ISSUED = 1;
+  SANDBOX_SESSION_STATE_CONNECTED = 2;
+  SANDBOX_SESSION_STATE_CLOSED = 3;
+  SANDBOX_SESSION_STATE_EXPIRED = 4;
+  SANDBOX_SESSION_STATE_REVOKED = 5;
+}
+
+enum SandboxSessionErrorCode {
+  SANDBOX_SESSION_ERROR_CODE_UNSPECIFIED = 0;
+  SANDBOX_SESSION_ERROR_CODE_UNAUTHENTICATED = 1;
+  SANDBOX_SESSION_ERROR_CODE_PERMISSION_DENIED = 2;
+  SANDBOX_SESSION_ERROR_CODE_TICKET_EXPIRED = 3;
+  SANDBOX_SESSION_ERROR_CODE_TICKET_INVALID = 4;
+  SANDBOX_SESSION_ERROR_CODE_INCARNATION_CHANGED = 5;
+  SANDBOX_SESSION_ERROR_CODE_ROUTE_UNAVAILABLE = 6;
+  SANDBOX_SESSION_ERROR_CODE_ROUTE_FENCED = 7;
+  SANDBOX_SESSION_ERROR_CODE_SANDBOX_NOT_RUNNING = 8;
+  SANDBOX_SESSION_ERROR_CODE_UNSUPPORTED_CAPABILITY = 9;
+  SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE = 10;
+  SANDBOX_SESSION_ERROR_CODE_TARGET_TIMEOUT = 11;
+  SANDBOX_SESSION_ERROR_CODE_RESOURCE_EXHAUSTED = 12;
+  SANDBOX_SESSION_ERROR_CODE_IDLE_TIMEOUT = 13;
+  SANDBOX_SESSION_ERROR_CODE_SESSION_EXPIRED = 14;
+  SANDBOX_SESSION_ERROR_CODE_PROTOCOL_ERROR = 15;
+  SANDBOX_SESSION_ERROR_CODE_CARRIER_LOST = 16;
+  SANDBOX_SESSION_ERROR_CODE_INCARNATION_DRAIN = 17;
+  SANDBOX_SESSION_ERROR_CODE_INTERNAL = 18;
+}
+
+message SandboxLoopbackTarget {
+  uint32 port = 1;
+}
+
+message SandboxSshTarget {
+  string unix_user = 1;
+  bytes client_public_key = 2;
+  bool permit_local_forwarding = 3;
+}
+
+message SandboxSessionConnectionLimits {
+  uint32 max_concurrent_connections = 1;
+  uint32 opens_per_second = 2;
+  uint64 max_total_connections = 3;
+  uint64 max_bytes_up_per_connection = 4;
+  uint64 max_bytes_down_per_connection = 5;
+  uint32 idle_timeout_seconds = 6;
+}
+
+message CreateSandboxSessionRequest {
+  string sandbox_id = 1;
+  SandboxSessionKind kind = 2;
+  oneof target {
+    SandboxLoopbackTarget tcp = 3;
+    SandboxSshTarget ssh = 4;
+  }
+  uint32 max_duration_seconds = 5;
+  bytes client_proof_public_key = 6;
+  SandboxSessionConnectionLimits connection_limits = 7;
+}
+
+message SandboxSshSessionMaterial {
+  string logical_hostname = 1;
+  string username = 2;
+  bytes user_certificate = 3;
+  bytes host_ca_public_key = 4;
+}
+
+message SandboxSession {
+  string id = 1;
+  string sandbox_id = 2;
+  SandboxSessionKind kind = 3;
+  SandboxSessionState state = 4;
+  string gateway_authority = 5;
+  bytes connect_ticket = 6;
+  string connect_deadline = 7;
+  string expires_at = 8;
+  SandboxSshSessionMaterial ssh = 9;
+  string created_at = 10;
+  SandboxSessionConnectionLimits connection_limits = 11;
+  uint64 ticket_generation = 12;
+  oneof target {
+    SandboxLoopbackTarget tcp = 13;
+    SandboxSshTarget ssh_target = 14;
+  }
+}
+
+message CreateSandboxSessionResponse {
+  SandboxSession session = 1;
+}
+
+message GetSandboxSessionRequest {
+  string id = 1;
+}
+
+message GetSandboxSessionResponse {
+  SandboxSession session = 1;
+}
+
+message RevokeSandboxSessionRequest {
+  string id = 1;
+}
+
+message RevokeSandboxSessionResponse {
+  SandboxSession session = 1;
+}
+
+message SandboxSessionError {
+  SandboxSessionErrorCode code = 1;
+  string message = 2;
+}
+
+message SandboxSessionClientOpen {
+  bytes signed_ticket = 1;
+  bytes client_proof_public_key = 2;
+  bytes connection_id = 3;
+}
+
+message SandboxSessionClientChallenge {
+  bytes nonce = 1;
+}
+
+message SandboxSessionClientProof {
+  bytes signature = 1;
+}
+
+message SandboxSessionOpenAccepted {
+  uint64 initial_send_credit = 1;
+  uint64 initial_receive_credit = 2;
+}
+
+message SandboxSessionOpenResult {
+  oneof outcome {
+    SandboxSessionOpenAccepted accepted = 1;
+    SandboxSessionError error = 2;
+  }
+}
+
+message SandboxSessionData {
+  uint64 offset = 1;
+  bytes payload = 2;
+}
+
+message SandboxSessionCredit {
+  uint64 consumed_through_offset = 1;
+  uint64 grant_bytes = 2;
+}
+
+message SandboxSessionHalfClose {}
+
+message SandboxSessionReset {
+  SandboxSessionError error = 1;
+}
+
+message OpenRequest {
+  oneof frame {
+    SandboxSessionClientOpen open = 1;
+    SandboxSessionClientProof proof = 2;
+    SandboxSessionData data = 3;
+    SandboxSessionCredit credit = 4;
+    SandboxSessionHalfClose half_close = 5;
+    SandboxSessionReset reset = 6;
+  }
+}
+
+message OpenResponse {
+  oneof frame {
+    SandboxSessionClientChallenge challenge = 1;
+    SandboxSessionOpenResult open_result = 2;
+    SandboxSessionData data = 3;
+    SandboxSessionCredit credit = 4;
+    SandboxSessionHalfClose half_close = 5;
+    SandboxSessionReset reset = 6;
+  }
+}
+
+service SandboxSessionService {
+  rpc CreateSandboxSession(CreateSandboxSessionRequest) returns (CreateSandboxSessionResponse);
+  rpc GetSandboxSession(GetSandboxSessionRequest) returns (GetSandboxSessionResponse);
+  rpc RevokeSandboxSession(RevokeSandboxSessionRequest) returns (RevokeSandboxSessionResponse);
+}
+
+service SandboxSessionConnectService {
+  rpc Open(stream OpenRequest) returns (stream OpenResponse);
+}
