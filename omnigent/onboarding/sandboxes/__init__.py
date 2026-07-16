@@ -63,6 +63,7 @@ _LAUNCHERS: dict[str, str] = {
     # `omnigent[cwsandbox]` extra), imported lazily like modal/daytona.
     "cwsandbox": "omnigent.onboarding.sandboxes.cwsandbox:CWSandboxLauncher",
     "islo": "omnigent.onboarding.sandboxes.islo:IsloSandboxLauncher",
+    "hiloop": "omnigent.onboarding.sandboxes.hiloop:HiloopSandboxLauncher",
     # E2B (https://e2b.dev) via the official `e2b` SDK (the
     # `omnigent[e2b]` extra), imported lazily like modal/daytona.
     "e2b": "omnigent.onboarding.sandboxes.e2b:E2BSandboxLauncher",

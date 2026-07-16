@@ -32,7 +32,7 @@ stores into ``create_app``):
    ``<data_dir>/config.yaml``)::
 
        sandbox:
-         provider: modal          # lakebox|modal|daytona|boxlite|cwsandbox|islo|e2b|openshell
+         provider: modal          # one of the supported sandbox providers
          server_url: https://omnigent.example.com
          modal:                   # optional block
            image: docker.io/me/omnigent-host:latest  # default: official image
@@ -66,6 +66,12 @@ stores into ``create_app``):
            env: [OPENAI_API_KEY, GIT_TOKEN]  # SERVER env var NAMES injected
                                              # as sandbox env
            cluster: my-gateway              # optional OpenShell gateway name
+         hiloop:                  # required block (provider: hiloop)
+           api_url: https://api.hiloop.example.com  # optional with HILOOP_API_URL
+           project_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+           image: registry.example.com/omnigent-host@sha256:<64-lowercase-hex>
+           workspace_revision: branchfs:v1:<32-hex-repository>:<64-hex-change>
+           gateway_ca: /run/hiloop/session-gateway/ca.crt  # optional custom CA
 
    The image defaults to the official prebaked host image
    (``ghcr.io/omnigent-ai/omnigent-host:latest``; see
@@ -77,12 +83,14 @@ stores into ``create_app``):
    launcher reads ``DAYTONA_API_KEY`` (plus optional
    ``DAYTONA_API_URL`` / ``DAYTONA_TARGET``), and the Islo launcher
    reads ``ISLO_API_KEY`` (plus optional ``ISLO_BASE_URL``) from the
-   server process environment. The OpenShell launcher needs no API key:
+   server process environment. Hiloop reads ``HILOOP_API_KEY`` and carries
+   host bootstrap bytes directly over its proof-bound ``session_tcp`` gRPC
+   gateway; no Hiloop CLI binary is installed. The OpenShell launcher needs no API key:
    it connects to the gateway made active with ``openshell gateway
    select`` (``$OPENSHELL_GATEWAY`` / ``~/.config/openshell/active_gateway``,
    or ``sandbox.openshell.cluster``), so the server process needs
    OpenShell gateway access. ``modal``, ``daytona``, ``cwsandbox``,
-   ``islo``, and ``openshell`` have managed-launch support; ``lakebox``
+   ``islo``, ``hiloop``, and ``openshell`` have managed-launch support; ``lakebox``
    parses but rejects at launch.
 
 2. **Direct construction** (embedding deployments): build
@@ -138,13 +146,24 @@ SUPPORTED_SANDBOX_PROVIDERS: frozenset[str] = frozenset(
         "boxlite",
         "cwsandbox",
         "islo",
+        "hiloop",
         "e2b",
         "openshell",
         "kubernetes",
     }
 )
 PROVIDERS_WITH_MANAGED_LAUNCH: frozenset[str] = frozenset(
-    {"modal", "daytona", "boxlite", "cwsandbox", "islo", "e2b", "openshell", "kubernetes"}
+    {
+        "modal",
+        "daytona",
+        "boxlite",
+        "cwsandbox",
+        "islo",
+        "hiloop",
+        "e2b",
+        "openshell",
+        "kubernetes",
+    }
 )
 
 # How long a managed launch waits for the sandboxed host to register
@@ -198,6 +217,10 @@ OPENSHELL_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
 # reconnects while still expiring tokens of Pods nobody deleted. A relaunch
 # mints a fresh token (and the per-Pod token Secret is replaced).
 KUBERNETES_MANAGED_TOKEN_TTL_S = 7 * 24 * 3600
+
+# The maximum Hiloop lease is 24 hours. The extra hour ensures the host can
+# reconnect its Omnigent tunnel until the sandbox itself expires.
+HILOOP_MANAGED_TOKEN_TTL_S = 25 * 3600
 
 # The cwsandbox launch-token TTL is NOT a constant: CW Sandbox's lifetime is
 # operator-overridable (OMNIGENT_CWSANDBOX_MAX_LIFETIME_S), so the TTL is
@@ -576,6 +599,97 @@ def _modal_launcher_factory(
     return _build
 
 
+def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLauncher]:
+    section = raw.get("hiloop")
+    if not isinstance(section, dict):
+        raise ValueError("server config 'sandbox.hiloop' must be a mapping")
+    allowed = {
+        "api_url",
+        "project_id",
+        "image",
+        "workspace_revision",
+        "resources",
+        "lease_secs",
+        "idle_timeout_secs",
+        "bootstrap_port",
+        "gateway_ca",
+        "expected_gateway_authority",
+    }
+    unknown = sorted(set(section) - allowed)
+    if unknown:
+        raise ValueError(f"unknown server config key 'sandbox.hiloop.{unknown[0]}'")
+
+    def required_string(key: str) -> str:
+        value = section.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"server config 'sandbox.hiloop.{key}' is required")
+        return value.strip()
+
+    def optional_string(key: str, default: str | None = None) -> str | None:
+        value = section.get(key, default)
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"server config 'sandbox.hiloop.{key}' must be a non-empty string")
+        return value.strip()
+
+    def positive_int(mapping: dict[str, object], key: str, default: int, path: str) -> int:
+        value = mapping.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"server config '{path}.{key}' must be a positive integer")
+        return value
+
+    resources = section.get("resources", {})
+    if not isinstance(resources, dict):
+        raise ValueError("server config 'sandbox.hiloop.resources' must be a mapping")
+    unknown_resources = sorted(set(resources) - {"cpus", "memory_mb", "disk_mb"})
+    if unknown_resources:
+        raise ValueError(
+            f"unknown server config key 'sandbox.hiloop.resources.{unknown_resources[0]}'"
+        )
+
+    api_url = optional_string("api_url")
+    project_id = required_string("project_id")
+    image = required_string("image")
+    workspace_revision = required_string("workspace_revision")
+    cpus = positive_int(resources, "cpus", 2, "sandbox.hiloop.resources")
+    memory_mb = positive_int(resources, "memory_mb", 4096, "sandbox.hiloop.resources")
+    disk_mb = positive_int(resources, "disk_mb", 20_480, "sandbox.hiloop.resources")
+    lease_secs = positive_int(section, "lease_secs", 86_400, "sandbox.hiloop")
+    idle_timeout_secs = positive_int(section, "idle_timeout_secs", 86_400, "sandbox.hiloop")
+    bootstrap_port = positive_int(section, "bootstrap_port", 17_891, "sandbox.hiloop")
+    gateway_ca = optional_string("gateway_ca")
+    expected_gateway_authority = optional_string("expected_gateway_authority")
+
+    from omnigent.onboarding.sandboxes.hiloop import HiloopSandboxLauncher
+
+    def _new_launcher() -> HiloopSandboxLauncher:
+        return HiloopSandboxLauncher(
+            api_url=api_url,
+            project_id=project_id,
+            image=image,
+            workspace_revision=workspace_revision,
+            cpus=cpus,
+            memory_mb=memory_mb,
+            disk_mb=disk_mb,
+            lease_secs=lease_secs,
+            idle_timeout_secs=idle_timeout_secs,
+            bootstrap_port=bootstrap_port,
+            gateway_ca=gateway_ca,
+            expected_gateway_authority=expected_gateway_authority,
+        )
+
+    try:
+        _new_launcher().validate_configuration()
+    except click.ClickException as exc:
+        raise ValueError(f"invalid server config 'sandbox.hiloop': {exc.message}") from exc
+
+    def _build() -> SandboxLauncher:
+        return _new_launcher()
+
+    return _build
+
+
 def _unsupported_launcher_factory(provider: str) -> Callable[[], SandboxLauncher]:
     """
     Build a factory that rejects launch for a not-yet-supported provider.
@@ -680,6 +794,9 @@ def parse_sandbox_config(raw: object) -> ManagedSandboxConfig | None:
             idle_pause_after_s=_parse_islo_idle_pause_after_s(raw),
         )
         token_ttl_s = ISLO_MANAGED_TOKEN_TTL_S
+    elif provider == "hiloop":
+        launcher_factory = _hiloop_launcher_factory(raw)
+        token_ttl_s = HILOOP_MANAGED_TOKEN_TTL_S
     elif provider == "e2b":
         from omnigent.onboarding.sandboxes.e2b import managed_token_ttl_s
 

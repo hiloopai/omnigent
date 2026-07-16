@@ -94,6 +94,10 @@ dependencies = [
     "claude-agent-sdk>=0.1.62",
     "openai-agents>=0.0.17",
     "PyJWT[crypto]>=2.8,<3",
+    # Direct Hiloop session_tcp client: Ed25519 proof-of-possession and the
+    # generated bidirectional gRPC carrier. The server image needs no Hiloop CLI.
+    "cryptography>=41,<50",
+    "grpcio>=1.81.1,<2",
     "argon2-cffi>=23.1,<24",
     # PEP 440 version comparison for the update check / `omni upgrade`
     # (omnigent/update_check.py, omnigent/cli.py): compares the installed
@@ -272,13 +276,10 @@ dev = [
     # The Cloudflare D1 SQLAlchemy dialect, exercised by the D1 FTS integration
     # test (tests/db/test_d1_fts_dialect.py) via respx + sqlite3.
     "sqlalchemy-cloudflare-d1==0.3.10",
-    # protoc + the well-known-type protos, for regenerating the routing API
-    # bindings (omnigent/api/routing/v1/routing_pb2.*). Bundles its own compiler so no
-    # system protoc is needed. Pinned to the 1.x line whose bundled gencode
-    # matches the runtime `protobuf>=6,<7` above, so `scripts/gen_routing_pb2.py`
-    # reproduces the committed output byte-for-byte (the routing-pb2-fresh
-    # pre-commit hook diffs against it). Dev-only: generated code is committed,
-    # so neither the library nor its wheels depend on this.
+    # protoc + the well-known-type protos, for regenerating the routing and
+    # Hiloop session API bindings. Bundles its own compiler so no system protoc
+    # is needed. Dev-only: generated code is committed, so wheels do not need
+    # protoc.
     "grpcio-tools>=1.68,<2",
 ]
 
@@ -410,6 +411,7 @@ extend-exclude = [
     # Protobuf-generated code (DO NOT EDIT); not ours to restyle.
     "omnigent/api/**/*_pb2.py",
     "omnigent/api/**/*_pb2.pyi",
+    "omnigent/api/**/*_pb2_grpc.py",
 ]
 
 [tool.ruff.lint]
@@ -529,7 +531,12 @@ disallow_any_explicit = true
 # setup.py — build-time scaffolding that imports the (untyped) setuptools
 # build_py and subclasses it; not application code, so excluded from mypy
 # rather than pulling in types-setuptools just for one shim file.
-exclude = ["^omnigent/inner/databricks_mcps/google/", "^setup\\.py$", "_pb2\\.pyi?$"]
+exclude = [
+    "^omnigent/inner/databricks_mcps/google/",
+    "^setup\\.py$",
+    "_pb2\\.pyi?$",
+    "_pb2_grpc\\.py$",
+]
 # Incremental rollout: load imported modules for type info but don't
 # report their errors. Remove once every omnigent/ module is clean.
 follow_imports = "silent"
@@ -656,6 +663,13 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = "google.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "omnigent.api.hiloop.v1.sandbox_session_pb2",
+    "omnigent.api.hiloop.v1.sandbox_session_pb2_grpc",
+]
+ignore_errors = true
 
 [[tool.mypy.overrides]]
 module = "opentelemetry.instrumentation.*"
