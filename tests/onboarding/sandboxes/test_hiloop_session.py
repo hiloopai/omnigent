@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+import omnigent.onboarding.sandboxes.hiloop_session as hiloop_session
 from omnigent.api.hiloop.v1 import sandbox_session_pb2 as wire
 from omnigent.onboarding.sandboxes.hiloop_bootstrap import decode_frame, encode_frame
 from omnigent.onboarding.sandboxes.hiloop_session import (
@@ -256,3 +257,33 @@ def test_gateway_transport_requires_tls_and_bounds_custom_ca(tmp_path: Path) -> 
     oversized.write_bytes(b"x" * ((1 << 20) + 1))
     with pytest.raises(_HiloopSessionError, match="1 byte through 1 MiB"):
         _read_gateway_ca(str(oversized))
+
+
+def test_api_authority_channel_adds_private_ca_to_system_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, bytes | None] = {}
+    monkeypatch.setattr(
+        hiloop_session,
+        "_combined_root_certificates",
+        lambda additional: b"system-roots\n" + additional,
+    )
+
+    def credentials(*, root_certificates: bytes | None = None) -> object:
+        captured["roots"] = root_certificates
+        return object()
+
+    monkeypatch.setattr(hiloop_session.grpc, "ssl_channel_credentials", credentials)
+    monkeypatch.setattr(
+        hiloop_session.grpc,
+        "secure_channel",
+        lambda target, credentials, options=None: (target, credentials, options),
+    )
+
+    _channel(
+        "https://api.hiloop.test",
+        additional_ca=b"private-api-ca",
+        include_system_roots=True,
+    )
+
+    assert captured["roots"] == b"system-roots\nprivate-api-ca"
