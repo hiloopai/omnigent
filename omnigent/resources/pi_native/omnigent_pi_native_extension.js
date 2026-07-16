@@ -565,6 +565,10 @@ function textFromContent(content) {
   const parts = [];
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
+    // OpenAI o-series / gpt-oss models return content as an array with typed
+    // blocks: {type:"text",text:"..."} and {type:"reasoning",summary:[...]}.
+    // Only collect text blocks; skip reasoning/summary blocks.
+    if (block.type === "reasoning") continue;
     const text =
       block.text || block.input_text || block.output_text || block.content;
     if (typeof text === "string") parts.push(text);
