@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
 
 from omnigent.claude_native_bridge import read_transcript_items_from_offset
 from omnigent.codex_native import _find_codex_rollout
-from omnigent.cursor_native_forwarder import _blob_to_item, _read_blob_rows
 from omnigent.entities import NewConversationItem, parse_item_data
 from omnigent.session_import.models import (
     ImportSource,
@@ -253,76 +251,15 @@ def load_codex_session(
     )
 
 
-def load_cursor_session(
-    session_id: str,
-    *,
-    cursor_home: Path | None = None,
-    workspace: Path | None = None,
-) -> LocalSessionImport:
-    """Load one Cursor session from its local chat blob store."""
-    root = (cursor_home or Path.home() / ".cursor") / "chats"
-    matches = [
-        path
-        for path in root.glob("*/*/store.db")
-        if path.parent.name == session_id and path.is_file()
-    ]
-    if not matches:
-        raise SessionImportNotFoundError(f"Cursor session {session_id!r} was not found")
-    store_path = max(matches, key=lambda path: path.stat().st_mtime)
-    workspace_path = _cursor_workspace_for_store(store_path, workspace or Path.cwd())
-    if workspace_path is None:
-        raise SessionImportNotFoundError(
-            f"Cursor session {session_id!r} was found, but its workspace could not be "
-            "identified. Run the import command from that session's original workspace."
-        )
-
-    items: list[NewConversationItem] = []
-    for rowid, blob_id, data in _read_blob_rows(store_path, 0):
-        mirrored = _blob_to_item(rowid, blob_id, data, "cursor-native-ui")
-        if mirrored is None or mirrored.item_type == "compaction_completed":
-            continue
-        items.append(
-            NewConversationItem(
-                type=mirrored.item_type,
-                response_id=mirrored.response_id,
-                data=parse_item_data(mirrored.item_type, mirrored.item_data),
-            )
-        )
-
-    if not items:
-        raise SessionImportNotFoundError(
-            f"Cursor session {session_id!r} has no importable history"
-        )
-    return LocalSessionImport(
-        source="cursor",
-        external_session_id=session_id,
-        workspace=workspace_path,
-        items=tuple(items),
-    )
-
-
-def _cursor_workspace_for_store(store_path: Path, workspace: Path) -> str | None:
-    """Match Cursor's workspace hash against the current directory or an ancestor."""
-    workspace_hash = store_path.parent.parent.name
-    for candidate in (workspace, *workspace.parents):
-        resolved = os.path.realpath(candidate)
-        if hashlib.md5(resolved.encode("utf-8")).hexdigest() == workspace_hash:
-            return resolved
-    return None
-
-
 def load_local_session(source: ImportSource, session_id: str) -> LocalSessionImport:
     """Load one local session from the selected first-party harness."""
     if source == "claude":
         return load_claude_session(session_id)
-    if source == "codex":
-        return load_codex_session(session_id)
-    return load_cursor_session(session_id)
+    return load_codex_session(session_id)
 
 
 __all__ = [
     "load_claude_session",
     "load_codex_session",
-    "load_cursor_session",
     "load_local_session",
 ]

@@ -67,3 +67,14 @@ def test_import_command_loads_local_session_and_posts_normalized_items(tmp_path:
             }
         ],
     }
+
+
+def test_import_command_rejects_cursor() -> None:
+    """The v0 import command accepts only Claude Code and Codex."""
+    result = CliRunner().invoke(
+        cli,
+        ["import", "--harness", "cursor", "--session", "cursor-session"],
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value for '--harness'" in result.output

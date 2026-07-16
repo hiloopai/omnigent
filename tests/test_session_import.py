@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -13,7 +10,6 @@ import pytest
 from omnigent.session_import.local import (
     load_claude_session,
     load_codex_session,
-    load_cursor_session,
 )
 from omnigent.session_import.models import SessionImportNotFoundError
 
@@ -287,95 +283,3 @@ def test_load_codex_session_rejects_empty_history(tmp_path: Path) -> None:
 
     with pytest.raises(SessionImportNotFoundError, match="no importable history"):
         load_codex_session(session_id, codex_home=tmp_path)
-
-
-def test_load_cursor_session_normalizes_visible_blobs(tmp_path: Path) -> None:
-    """Cursor chat blobs become messages while internal rollups are skipped."""
-    session_id = "cursor-chat-123"
-    workspace = tmp_path / "repo"
-    workspace.mkdir()
-    workspace_hash = hashlib.md5(os.path.realpath(workspace).encode()).hexdigest()
-    store_path = tmp_path / "chats" / workspace_hash / session_id / "store.db"
-    store_path.parent.mkdir(parents=True)
-    with sqlite3.connect(store_path) as connection:
-        connection.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
-        connection.executemany(
-            "INSERT INTO blobs (id, data) VALUES (?, ?)",
-            [
-                (
-                    "user-1",
-                    json.dumps(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "<user_query>inspect TODO.md</user_query>",
-                                }
-                            ],
-                        }
-                    ),
-                ),
-                (
-                    "rollup",
-                    json.dumps(
-                        {
-                            "role": "user",
-                            "content": "You have 100 weighted tokens left",
-                        }
-                    ),
-                ),
-                (
-                    "assistant-1",
-                    json.dumps(
-                        {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": "Done."}],
-                        }
-                    ),
-                ),
-            ],
-        )
-
-    imported = load_cursor_session(session_id, cursor_home=tmp_path, workspace=workspace)
-
-    assert imported.source == "cursor"
-    assert imported.workspace == os.path.realpath(workspace)
-    assert imported.title == "inspect TODO.md"
-    assert [item.type for item in imported.items] == ["message", "message"]
-    assert imported.items[1].data.model_dump()["agent"] == "cursor-native-ui"
-
-
-def test_load_cursor_session_requires_original_workspace(tmp_path: Path) -> None:
-    """Cursor import fails instead of creating a session that cannot resume."""
-    session_id = "cursor-chat-123"
-    original_workspace = tmp_path / "original"
-    original_workspace.mkdir()
-    workspace_hash = hashlib.md5(os.path.realpath(original_workspace).encode()).hexdigest()
-    store_path = tmp_path / "chats" / workspace_hash / session_id / "store.db"
-    store_path.parent.mkdir(parents=True)
-    store_path.touch()
-    wrong_workspace = tmp_path / "other"
-    wrong_workspace.mkdir()
-
-    with pytest.raises(SessionImportNotFoundError, match="original workspace"):
-        load_cursor_session(
-            session_id,
-            cursor_home=tmp_path,
-            workspace=wrong_workspace,
-        )
-
-
-def test_load_cursor_session_rejects_empty_history(tmp_path: Path) -> None:
-    """An empty Cursor store cannot create a claimed import."""
-    session_id = "cursor-chat-123"
-    workspace = tmp_path / "repo"
-    workspace.mkdir()
-    workspace_hash = hashlib.md5(os.path.realpath(workspace).encode()).hexdigest()
-    store_path = tmp_path / "chats" / workspace_hash / session_id / "store.db"
-    store_path.parent.mkdir(parents=True)
-    with sqlite3.connect(store_path) as connection:
-        connection.execute("CREATE TABLE blobs (id TEXT, data BLOB)")
-
-    with pytest.raises(SessionImportNotFoundError, match="no importable history"):
-        load_cursor_session(session_id, cursor_home=tmp_path, workspace=workspace)

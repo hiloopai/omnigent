@@ -5951,7 +5951,7 @@ def resume(
 @cli.command("import")
 @click.option(
     "--harness",
-    type=click.Choice(["claude", "codex", "cursor"], case_sensitive=False),
+    type=click.Choice(["claude", "codex"], case_sensitive=False),
     required=True,
     help="Local coding harness that owns the source session.",
 )
@@ -5975,7 +5975,7 @@ def import_session_command(
     source_session_id: str,
     server: str | None,
 ) -> None:
-    """Import one local Claude Code, Codex, or Cursor chat.
+    """Import one local Claude Code or Codex chat.
 
     The source transcript is converted to ordinary Omnigent items and stored
     as a normal session. A source session can only be imported once.
@@ -5984,7 +5984,6 @@ def import_session_command(
     Examples:
       omnigent import --harness claude --session <session-id>
       omnigent import --harness codex --session <session-id>
-      omnigent import --harness cursor --session <session-id>
     """
     import httpx
 

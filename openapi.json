@@ -1701,8 +1701,7 @@
           "source": {
             "enum": [
               "claude",
-              "codex",
-              "cursor"
+              "codex"
             ],
             "title": "Source",
             "type": "string"
