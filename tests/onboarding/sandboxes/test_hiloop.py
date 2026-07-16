@@ -22,6 +22,8 @@ _WORKSPACE = (
     "branchfs:v1:11111111111111111111111111111111:"
     "2222222222222222222222222222222222222222222222222222222222222222"
 )
+_MODEL_GATEWAY_URL = "http://model-gateway.control.svc:8080/v1"
+_MODEL = "gpt-5.6-terra"
 
 
 class _FakeApi:
@@ -58,6 +60,8 @@ def _launcher(api: _FakeApi, bootstrap: _FakeBootstrap) -> HiloopSandboxLauncher
         project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         image=_IMAGE,
         workspace_revision=_WORKSPACE,
+        model_gateway_url=_MODEL_GATEWAY_URL,
+        model=_MODEL,
         api_key="hiloop-test-key",
         api=api,
         bootstrap=bootstrap,
@@ -122,6 +126,8 @@ def test_prepare_does_not_require_a_hiloop_cli_binary(
         project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         image=_IMAGE,
         workspace_revision=_WORKSPACE,
+        model_gateway_url=_MODEL_GATEWAY_URL,
+        model=_MODEL,
         api_key="hiloop-test-key",
         api=_FakeApi(),
     )
@@ -146,12 +152,14 @@ def test_start_host_uses_proof_bound_session_bootstrap() -> None:
         (
             "sandbox-native-1",
             {
-                "schema": "omnigent.hiloop-bootstrap/v1",
+                "schema": "omnigent.hiloop-bootstrap/v2",
                 "token": "short-lived-host-token",
                 "host_id": "host-1",
                 "host_name": "managed-native",
                 "server_url": "https://agents.hiloop.test",
                 "workspace": "/workspace",
+                "model_gateway_url": _MODEL_GATEWAY_URL,
+                "model": _MODEL,
             },
         )
     ]
@@ -187,6 +195,8 @@ def test_immutable_image_and_workspace_are_mandatory(
         project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         image=image,
         workspace_revision=workspace,
+        model_gateway_url=_MODEL_GATEWAY_URL,
+        model=_MODEL,
         api_key="hiloop-test-key",
         api=_FakeApi(),
         bootstrap=_FakeBootstrap(),

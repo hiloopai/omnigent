@@ -138,7 +138,7 @@ class _FakeOpenCall(Iterator[wire.OpenResponse]):
             request_bytes.extend(request.data.payload)
         self.bootstrap_payload = decode_frame(bytes(request_bytes))
 
-        response = encode_frame({"schema": "omnigent.hiloop-bootstrap/v1", "status": "accepted"})
+        response = encode_frame({"schema": "omnigent.hiloop-bootstrap/v2", "status": "accepted"})
         split = len(response) // 2
         yield wire.OpenResponse(data=wire.SandboxSessionData(offset=0, payload=response[:split]))
         credit = next(self._requests)
@@ -171,12 +171,14 @@ class _FakeGateway:
 
 def _payload() -> dict[str, str]:
     return {
-        "schema": "omnigent.hiloop-bootstrap/v1",
+        "schema": "omnigent.hiloop-bootstrap/v2",
         "token": "a-secure-one-time-managed-host-token",
         "host_id": "host-1",
         "host_name": "managed-native",
         "server_url": "https://agents.hiloop.test",
         "workspace": "/workspace",
+        "model_gateway_url": "http://model-gateway.control.svc:8080/v1",
+        "model": "gpt-5.6-terra",
     }
 
 

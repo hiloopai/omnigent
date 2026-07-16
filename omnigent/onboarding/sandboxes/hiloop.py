@@ -21,7 +21,12 @@ from omnigent.onboarding.sandboxes.base import (
     SandboxCapabilityError,
     SandboxLauncher,
 )
-from omnigent.onboarding.sandboxes.hiloop_bootstrap import BOOTSTRAP_SCHEMA, DEFAULT_PORT
+from omnigent.onboarding.sandboxes.hiloop_bootstrap import (
+    BOOTSTRAP_SCHEMA,
+    DEFAULT_PORT,
+    validate_model,
+    validate_model_gateway_url,
+)
 from omnigent.onboarding.sandboxes.hiloop_session import _SessionBootstrap
 
 API_URL_ENV_VAR = "HILOOP_API_URL"
@@ -202,6 +207,8 @@ class HiloopSandboxLauncher(SandboxLauncher):
         project_id: str | None = None,
         image: str | None = None,
         workspace_revision: str | None = None,
+        model_gateway_url: str | None = None,
+        model: str | None = None,
         cpus: int = 2,
         memory_mb: int = 4096,
         disk_mb: int = 20_480,
@@ -219,6 +226,8 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._project_id = project_id
         self._image = image
         self._workspace_revision = workspace_revision
+        self._model_gateway_url = model_gateway_url
+        self._model = model
         self._workspace_path = _WORKSPACE_PATH
         self._cpus = cpus
         self._memory_mb = memory_mb
@@ -318,6 +327,8 @@ class HiloopSandboxLauncher(SandboxLauncher):
             "host_name": host_name,
             "server_url": server_url.rstrip("/"),
             "workspace": self._workspace_path,
+            "model_gateway_url": self._resolved_model_gateway_url(),
+            "model": self._resolved_model(),
         }
         try:
             self._bootstrap().launch(sandbox_id, payload)
@@ -385,7 +396,23 @@ class HiloopSandboxLauncher(SandboxLauncher):
             raise click.ClickException("Hiloop bootstrap port is invalid")
         if not isfinite(self._operation_timeout_s) or self._operation_timeout_s <= 0:
             raise click.ClickException("Hiloop operation timeout must be positive and finite")
+        self._resolved_model_gateway_url()
+        self._resolved_model()
         return match.group("reference"), match.group("digest")
+
+    def _resolved_model_gateway_url(self) -> str:
+        value = (self._model_gateway_url or "").strip()
+        try:
+            return validate_model_gateway_url(value)
+        except ValueError as exc:
+            raise click.ClickException("Hiloop model_gateway_url is invalid") from exc
+
+    def _resolved_model(self) -> str:
+        value = (self._model or "").strip()
+        try:
+            return validate_model(value)
+        except ValueError as exc:
+            raise click.ClickException("Hiloop model is invalid") from exc
 
     def _resolved_api_url(self) -> str:
         value = (self._api_url or os.environ.get(API_URL_ENV_VAR, "")).strip()

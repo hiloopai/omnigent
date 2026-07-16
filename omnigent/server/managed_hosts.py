@@ -71,6 +71,8 @@ stores into ``create_app``):
            project_id: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
            image: registry.example.com/omnigent-host@sha256:<64-lowercase-hex>
            workspace_revision: branchfs:v1:<32-hex-repository>:<64-hex-change>
+           model_gateway_url: http://model-gateway.control.svc:8080/v1
+           model: gpt-5.6-terra
            gateway_ca: /run/hiloop/session-gateway/ca.crt  # optional custom CA
 
    The image defaults to the official prebaked host image
@@ -608,6 +610,8 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
         "project_id",
         "image",
         "workspace_revision",
+        "model_gateway_url",
+        "model",
         "resources",
         "lease_secs",
         "idle_timeout_secs",
@@ -652,6 +656,8 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
     project_id = required_string("project_id")
     image = required_string("image")
     workspace_revision = required_string("workspace_revision")
+    model_gateway_url = required_string("model_gateway_url")
+    model = required_string("model")
     cpus = positive_int(resources, "cpus", 2, "sandbox.hiloop.resources")
     memory_mb = positive_int(resources, "memory_mb", 4096, "sandbox.hiloop.resources")
     disk_mb = positive_int(resources, "disk_mb", 20_480, "sandbox.hiloop.resources")
@@ -669,6 +675,8 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
             project_id=project_id,
             image=image,
             workspace_revision=workspace_revision,
+            model_gateway_url=model_gateway_url,
+            model=model,
             cpus=cpus,
             memory_mb=memory_mb,
             disk_mb=disk_mb,
