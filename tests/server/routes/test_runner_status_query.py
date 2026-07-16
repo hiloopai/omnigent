@@ -88,6 +88,23 @@ class _BrokenRegistry:
         raise ConnectionError("host connection lost")
 
 
+class _FaultingRegistry:
+    """Registry stand-in that resolves the pending future with an exception.
+
+    Models a receive loop that somehow completed the future with an error
+    rather than a status dict — the defensive path must map this to ``None``
+    rather than let it break the message POST.
+    """
+
+    def send_text(self, conn: _FakeHostConn, data: str) -> None:
+        """Resolve the query's pending future with an exception."""
+        frame = decode_host_frame(data)
+        assert isinstance(frame, HostRunnerStatusFrame)
+        future = conn.pending_runner_status.get(frame.request_id)
+        if future is not None and not future.done():
+            future.set_exception(RuntimeError("receive loop blew up"))
+
+
 @pytest.mark.parametrize("verdict", ["alive", "dead", "unknown"])
 async def test_query_returns_host_verdict(verdict: str) -> None:
     """Each host verdict is returned verbatim to the caller.
@@ -138,6 +155,22 @@ async def test_query_connection_error_returns_none() -> None:
     """
     conn = _FakeHostConn()
     registry = _BrokenRegistry()
+
+    result = await _query_host_runner_status(conn, registry, "runner_x")  # type: ignore[arg-type]
+
+    assert result is None
+    assert conn.pending_runner_status == {}
+
+
+async def test_query_future_exception_returns_none() -> None:
+    """A future resolved with an exception degrades to ``None``, not a raise.
+
+    Defensive contract: the query only ever speeds up the connect grace, so
+    an unexpected failure must fall back to the wait rather than surface as
+    a 500 on the message POST.
+    """
+    conn = _FakeHostConn()
+    registry = _FaultingRegistry()
 
     result = await _query_host_runner_status(conn, registry, "runner_x")  # type: ignore[arg-type]
 

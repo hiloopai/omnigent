@@ -6206,6 +6206,18 @@ async def _query_host_runner_status(
         )
     except asyncio.TimeoutError:
         return None
+    except Exception:  # noqa: BLE001
+        # Defensive: this query only ever *speeds up* the connect grace, so
+        # any unexpected failure (e.g. the future resolved with an error)
+        # must degrade to "no verdict" and fall back to the wait rather than
+        # break the message POST. CancelledError is a BaseException and still
+        # propagates, so the race helper's cancel/drain is unaffected.
+        _logger.warning(
+            "host.runner_status query for runner %s failed; falling back to grace",
+            runner_id,
+            exc_info=True,
+        )
+        return None
     finally:
         host_conn.pending_runner_status.pop(request_id, None)
     return result.get("status")
@@ -6287,11 +6299,13 @@ async def _wait_for_host_bound_runner_client(
         # connect grace run to its natural conclusion.
         return await connect_task
     finally:
-        for task in (connect_task, status_task):
-            if not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+        outstanding = [t for t in (connect_task, status_task) if not t.done()]
+        for task in outstanding:
+            task.cancel()
+        if outstanding:
+            # Drain the cancelled task(s); return_exceptions swallows the
+            # CancelledError so cleanup never masks the real return/raise.
+            await asyncio.gather(*outstanding, return_exceptions=True)
 
 
 async def _wait_for_runner_client(

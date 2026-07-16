@@ -961,8 +961,8 @@ async def test_host_reports_runner_unknown_skips_connect_grace(
         # No runner ever connects, so the post would otherwise ride the
         # ~30s relaunch wait — cancel once we've seen the launch frame.
         post_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await post_task
+        # return_exceptions drains the cancelled POST without re-raising.
+        await asyncio.gather(post_task, return_exceptions=True)
 
     assert launch_frame is not None, (
         "an 'unknown' host verdict must cut the connect grace short and "
