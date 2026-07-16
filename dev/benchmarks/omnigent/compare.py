@@ -175,12 +175,12 @@ def print_table(rows: list[dict], threshold: float) -> None:
 def build_markdown(rows: list[dict], threshold: float, passed: bool) -> str:
     """Render the comparison rows as a GitHub-flavoured markdown table."""
     lines = [
-        f"## Benchmark comparison",
-        f"",
+        "## Benchmark comparison",
+        "",
         f"Regression threshold: **{threshold * 100:.0f}%** on avg P50 or avg P99.",
-        f"",
-        f"| Journey | Status | Base P50 ms | Cand P50 ms | Δ P50 | Base P99 ms | Cand P99 ms | Δ P99 |",
-        f"| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "",
+        "| Journey | Status | Base P50 ms | Cand P50 ms | Δ P50 | Base P99 ms | Cand P99 ms | Δ P99 |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
     for row in rows:
@@ -199,7 +199,9 @@ def build_markdown(rows: list[dict], threshold: float, passed: bool) -> str:
         )
 
     lines.append("")
-    verdict = "**PASS** — no regressions detected." if passed else "**FAIL** — regression(s) detected."
+    verdict = (
+        "**PASS** — no regressions detected." if passed else "**FAIL** — regression(s) detected."
+    )
     lines.append(verdict)
     lines.append("")
     return "\n".join(lines)
@@ -232,8 +234,12 @@ def main(argv: list[str] | None = None) -> int:
     baseline = json.loads(args.baseline.read_text())
     candidate = json.loads(args.candidate.read_text())
 
-    console.print(f"[bold]Baseline:[/bold]  {args.baseline} (git: {baseline.get('git_sha', 'unknown')[:12]})")
-    console.print(f"[bold]Candidate:[/bold] {args.candidate} (git: {candidate.get('git_sha', 'unknown')[:12]})")
+    console.print(
+        f"[bold]Baseline:[/bold]  {args.baseline} (git: {baseline.get('git_sha', 'unknown')[:12]})"
+    )
+    console.print(
+        f"[bold]Candidate:[/bold] {args.candidate} (git: {candidate.get('git_sha', 'unknown')[:12]})"
+    )
     if args.backend:
         console.print(f"[bold]Backend filter:[/bold] {args.backend}")
 
@@ -249,7 +255,9 @@ def main(argv: list[str] | None = None) -> int:
     new_journeys = [r for r in rows if r["status"] == "new"]
 
     if new_journeys:
-        console.print(f"[cyan]New journeys (no baseline):[/cyan] {', '.join(r['journey'] for r in new_journeys)}")
+        console.print(
+            f"[cyan]New journeys (no baseline):[/cyan] {', '.join(r['journey'] for r in new_journeys)}"
+        )
 
     if regressions:
         console.print(
