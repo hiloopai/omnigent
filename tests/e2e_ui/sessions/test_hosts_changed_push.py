@@ -220,7 +220,9 @@ def test_host_badge_not_polled_frequently(
 
     _patch_session_snapshot(page, session_id)
     _patch_session_list(page, session_id)
-    page.route_web_socket(re.compile(r"/v1/sessions/updates"), lambda ws: ws.on_message(lambda _: None))
+    page.route_web_socket(
+        re.compile(r"/v1/sessions/updates"), lambda ws: ws.on_message(lambda _: None)
+    )
     page.route(
         re.compile(r"/v1/hosts(\?|$)"),
         lambda r: r.fulfill(
