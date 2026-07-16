@@ -358,7 +358,6 @@ def _build_sys_session_send_schema(
                                         "type": "array",
                                         "items": {"type": "string", "minLength": 1},
                                         "minItems": 1,
-                                        "uniqueItems": True,
                                         "description": (
                                             "Optional list of file ids for "
                                             "files you previously uploaded. "
