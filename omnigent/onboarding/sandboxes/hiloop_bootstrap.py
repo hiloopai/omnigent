@@ -9,17 +9,19 @@ import re
 import socket
 import struct
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from omnigent.host.identity import HOST_ID_ENV_VAR, HOST_NAME_ENV_VAR, HOST_TOKEN_ENV_VAR
 
-BOOTSTRAP_SCHEMA = "omnigent.hiloop-bootstrap/v1"
+BOOTSTRAP_SCHEMA = "omnigent.hiloop-bootstrap/v2"
 DEFAULT_PORT = 17891
 _MAX_FRAME_BYTES = 16 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_MODEL_GATEWAY_TOKEN = "/var/run/secrets/hiloop/model-gateway/token"
+_CONFIG_HOME = Path("/tmp/.omnigent")
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,8 @@ class BootstrapRequest:
     host_name: str
     server_url: str
     workspace: str
+    model_gateway_url: str
+    model: str
 
 
 def write_frame(connection: socket.socket, payload: dict[str, str]) -> None:
@@ -88,7 +92,16 @@ def exchange(connection: socket.socket, payload: dict[str, str]) -> None:
 
 def validate_request(payload: dict[str, str]) -> BootstrapRequest:
     """Validate a launch request without retaining unknown fields."""
-    required = {"schema", "token", "host_id", "host_name", "server_url", "workspace"}
+    required = {
+        "schema",
+        "token",
+        "host_id",
+        "host_name",
+        "server_url",
+        "workspace",
+        "model_gateway_url",
+        "model",
+    }
     if set(payload) != required or payload.get("schema") != BOOTSTRAP_SCHEMA:
         raise ValueError("bootstrap request has an invalid schema")
 
@@ -101,12 +114,16 @@ def validate_request(payload: dict[str, str]) -> BootstrapRequest:
 
     server_url = _server_url(payload["server_url"])
     workspace = _workspace(payload["workspace"])
+    model_gateway_url = validate_model_gateway_url(payload["model_gateway_url"])
+    model = validate_model(payload["model"])
     return BootstrapRequest(
         token=token,
         host_id=payload["host_id"],
         host_name=payload["host_name"],
         server_url=server_url,
         workspace=workspace,
+        model_gateway_url=model_gateway_url,
+        model=model,
     )
 
 
@@ -124,6 +141,7 @@ def serve_once(*, port: int = DEFAULT_PORT, timeout_s: float = 120.0) -> NoRetur
         with connection:
             connection.settimeout(timeout_s)
             request = validate_request(read_frame(connection))
+            _prepare_provider_config(request)
             write_frame(connection, {"schema": BOOTSTRAP_SCHEMA, "status": "accepted"})
     _exec_host(request)
 
@@ -168,6 +186,72 @@ def _workspace(value: str) -> str:
     return str(path)
 
 
+def validate_model_gateway_url(value: str) -> str:
+    """Require a credential-free Responses API base URL."""
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("bootstrap model gateway URL is invalid") from exc
+    host = parsed.hostname or ""
+    in_cluster = host.endswith((".svc", ".svc.cluster.local"))
+    if not host or parsed.scheme not in {"http", "https"}:
+        raise ValueError("bootstrap model gateway URL is invalid")
+    if parsed.scheme == "http" and host not in _LOOPBACK_HOSTS and not in_cluster:
+        raise ValueError("bootstrap model gateway URL must use TLS or cluster-local DNS")
+    if parsed.path not in {"/v1", "/v1/"}:
+        raise ValueError("bootstrap model gateway URL must end at /v1")
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("bootstrap model gateway URL is invalid")
+    return value.rstrip("/")
+
+
+def validate_model(value: str) -> str:
+    """Require one bounded provider model identifier."""
+    if _IDENTIFIER.fullmatch(value) is None:
+        raise ValueError("bootstrap model is invalid")
+    return value
+
+
+def _write_provider_config(request: BootstrapRequest, config_home: Path = _CONFIG_HOME) -> None:
+    """Write non-secret model routing whose auth helper reads the projected token."""
+    config_home.mkdir(mode=0o700, parents=False, exist_ok=False)
+    config = {
+        "providers": {
+            "hiloop": {
+                "kind": "gateway",
+                "default": True,
+                "openai": {
+                    "base_url": request.model_gateway_url,
+                    "auth_command": f"cat {_MODEL_GATEWAY_TOKEN}",
+                    "wire_api": "responses",
+                    "models": {"default": request.model},
+                },
+            }
+        }
+    }
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW"):
+        flags |= getattr(os, optional_flag, 0)
+    path = config_home / "config.yaml"
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(config, stream, separators=(",", ":"), sort_keys=True)
+        stream.write("\n")
+
+
+def _prepare_provider_config(request: BootstrapRequest) -> None:
+    token_path = Path(_MODEL_GATEWAY_TOKEN)
+    if not token_path.is_file() or not os.access(token_path, os.R_OK):
+        raise RuntimeError("projected model gateway identity is unavailable")
+    _write_provider_config(request)
+
+
 def _exec_host(request: BootstrapRequest) -> NoReturn:
     os.chdir(request.workspace)
     environment = os.environ.copy()
@@ -178,6 +262,7 @@ def _exec_host(request: BootstrapRequest) -> NoReturn:
             HOST_NAME_ENV_VAR: request.host_name,
             "HOME": "/tmp",
             "IS_SANDBOX": "1",
+            "OMNIGENT_CONFIG_HOME": str(_CONFIG_HOME),
             "XDG_CACHE_HOME": "/tmp/.cache",
             "XDG_CONFIG_HOME": "/tmp/.config",
             "XDG_DATA_HOME": "/tmp/.local/share",

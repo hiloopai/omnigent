@@ -23,6 +23,8 @@ def _config() -> dict[str, object]:
                 "branchfs:v1:11111111111111111111111111111111:"
                 "2222222222222222222222222222222222222222222222222222222222222222"
             ),
+            "model_gateway_url": "http://model-gateway.control.svc:8080/v1",
+            "model": "gpt-5.6-terra",
             "resources": {"cpus": 4, "memory_mb": 8192, "disk_mb": 32768},
             "bootstrap_port": 17891,
         },
@@ -39,6 +41,8 @@ def test_parse_native_hiloop_config() -> None:
     assert isinstance(launcher, HiloopSandboxLauncher)
     assert launcher._cpus == 4
     assert launcher._workspace_path == "/workspace"
+    assert launcher._model_gateway_url == "http://model-gateway.control.svc:8080/v1"
+    assert launcher._model == "gpt-5.6-terra"
 
 
 @pytest.mark.parametrize(
@@ -68,6 +72,8 @@ def test_old_hiloop_provider_contract_is_rejected(obsolete: str) -> None:
         ),
         ("lease_secs", 59, "lifecycle"),
         ("bootstrap_port", 65_536, "bootstrap port"),
+        ("model_gateway_url", "http://attacker.example/v1", "model_gateway_url"),
+        ("model", "bad model", "model"),
     ],
 )
 def test_invalid_hiloop_contract_is_rejected_during_config_parse(
