@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import ssl
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import Encoding
 
+import omnigent.onboarding.sandboxes.hiloop_session as hiloop_session
 from omnigent.api.hiloop.v1 import sandbox_session_pb2 as wire
+from omnigent.inner.egress.ca import ensure_ca
 from omnigent.onboarding.sandboxes.hiloop_bootstrap import decode_frame, encode_frame
 from omnigent.onboarding.sandboxes.hiloop_session import (
     _channel,
+    _combined_root_certificates,
     _HiloopSessionError,
+    _read_api_ca,
     _read_gateway_ca,
     _SessionBootstrap,
     _validate_grant,
@@ -256,3 +263,76 @@ def test_gateway_transport_requires_tls_and_bounds_custom_ca(tmp_path: Path) -> 
     oversized.write_bytes(b"x" * ((1 << 20) + 1))
     with pytest.raises(_HiloopSessionError, match="1 byte through 1 MiB"):
         _read_gateway_ca(str(oversized))
+
+
+def test_api_authority_channel_adds_private_ca_to_system_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, bytes | None] = {}
+    monkeypatch.setattr(
+        hiloop_session,
+        "_combined_root_certificates",
+        lambda additional: b"system-roots\n" + additional,
+    )
+
+    def credentials(*, root_certificates: bytes | None = None) -> object:
+        captured["roots"] = root_certificates
+        return object()
+
+    monkeypatch.setattr(hiloop_session.grpc, "ssl_channel_credentials", credentials)
+    monkeypatch.setattr(
+        hiloop_session.grpc,
+        "secure_channel",
+        lambda target, credentials, options=None: (target, credentials, options),
+    )
+
+    _channel(
+        "https://api.hiloop.test",
+        additional_ca=b"private-api-ca",
+        include_system_roots=True,
+    )
+
+    assert captured["roots"] == b"system-roots\nprivate-api-ca"
+
+
+def test_api_authority_combined_roots_retain_system_and_private_ca(tmp_path: Path) -> None:
+    api_ca, _ = ensure_ca(cache_dir=tmp_path)
+    system_roots = set(ssl.create_default_context().get_ca_certs(binary_form=True))
+
+    combined = _combined_root_certificates(api_ca.read_bytes())
+
+    end_marker = b"-----END CERTIFICATE-----"
+    parsed_roots = {
+        ssl.PEM_cert_to_DER_cert((block + end_marker).strip().decode("ascii"))
+        for block in combined.split(end_marker)
+        if block.strip()
+    }
+    custom_der = x509.load_pem_x509_certificate(api_ca.read_bytes()).public_bytes(Encoding.DER)
+    assert system_roots <= parsed_roots
+    assert custom_der in parsed_roots
+
+
+def test_api_ca_read_rejects_missing_empty_and_oversized_inputs(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-api-ca.pem"
+    with pytest.raises(_HiloopSessionError, match="could not be read"):
+        _read_api_ca(str(missing))
+
+    empty = tmp_path / "empty-api-ca.pem"
+    empty.write_bytes(b"")
+    with pytest.raises(_HiloopSessionError, match="1 byte through 1 MiB"):
+        _read_api_ca(str(empty))
+
+    oversized = tmp_path / "oversized-api-ca.pem"
+    oversized.write_bytes(b"x" * ((1 << 20) + 1))
+    with pytest.raises(_HiloopSessionError, match="1 byte through 1 MiB"):
+        _read_api_ca(str(oversized))
+
+
+def test_api_ca_combination_rejects_invalid_pem(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid-api-ca.pem"
+    invalid.write_bytes(b"not a certificate")
+
+    value = _read_api_ca(str(invalid))
+    assert value is not None
+    with pytest.raises(_HiloopSessionError, match="must be a PEM trust bundle"):
+        _combined_root_certificates(value)

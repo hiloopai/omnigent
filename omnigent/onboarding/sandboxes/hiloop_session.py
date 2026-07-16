@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import queue
+import ssl
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -115,6 +116,7 @@ class _SessionBootstrap:
         gateway_ca: str | None,
         expected_gateway_authority: str | None,
         timeout_s: float,
+        api_ca: str | None = None,
         authority: _Authority | None = None,
         gateway: _Gateway | None = None,
     ) -> None:
@@ -124,18 +126,24 @@ class _SessionBootstrap:
         self._gateway_ca = gateway_ca
         self._expected_gateway_authority = expected_gateway_authority
         self._timeout_s = timeout_s
+        self._api_ca = api_ca
         self._authority_override = authority
         self._gateway_override = gateway
 
     def launch(self, sandbox_id: str, payload: dict[str, str]) -> None:
         gateway_ca = _read_gateway_ca(self._gateway_ca) if self._gateway_override is None else None
+        api_ca = _read_api_ca(self._api_ca) if self._authority_override is None else None
         identity = _ProofIdentity.generate()
         authority_channel: grpc.Channel | None = None
         gateway_channel: grpc.Channel | None = None
         try:
             authority = self._authority_override
             if authority is None:
-                authority_channel = _channel(self._api_url, additional_ca=None)
+                authority_channel = _channel(
+                    self._api_url,
+                    additional_ca=api_ca,
+                    include_system_roots=True,
+                )
                 authority = cast(
                     _Authority,
                     wire_grpc.SandboxSessionServiceStub(authority_channel),  # type: ignore[no-untyped-call]
@@ -456,15 +464,23 @@ def _next_response(call: Iterator[wire.OpenResponse]) -> wire.OpenResponse:
 
 
 def _read_gateway_ca(path: str | None) -> bytes | None:
+    return _read_ca(path, "Hiloop session gateway CA")
+
+
+def _read_api_ca(path: str | None) -> bytes | None:
+    return _read_ca(path, "Hiloop API CA")
+
+
+def _read_ca(path: str | None, label: str) -> bytes | None:
     if path is None:
         return None
     try:
         with Path(path).open("rb") as stream:
             value = stream.read(_MAX_GATEWAY_CA_BYTES + 1)
     except OSError as exc:
-        raise _HiloopSessionError("Hiloop session gateway CA could not be read") from exc
+        raise _HiloopSessionError(f"{label} could not be read") from exc
     if not value or len(value) > _MAX_GATEWAY_CA_BYTES:
-        raise _HiloopSessionError("Hiloop session gateway CA must be 1 byte through 1 MiB")
+        raise _HiloopSessionError(f"{label} must be 1 byte through 1 MiB")
     return value
 
 
@@ -476,6 +492,7 @@ def _channel(
     endpoint: str,
     *,
     additional_ca: bytes | None,
+    include_system_roots: bool = False,
     allow_plaintext: bool = True,
     max_message_bytes: int | None = None,
 ) -> grpc.Channel:
@@ -494,8 +511,28 @@ def _channel(
         return grpc.insecure_channel(_grpc_target(parsed), options=options)
     if parsed.scheme != "https":
         raise _HiloopSessionError("Hiloop session endpoint must use TLS")
-    credentials = grpc.ssl_channel_credentials(root_certificates=additional_ca)
+    roots = (
+        _combined_root_certificates(additional_ca)
+        if additional_ca is not None and include_system_roots
+        else additional_ca
+    )
+    credentials = grpc.ssl_channel_credentials(root_certificates=roots)
     return grpc.secure_channel(_grpc_target(parsed), credentials, options=options)
+
+
+def _combined_root_certificates(additional_ca: bytes) -> bytes:
+    context = ssl.create_default_context()
+    try:
+        context.load_verify_locations(cadata=additional_ca.decode("ascii"))
+    except (OSError, UnicodeDecodeError, ssl.SSLError) as exc:
+        raise _HiloopSessionError("Hiloop API CA must be a PEM trust bundle") from exc
+    system_and_additional = context.get_ca_certs(binary_form=True)
+    if not system_and_additional:
+        raise _HiloopSessionError("Hiloop API CA produced an empty trust bundle")
+    return b"".join(
+        ssl.DER_cert_to_PEM_cert(certificate).encode("ascii")
+        for certificate in system_and_additional
+    )
 
 
 def _endpoint(value: str) -> SplitResult:

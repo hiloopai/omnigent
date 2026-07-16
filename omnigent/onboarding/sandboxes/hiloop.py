@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 import time
 import uuid
 from collections.abc import Mapping
@@ -31,6 +32,7 @@ from omnigent.onboarding.sandboxes.hiloop_session import _SessionBootstrap
 
 API_URL_ENV_VAR = "HILOOP_API_URL"
 API_KEY_ENV_VAR = "HILOOP_API_KEY"
+API_CA_ENV_VAR = "HILOOP_API_CA_CERT"
 GATEWAY_CA_ENV_VAR = "HILOOP_SESSION_GATEWAY_CA_CERT"
 
 _IMAGE = re.compile(r"(?P<reference>[^@\s]+)@(?P<digest>sha256:[0-9a-f]{64})")
@@ -40,6 +42,7 @@ _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _TERMINAL_OPERATION_STATES = frozenset({"succeeded", "failed", "cancelled"})
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 _REQUEST_ATTEMPTS = 3
+_MAX_API_CA_BYTES = 1 << 20
 
 
 class _HiloopError(RuntimeError):
@@ -69,12 +72,17 @@ class _RestApi:
         base_url: str,
         api_key: str,
         timeout_s: float,
+        api_ca: str | None = None,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._operation_timeout_s = timeout_s
-        self._client = httpx.Client(timeout=min(timeout_s, 30.0), transport=transport)
+        self._client = httpx.Client(
+            timeout=min(timeout_s, 30.0),
+            transport=transport,
+            verify=_api_ssl_context(api_ca),
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -216,6 +224,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         idle_timeout_secs: int = 86_400,
         api_key: str | None = None,
         bootstrap_port: int = DEFAULT_PORT,
+        api_ca: str | None = None,
         gateway_ca: str | None = None,
         expected_gateway_authority: str | None = None,
         operation_timeout_s: float = 900.0,
@@ -236,6 +245,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._idle_timeout_secs = idle_timeout_secs
         self._api_key = api_key
         self._bootstrap_port = bootstrap_port
+        self._api_ca = api_ca
         self._gateway_ca = gateway_ca
         self._expected_gateway_authority = expected_gateway_authority
         self._operation_timeout_s = operation_timeout_s
@@ -249,6 +259,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._resolved_api_url()
         self._resolved_project_id()
         self._resolved_key()
+        self._validate_api_ca()
         if self._bootstrap_override is None:
             gateway_ca = self._resolved_gateway_ca()
             if gateway_ca and not Path(gateway_ca).is_file():
@@ -260,6 +271,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._resolved_project_id()
         if self._api_url is not None:
             self._resolved_api_url()
+        self._validate_api_ca()
 
     def provision(self, name: str) -> str:
         image_reference, image_digest = self._validated()
@@ -436,6 +448,16 @@ class HiloopSandboxLauncher(SandboxLauncher):
         value = (self._gateway_ca or os.environ.get(GATEWAY_CA_ENV_VAR, "")).strip()
         return value or None
 
+    def _resolved_api_ca(self) -> str | None:
+        value = (self._api_ca or os.environ.get(API_CA_ENV_VAR, "")).strip()
+        return value or None
+
+    def _validate_api_ca(self) -> None:
+        try:
+            _api_ssl_context(self._resolved_api_ca())
+        except _HiloopError as exc:
+            raise click.ClickException(str(exc)) from exc
+
     def _api(self) -> _Api:
         if self._api_override is not None:
             return self._api_override
@@ -444,6 +466,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
                 base_url=self._resolved_api_url(),
                 api_key=self._resolved_key(),
                 timeout_s=self._operation_timeout_s,
+                api_ca=self._resolved_api_ca(),
             )
         return self._resolved_api
 
@@ -461,11 +484,30 @@ class HiloopSandboxLauncher(SandboxLauncher):
                 api_url=self._resolved_api_url(),
                 api_key=self._resolved_key(),
                 remote_port=self._bootstrap_port,
+                api_ca=self._resolved_api_ca(),
                 gateway_ca=self._resolved_gateway_ca(),
                 expected_gateway_authority=self._expected_gateway_authority,
                 timeout_s=min(self._operation_timeout_s, 120.0),
             )
         return self._resolved_bootstrap
+
+
+def _api_ssl_context(path: str | None) -> ssl.SSLContext | bool:
+    if path is None:
+        return True
+    try:
+        with Path(path).open("rb") as stream:
+            value = stream.read(_MAX_API_CA_BYTES + 1)
+    except OSError as exc:
+        raise _HiloopError("Hiloop API CA must be a readable PEM trust bundle") from exc
+    if not value or len(value) > _MAX_API_CA_BYTES:
+        raise _HiloopError("Hiloop API CA must be 1 byte through 1 MiB")
+    context = ssl.create_default_context()
+    try:
+        context.load_verify_locations(cadata=value.decode("ascii"))
+    except (OSError, UnicodeDecodeError, ssl.SSLError) as exc:
+        raise _HiloopError("Hiloop API CA must be a readable PEM trust bundle") from exc
+    return context
 
 
 def _secure_url(value: str, label: str, *, origin_only: bool = False) -> str:

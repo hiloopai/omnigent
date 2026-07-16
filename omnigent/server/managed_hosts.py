@@ -73,6 +73,7 @@ stores into ``create_app``):
            workspace_revision: branchfs:v1:<32-hex-repository>:<64-hex-change>
            model_gateway_url: http://model-gateway.control.svc:8080/v1
            model: gpt-5.6-terra
+           api_ca: /run/hiloop/api/ca.crt  # optional additional API CA
            gateway_ca: /run/hiloop/session-gateway/ca.crt  # optional custom CA
 
    The image defaults to the official prebaked host image
@@ -616,6 +617,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
         "lease_secs",
         "idle_timeout_secs",
         "bootstrap_port",
+        "api_ca",
         "gateway_ca",
         "expected_gateway_authority",
     }
@@ -664,6 +666,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
     lease_secs = positive_int(section, "lease_secs", 86_400, "sandbox.hiloop")
     idle_timeout_secs = positive_int(section, "idle_timeout_secs", 86_400, "sandbox.hiloop")
     bootstrap_port = positive_int(section, "bootstrap_port", 17_891, "sandbox.hiloop")
+    api_ca = optional_string("api_ca")
     gateway_ca = optional_string("gateway_ca")
     expected_gateway_authority = optional_string("expected_gateway_authority")
 
@@ -683,6 +686,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
             lease_secs=lease_secs,
             idle_timeout_secs=idle_timeout_secs,
             bootstrap_port=bootstrap_port,
+            api_ca=api_ca,
             gateway_ca=gateway_ca,
             expected_gateway_authority=expected_gateway_authority,
         )

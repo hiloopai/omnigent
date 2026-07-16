@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import json
+import ssl
+from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 
+from omnigent.inner.egress.ca import ensure_ca
 from omnigent.onboarding.sandboxes.hiloop import (
     HiloopSandboxLauncher,
+    _api_ssl_context,
     _HiloopError,
     _RestApi,
 )
@@ -133,6 +139,40 @@ def test_prepare_does_not_require_a_hiloop_cli_binary(
     )
 
     launcher.prepare()
+
+
+def test_api_ca_augments_instead_of_replacing_system_trust(tmp_path: Path) -> None:
+    api_ca, _ = ensure_ca(cache_dir=tmp_path)
+    system_roots = set(ssl.create_default_context().get_ca_certs(binary_form=True))
+
+    context = _api_ssl_context(str(api_ca))
+
+    assert isinstance(context, ssl.SSLContext)
+    combined_roots = set(context.get_ca_certs(binary_form=True))
+    custom_der = x509.load_pem_x509_certificate(api_ca.read_bytes()).public_bytes(Encoding.DER)
+    assert system_roots <= combined_roots
+    assert custom_der in combined_roots
+
+
+def test_api_ca_rejects_an_invalid_trust_bundle(tmp_path: Path) -> None:
+    invalid = tmp_path / "invalid-api-ca.pem"
+    invalid.write_text("not a certificate")
+
+    with pytest.raises(_HiloopError, match="readable PEM trust bundle"):
+        _api_ssl_context(str(invalid))
+
+
+def test_api_ca_can_be_supplied_by_dedicated_environment_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_ca, _ = ensure_ca(cache_dir=tmp_path)
+    monkeypatch.setenv("HILOOP_API_CA_CERT", str(api_ca))
+    launcher = _launcher(_FakeApi(), _FakeBootstrap())
+
+    launcher.prepare()
+
+    assert launcher._resolved_api_ca() == str(api_ca)
 
 
 def test_start_host_uses_proof_bound_session_bootstrap() -> None:
