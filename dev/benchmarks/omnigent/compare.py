@@ -16,9 +16,6 @@ import json
 import sys
 from pathlib import Path
 
-# Allow ``uv run <path>`` (no package context) to import the sibling modules.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-
 from rich.console import Console
 from rich.table import Table
 
@@ -99,8 +96,10 @@ def compare_reports(
         b_p50 = b_summary.get("avg_p50_ms", 0.0)
         b_p99 = b_summary.get("avg_p99_ms", 0.0)
 
-        delta_p50 = (c_p50 - b_p50) / b_p50 if b_p50 and b_p50 > 0 else 0.0
-        delta_p99 = (c_p99 - b_p99) / b_p99 if b_p99 and b_p99 > 0 else 0.0
+        c_p50 = c_p50 or 0.0
+        c_p99 = c_p99 or 0.0
+        delta_p50 = (c_p50 - b_p50) / b_p50 if b_p50 > 0 else 0.0
+        delta_p99 = (c_p99 - b_p99) / b_p99 if b_p99 > 0 else 0.0
 
         regression = delta_p50 > threshold or delta_p99 > threshold
         if regression:
@@ -179,7 +178,8 @@ def build_markdown(rows: list[dict], threshold: float, passed: bool) -> str:
         "",
         f"Regression threshold: **{threshold * 100:.0f}%** on avg P50 or avg P99.",
         "",
-        "| Journey | Status | Base P50 ms | Cand P50 ms | Δ P50 | Base P99 ms | Cand P99 ms | Δ P99 |",
+        "| Journey | Status | Base P50 ms | Cand P50 ms | Δ P50 |"
+        " Base P99 ms | Cand P99 ms | Δ P99 |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
 
@@ -237,9 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     console.print(
         f"[bold]Baseline:[/bold]  {args.baseline} (git: {baseline.get('git_sha', 'unknown')[:12]})"
     )
-    console.print(
-        f"[bold]Candidate:[/bold] {args.candidate} (git: {candidate.get('git_sha', 'unknown')[:12]})"
-    )
+    sha = candidate.get("git_sha", "unknown")[:12]
+    console.print(f"[bold]Candidate:[/bold] {args.candidate} (git: {sha})")
     if args.backend:
         console.print(f"[bold]Backend filter:[/bold] {args.backend}")
 
@@ -255,9 +254,8 @@ def main(argv: list[str] | None = None) -> int:
     new_journeys = [r for r in rows if r["status"] == "new"]
 
     if new_journeys:
-        console.print(
-            f"[cyan]New journeys (no baseline):[/cyan] {', '.join(r['journey'] for r in new_journeys)}"
-        )
+        names = ", ".join(r["journey"] for r in new_journeys)
+        console.print(f"[cyan]New journeys (no baseline):[/cyan] {names}")
 
     if regressions:
         console.print(
