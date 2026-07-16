@@ -184,7 +184,13 @@ class PiProviderConfig:
                 any(m.get("id") == self.model for m in prov.get("models", []))
                 for prov in self.additional_providers.values()
             )
-            if not any(m.get("id") == self.model for m in models) and not in_additional:
+            # Skip models excluded from Pi entirely (e.g. gemini-2-5 thinking
+            # models) — don't register them under the Anthropic provider either.
+            if (
+                not any(m.get("id") == self.model for m in models)
+                and not in_additional
+                and not _unsupported_in_pi(self.model.lower())
+            ):
                 models.append({"id": self.model, "input": ["text", "image"]})
         else:
             models = [{"id": self.model}]
