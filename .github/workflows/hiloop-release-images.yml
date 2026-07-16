@@ -1,0 +1,293 @@
+# Company-fork-only native image release. Hiloop deploys these artifacts by exact digest; upstream
+# workflows are intentionally inert in this fork and publish unsigned public GHCR images.
+name: Hiloop release images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/docker/Dockerfile"
+      - "deploy/docker/entrypoint.py"
+      - "omnigent/**"
+      - "web/**"
+      - "sdks/**"
+      - "examples/**"
+      - "pyproject.toml"
+      - "setup.py"
+      - "uv.lock"
+      - "web/package-lock.json"
+      - ".github/workflows/hiloop-release-images.yml"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/hiloop-release-images.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hiloop-release-images-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: "607856468300"
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Enforce fork-release safety invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          workflow=.github/workflows/hiloop-release-images.yml
+          grep -Fq "github.repository == 'hiloopai/omnigent'" "$workflow"
+          grep -Fq "github.ref == 'refs/heads/main'" "$workflow"
+          grep -Fq 'role/gha-omnigent-image-push' "$workflow"
+          grep -Fq 'target: runtime' "$workflow"
+          grep -Fq 'target: host' "$workflow"
+          grep -Fq 'trivy sbom' "$workflow"
+          grep -Fq 'cosign attest --type cyclonedx' "$workflow"
+          grep -Fq 'actions/attest-build-provenance@' "$workflow"
+
+  publish:
+    if: github.repository == 'hiloopai/omnigent' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      server-digest: ${{ steps.resolve.outputs.server-digest }}
+      host-digest: ${{ steps.resolve.outputs.host-digest }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # This role trusts only hiloopai/omnigent main and can write only the two repositories below.
+      - uses: aws-actions/configure-aws-credentials@517a711dbcd0e402f90c77e7e2f81e849156e31d # v6.2.2
+        with:
+          role-to-assume: arn:aws:iam::607856468300:role/gha-omnigent-image-push
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2.1.6
+
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Install pinned Trivy
+        uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
+        with:
+          tool: trivy@0.71.2
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1
+
+      - id: release
+        name: Derive immutable release references
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse --short=12 HEAD)"
+          timestamp="$(git show -s --format=%ct HEAD)"
+          registry="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          {
+            printf 'registry=%s\n' "$registry"
+            printf 'server-tag=native-%s-%s\n' "$timestamp" "$sha"
+            printf 'host-tag=base-%s-%s\n' "$timestamp" "$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - id: existing
+        name: Detect idempotent same-commit retries
+        env:
+          SERVER_TAG: ${{ steps.release.outputs.server-tag }}
+          HOST_TAG: ${{ steps.release.outputs.host-tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in "server:omnigent-server:${SERVER_TAG}" "host:omnigent-host:${HOST_TAG}"; do
+            IFS=: read -r name repository tag <<<"$pair"
+            digest="$(aws ecr describe-images --repository-name "hiloop/${repository}" \
+              --image-ids imageTag="$tag" --query 'imageDetails[0].imageDigest' --output text \
+              2>/dev/null || true)"
+            if [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              printf '%s-exists=true\n' "$name" >> "$GITHUB_OUTPUT"
+              printf '%s-existing-digest=%s\n' "$name" "$digest" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s-exists=false\n' "$name" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - if: steps.existing.outputs.server-exists != 'true'
+        id: build-server
+        name: Build and push native server (amd64)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.release.outputs.registry }}/hiloop/omnigent-server:${{ steps.release.outputs.server-tag }}
+          cache-from: type=gha,scope=hiloop-native-images
+          cache-to: type=gha,scope=hiloop-native-images,mode=max
+          provenance: false
+          sbom: false
+
+      - if: steps.existing.outputs.host-exists != 'true'
+        id: build-host
+        name: Build and push managed-host base (amd64)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          target: host
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.release.outputs.registry }}/hiloop/omnigent-host:${{ steps.release.outputs.host-tag }}
+          cache-from: type=gha,scope=hiloop-native-images
+          cache-to: type=gha,scope=hiloop-native-images,mode=max
+          provenance: false
+          sbom: false
+
+      - id: resolve
+        name: Resolve pushed tags to exact registry digests
+        env:
+          SERVER_TAG: ${{ steps.release.outputs.server-tag }}
+          HOST_TAG: ${{ steps.release.outputs.host-tag }}
+          SERVER_BUILD_DIGEST: ${{ steps.build-server.outputs.digest }}
+          HOST_BUILD_DIGEST: ${{ steps.build-host.outputs.digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pair in "server:omnigent-server:${SERVER_TAG}:${SERVER_BUILD_DIGEST}" \
+                      "host:omnigent-host:${HOST_TAG}:${HOST_BUILD_DIGEST}"; do
+            IFS=: read -r name repository tag algorithm hex <<<"$pair"
+            built_digest=""
+            if [[ -n "${algorithm:-}" || -n "${hex:-}" ]]; then
+              built_digest="${algorithm}:${hex}"
+            fi
+            digest="$(aws ecr describe-images --repository-name "hiloop/${repository}" \
+              --image-ids imageTag="$tag" --query 'imageDetails[0].imageDigest' --output text)"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            if [[ -n "$built_digest" ]]; then
+              [[ "$built_digest" == "$digest" ]]
+            fi
+            printf '%s-digest=%s\n' "$name" "$digest" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Smoke exact native artifacts
+        env:
+          REGISTRY: ${{ steps.release.outputs.registry }}
+          SERVER_DIGEST: ${{ steps.resolve.outputs.server-digest }}
+          HOST_DIGEST: ${{ steps.resolve.outputs.host-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          server_ref="${REGISTRY}/hiloop/omnigent-server@${SERVER_DIGEST}"
+          host_ref="${REGISTRY}/hiloop/omnigent-host@${HOST_DIGEST}"
+          docker pull "$server_ref"
+          docker run --rm "$server_ref" python -c '
+          from omnigent.onboarding.sandboxes.hiloop import HiloopSandboxLauncher
+          from omnigent.server.managed_hosts import _hiloop_launcher_factory
+          assert HiloopSandboxLauncher.provider == "hiloop"
+          assert callable(_hiloop_launcher_factory)
+          '
+          docker pull "$host_ref"
+          docker run --rm "$host_ref" python -c '
+          from omnigent.onboarding.sandboxes.hiloop_bootstrap import main
+          assert callable(main)
+          '
+
+      - id: secure
+        name: Scan, sign, attest SBOMs, and detect existing provenance
+        env:
+          COSIGN_YES: "true"
+          GH_TOKEN: ${{ github.token }}
+          REGISTRY: ${{ steps.release.outputs.registry }}
+          SERVER_DIGEST: ${{ steps.resolve.outputs.server-digest }}
+          HOST_DIGEST: ${{ steps.resolve.outputs.host-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p sboms
+          identity_re='^https://github\.com/hiloopai/omnigent/\.github/workflows/hiloop-release-images\.yml@refs/heads/main$'
+          issuer=https://token.actions.githubusercontent.com
+          for pair in "server:omnigent-server:${SERVER_DIGEST}" "host:omnigent-host:${HOST_DIGEST}"; do
+            IFS=: read -r name repository algorithm hex <<<"$pair"
+            digest="${algorithm}:${hex}"
+            ref="${REGISTRY}/hiloop/${repository}@${digest}"
+            sbom="sboms/omnigent-${name}.cdx.json"
+            trivy image --quiet --skip-version-check --format cyclonedx --output "$sbom" "$ref"
+            jq -e '.bomFormat == "CycloneDX" and (.components | type == "array")' "$sbom" >/dev/null
+            trivy sbom --quiet --skip-version-check --scanners vuln --exit-code 1 \
+              --severity HIGH,CRITICAL --ignore-unfixed "$sbom"
+
+            if ! cosign verify --certificate-identity-regexp "$identity_re" \
+              --certificate-oidc-issuer "$issuer" "$ref" >/dev/null 2>&1; then
+              cosign sign "$ref"
+            fi
+            if ! cosign verify-attestation --type cyclonedx \
+              --certificate-identity-regexp "$identity_re" \
+              --certificate-oidc-issuer "$issuer" "$ref" >/dev/null 2>&1; then
+              cosign attest --type cyclonedx --predicate "$sbom" "$ref"
+            fi
+            if gh attestation verify "oci://${ref}" --repo "$GITHUB_REPOSITORY" \
+              --bundle-from-oci --predicate-type https://slsa.dev/provenance/v1 \
+              --cert-identity-regex "$identity_re"; then
+              printf '%s-provenance=true\n' "$name" >> "$GITHUB_OUTPUT"
+            else
+              printf '%s-provenance=false\n' "$name" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - if: steps.secure.outputs.server-provenance != 'true'
+        name: Attest native-server build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.release.outputs.registry }}/hiloop/omnigent-server
+          subject-digest: ${{ steps.resolve.outputs.server-digest }}
+          push-to-registry: true
+
+      - if: steps.secure.outputs.host-provenance != 'true'
+        name: Attest managed-host-base build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.release.outputs.registry }}/hiloop/omnigent-host
+          subject-digest: ${{ steps.resolve.outputs.host-digest }}
+          push-to-registry: true
+
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hiloop-native-image-sboms
+          path: sboms/*.cdx.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Publish exact release evidence
+        env:
+          REGISTRY: ${{ steps.release.outputs.registry }}
+          SERVER_DIGEST: ${{ steps.resolve.outputs.server-digest }}
+          HOST_DIGEST: ${{ steps.resolve.outputs.host-digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '### Hiloop native Omnigent artifacts'
+            echo
+            echo "- source: \`${GITHUB_SHA}\`"
+            echo "- server: \`${REGISTRY}/hiloop/omnigent-server@${SERVER_DIGEST}\`"
+            echo "- managed-host base: \`${REGISTRY}/hiloop/omnigent-host@${HOST_DIGEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

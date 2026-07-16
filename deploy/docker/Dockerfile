@@ -55,7 +55,7 @@
 
 # Must satisfy pyproject requires-python (>=3.12); 3.11 fails dependency resolution.
 ARG PYTHON_VERSION=3.12
-ARG NODE_VERSION=20
+ARG NODE_VERSION=24.15.0
 
 # ── Web UI builder ──────────────────────────────────────
 # Builds the web SPA so `docker build` works from a clean checkout —
@@ -187,6 +187,10 @@ FROM node:${NODE_VERSION}-slim AS node-runtime
 #     never reference it.
 FROM python:${PYTHON_VERSION}-slim AS host
 ARG NPM_CONFIG_REGISTRY=
+ARG NPM_VERSION=12.0.1
+ARG CLAUDE_CODE_VERSION=2.1.211
+ARG CODEX_VERSION=0.144.5
+ARG PI_CODING_AGENT_VERSION=0.80.9
 ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}
 
 # IS_SANDBOX: devcontainer-convention flag consulted by Claude Code —
@@ -236,14 +240,15 @@ COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# The harness CLI set mirrors omnigent/onboarding/harness_install.py
-# (the binary/package map `omnigent setup` installs from) — keep the
-# two in sync. Unpinned on purpose: the official image is rebuilt by
-# CI, so it tracks the same "latest" a laptop install would get.
-RUN npm install -g --no-audit --no-fund \
-      @anthropic-ai/claude-code \
-      @openai/codex \
-      @earendil-works/pi-coding-agent \
+# The harness CLI set mirrors omnigent/onboarding/harness_install.py. Unlike an interactive laptop
+# install, a provenance-bound sandbox base must be reproducible and vulnerability-gateable, so all
+# four npm surfaces (including npm itself) are exact. Dependabot/registry review advances these as
+# one image release; the exact OCI digest remains the deployment authority.
+RUN npm install -g --no-audit --no-fund "npm@${NPM_VERSION}" \
+ && npm install -g --no-audit --no-fund \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+      "@openai/codex@${CODEX_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_CODING_AGENT_VERSION}" \
  && npm cache clean --force
 
 # Kiro CLI is not published as an npm package, and its installer has NO version
