@@ -77,7 +77,7 @@ class HiloopImageContractTest(unittest.TestCase):
             "uv pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} -e .",
             self.builder,
         )
-        for package in ("openai", "openai-agents", "pydantic"):
+        for package in ("mcp", "openai", "openai-agents", "pydantic"):
             self.assertIn(f'"{package}"', self.builder)
 
     def test_hiloop_host_has_exact_runtime_config(self) -> None:

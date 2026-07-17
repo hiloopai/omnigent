@@ -223,7 +223,7 @@ jobs:
               for package in tomllib.load(open("/build/uv.lock", "rb"))["package"]
               if "version" in package
           }
-          for package in ("openai", "openai-agents", "pydantic"):
+          for package in ("mcp", "openai", "openai-agents", "pydantic"):
               assert metadata.version(package) == locked[package], (
                   package,
                   metadata.version(package),
@@ -271,7 +271,7 @@ jobs:
               for package in tomllib.load(open("/build/uv.lock", "rb"))["package"]
               if "version" in package
           }
-          for package in ("openai", "openai-agents", "pydantic"):
+          for package in ("mcp", "openai", "openai-agents", "pydantic"):
               assert metadata.version(package) == locked[package], (
                   package,
                   metadata.version(package),
