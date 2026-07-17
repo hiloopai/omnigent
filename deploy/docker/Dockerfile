@@ -103,9 +103,12 @@ RUN pip install --index-url ${PYPI_INDEX_URL} --no-cache-dir uv
 
 WORKDIR /build
 
-# Manifests + SDK path-deps first so the install layer caches across
-# pure source edits.
-COPY pyproject.toml setup.py ./
+# Manifests, the reviewed lock, and SDK path-deps first so the install layer
+# caches across pure source edits.  The lock is part of the image input: using
+# `uv pip install -e .` here silently re-resolved every transitive dependency
+# on each build and allowed an unreviewed OpenAI SDK release to break live
+# model turns even though uv.lock still held the qualified version.
+COPY pyproject.toml setup.py uv.lock uv.toml ./
 # License + third-party attribution travel into the published images (the host
 # and runtime targets COPY /build below), since the image redistributes the
 # dependency bytes baked in by the install step.
@@ -126,11 +129,13 @@ RUN python -m venv /opt/venv
 ENV VIRTUAL_ENV=/opt/venv \
     PATH="/opt/venv/bin:${PATH}"
 
-# Install omnigent. Editable install (-e) is required because
-# pyproject.toml declares the sibling SDKs as editable path deps via
-# [tool.uv.sources]. The runtime stages preserve /build/ so the venv's
-# .pth references stay valid.
-RUN uv pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} -e .
+# Install exactly the reviewed dependency graph. Project sync keeps Omnigent
+# and its sibling SDK sources editable, matching the prior image layout, while
+# `--locked` fails the build instead of resolving a new graph. `--active`
+# targets /opt/venv rather than creating /build/.venv.
+RUN uv sync --locked --active --no-dev --no-cache \
+      --default-index ${PYPI_INDEX_URL} \
+ && python -c 'import importlib.metadata as m, tomllib; from agents.usage import Usage; locked = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"] if "version" in p}; packages = ("openai", "openai-agents", "pydantic"); assert all(m.version(p) == locked[p] for p in packages), {p: (m.version(p), locked[p]) for p in packages}; assert Usage().input_tokens_details.cached_tokens == 0'
 
 # ── Server builder ──────────────────────────────────────
 # Server-only additions on top of the shared builder: the SPA bundle

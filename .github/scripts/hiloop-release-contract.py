@@ -59,6 +59,7 @@ class HiloopImageContractTest(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.dockerfile = DOCKERFILE.read_text(encoding="utf-8")
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
+        cls.builder = _stage(cls.dockerfile, "builder")
         cls.generic_host = _stage(cls.dockerfile, "host")
         cls.hiloop_host = _stage(cls.dockerfile, "hiloop-host")
         cls.runtime = _stage(cls.dockerfile, "runtime")
@@ -68,6 +69,16 @@ class HiloopImageContractTest(unittest.TestCase):
         self.assertEqual(_json_instruction(self.generic_host, "CMD"), ["sleep", "infinity"])
         self.assertNotRegex(self.generic_host, r"(?m)^ENTRYPOINT ")
         self.assertNotRegex(self.generic_host, r"(?m)^USER ")
+
+    def test_builder_installs_the_reviewed_lock_without_resolution(self) -> None:
+        self.assertIn("COPY pyproject.toml setup.py uv.lock uv.toml ./", self.builder)
+        self.assertIn("uv sync --locked --active --no-dev --no-cache", self.builder)
+        self.assertNotIn(
+            "uv pip install --no-cache-dir --index-url ${PYPI_INDEX_URL} -e .",
+            self.builder,
+        )
+        for package in ("openai", "openai-agents", "pydantic"):
+            self.assertIn(f'"{package}"', self.builder)
 
     def test_hiloop_host_has_exact_runtime_config(self) -> None:
         self.assertTrue(self.hiloop_host.startswith("FROM host AS hiloop-host\n"))
@@ -102,6 +113,8 @@ class HiloopImageContractTest(unittest.TestCase):
         self.assertIn('.User == "1000:1000"', self.workflow)
         self.assertIn("((.Cmd // []) | length == 0)", self.workflow)
         self.assertIn('pwd.getpwuid(1000).pw_dir == "/tmp"', self.workflow)
+        self.assertEqual(self.workflow.count('tomllib.load(open("/build/uv.lock", "rb"))'), 2)
+        self.assertEqual(self.workflow.count("Usage().input_tokens_details.cached_tokens == 0"), 2)
         self.assertIn("cosign attest --type cyclonedx", self.workflow)
         self.assertIn("actions/attest-build-provenance@", self.workflow)
         self.assertIn('--source-digest "$GITHUB_SHA"', self.workflow)

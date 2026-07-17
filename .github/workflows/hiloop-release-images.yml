@@ -211,8 +211,25 @@ jobs:
             .Labels["org.opencontainers.image.revision"] == $revision
           ' <<<"$server_config" >/dev/null
           docker run --rm "$server_ref" python -c '
+          import importlib.metadata as metadata
+          import tomllib
+
+          from agents.usage import Usage
           from omnigent.onboarding.sandboxes.hiloop import HiloopSandboxLauncher
           from omnigent.server.managed_hosts import _hiloop_launcher_factory
+
+          locked = {
+              package["name"]: package["version"]
+              for package in tomllib.load(open("/build/uv.lock", "rb"))["package"]
+              if "version" in package
+          }
+          for package in ("openai", "openai-agents", "pydantic"):
+              assert metadata.version(package) == locked[package], (
+                  package,
+                  metadata.version(package),
+                  locked[package],
+              )
+          assert Usage().input_tokens_details.cached_tokens == 0
           assert HiloopSandboxLauncher.provider == "hiloop"
           assert callable(_hiloop_launcher_factory)
           '
@@ -241,11 +258,26 @@ jobs:
           ' <<<"$host_config" >/dev/null
           docker run --rm --entrypoint /opt/venv/bin/python "$host_ref" -c '
           import grp
+          import importlib.metadata as metadata
           import os
           import pwd
+          import tomllib
 
+          from agents.usage import Usage
           from omnigent.onboarding.sandboxes.hiloop_bootstrap import main
 
+          locked = {
+              package["name"]: package["version"]
+              for package in tomllib.load(open("/build/uv.lock", "rb"))["package"]
+              if "version" in package
+          }
+          for package in ("openai", "openai-agents", "pydantic"):
+              assert metadata.version(package) == locked[package], (
+                  package,
+                  metadata.version(package),
+                  locked[package],
+              )
+          assert Usage().input_tokens_details.cached_tokens == 0
           assert (os.getuid(), os.getgid()) == (1000, 1000)
           assert pwd.getpwuid(1000).pw_name == "omnigent"
           assert pwd.getpwuid(1000).pw_dir == "/tmp"
