@@ -630,7 +630,34 @@ class TestOpenAIAgentsSDKExecutor(unittest.TestCase):
 
         _run(_t())
 
-    def test_max_tokens_is_omitted_when_unset(self):
+    def test_first_class_max_tokens_is_passed_to_model_settings(self):
+        async def _t():
+            _FakeRunner.last_calls = []
+            _FakeRunner.next_result = _FakeResult(events=[], final_output="done")
+            executor = OpenAIAgentsSDKExecutor(client=object())
+            with patch(
+                "omnigent.inner.openai_agents_sdk_executor._ensure_agents_sdk",
+                return_value=_fake_agents_sdk(),
+            ):
+                events = [
+                    e
+                    async for e in executor.run_turn(
+                        [{"role": "user", "content": "hi", "session_id": "s1"}],
+                        [],
+                        "Be helpful.",
+                        ExecutorConfig(max_tokens=32768),
+                    )
+                ]
+
+            self.assertEqual(events[-1].response, "done")
+            self.assertEqual(
+                _FakeRunner.last_calls[0]["agent"].model_settings.max_tokens,
+                32768,
+            )
+
+        _run(_t())
+
+    def test_default_max_tokens_is_passed_to_model_settings(self):
         async def _t():
             _FakeRunner.last_calls = []
             _FakeRunner.next_result = _FakeResult(events=[], final_output="done")
@@ -649,7 +676,72 @@ class TestOpenAIAgentsSDKExecutor(unittest.TestCase):
                 ]
 
             self.assertEqual(events[-1].response, "done")
-            self.assertIsNone(_FakeRunner.last_calls[0]["agent"].model_settings.max_tokens)
+            self.assertEqual(
+                _FakeRunner.last_calls[0]["agent"].model_settings.max_tokens,
+                ExecutorConfig().max_tokens,
+            )
+
+        _run(_t())
+
+    def test_default_max_tokens_reaches_real_responses_wire(self):
+        """The locked OpenAI SDK must serialize the executor's default bound."""
+
+        async def _t():
+            import json
+
+            import httpx
+            from openai import AsyncOpenAI
+
+            requests: list[tuple[httpx.Request, dict[str, Any]]] = []
+
+            def capture(request: httpx.Request) -> httpx.Response:
+                requests.append((request, json.loads(request.content)))
+                # Serialization has already happened; stop before a model response
+                # so this remains a deterministic, network-free contract test.
+                return httpx.Response(
+                    400,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "capture complete",
+                            "type": "invalid_request_error",
+                            "code": "test_stop",
+                        }
+                    },
+                )
+
+            http_client = httpx.AsyncClient(transport=httpx.MockTransport(capture))
+            client = AsyncOpenAI(
+                api_key="test-proof-token",
+                base_url="https://model-gateway.invalid/v1",
+                http_client=http_client,
+                max_retries=0,
+            )
+            executor = OpenAIAgentsSDKExecutor(client=client, model="gpt-5.6-terra")
+            try:
+                events = await _collect(
+                    executor.run_turn(
+                        [{"role": "user", "content": "hi", "session_id": "wire-default"}],
+                        [],
+                        "Be helpful.",
+                    )
+                )
+            finally:
+                await client.close()
+
+            self.assertEqual(len(requests), 1)
+            request, body = requests[0]
+            self.assertEqual(request.url.path, "/v1/responses")
+            self.assertEqual(
+                request.headers["content-type"].split(";", 1)[0],
+                "application/json",
+            )
+            self.assertEqual(body["model"], "gpt-5.6-terra")
+            self.assertIs(body["stream"], True)
+            self.assertEqual(body["max_output_tokens"], ExecutorConfig().max_tokens)
+            self.assertTrue("store" not in body or body["store"] is False)
+            self.assertEqual(len(events), 1)
+            self.assertIsInstance(events[0], ExecutorError)
 
         _run(_t())
 
