@@ -1474,8 +1474,14 @@ class OpenAIAgentsSDKExecutor(Executor):
             ),
         )
         parallel_tool_calls = cfg.extra.get("parallel_tool_calls", None)
+        # ``ExecutorConfig.max_tokens`` is the canonical per-turn output bound.
+        # Keep the legacy ``extra`` override for loaded specs, but never silently
+        # turn a bounded config into an unbounded Responses request when the
+        # override is absent (or explicitly ``None``).
         max_tokens_raw = cfg.extra.get("max_tokens")
-        max_tokens = int(max_tokens_raw) if max_tokens_raw is not None else None
+        if max_tokens_raw is None:
+            max_tokens_raw = cfg.max_tokens
+        max_tokens = int(max_tokens_raw)
         provider = agents_sdk.OpenAIProvider(
             openai_client=self._client,
             use_responses=self._use_responses,
