@@ -61,6 +61,7 @@ class HiloopImageContractTest(unittest.TestCase):
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
         cls.generic_host = _stage(cls.dockerfile, "host")
         cls.hiloop_host = _stage(cls.dockerfile, "hiloop-host")
+        cls.runtime = _stage(cls.dockerfile, "runtime")
 
     def test_generic_host_stays_provider_neutral(self) -> None:
         self.assertIn("WORKDIR /root", self.generic_host)
@@ -81,17 +82,31 @@ class HiloopImageContractTest(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^RUN ", self.hiloop_host)), 1)
         self.assertNotRegex(self.hiloop_host, r"(?m)^(?:ADD|COPY) ")
 
+    def test_released_targets_are_unique_to_the_source_commit(self) -> None:
+        revision_label = 'LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"'
+        for stage in (self.runtime, self.hiloop_host):
+            self.assertRegex(stage, r"(?m)^ARG SOURCE_REVISION$")
+            self.assertIn(revision_label, stage)
+
     def test_workflow_publishes_and_checks_final_host(self) -> None:
         self.assertIn("target: hiloop-host", self.workflow)
         self.assertNotRegex(self.workflow, r"(?m)^\s+target: host\s*$")
         self.assertIn("host-tag=native-host-%s-%s", self.workflow)
         self.assertNotIn("host-tag=base-", self.workflow)
+        self.assertEqual(self.workflow.count("SOURCE_REVISION=${{ github.sha }}"), 2)
+        self.assertEqual(
+            self.workflow.count('.Labels["org.opencontainers.image.revision"] == $revision'),
+            2,
+        )
         self.assertIn('docker image inspect "$host_ref"', self.workflow)
         self.assertIn('.User == "1000:1000"', self.workflow)
         self.assertIn("((.Cmd // []) | length == 0)", self.workflow)
         self.assertIn('pwd.getpwuid(1000).pw_dir == "/tmp"', self.workflow)
         self.assertIn("cosign attest --type cyclonedx", self.workflow)
         self.assertIn("actions/attest-build-provenance@", self.workflow)
+        self.assertIn('--source-digest "$GITHUB_SHA"', self.workflow)
+        self.assertIn("--source-ref refs/heads/main", self.workflow)
+        self.assertIn("refusing to create a multi-source digest", self.workflow)
 
 
 if __name__ == "__main__":

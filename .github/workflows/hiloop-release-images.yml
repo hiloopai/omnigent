@@ -142,6 +142,8 @@ jobs:
           file: deploy/docker/Dockerfile
           target: runtime
           platforms: linux/amd64
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
           push: true
           tags: ${{ steps.release.outputs.registry }}/hiloop/omnigent-server:${{ steps.release.outputs.server-tag }}
           cache-from: type=gha,scope=hiloop-native-images
@@ -158,6 +160,8 @@ jobs:
           file: deploy/docker/Dockerfile
           target: hiloop-host
           platforms: linux/amd64
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
           push: true
           tags: ${{ steps.release.outputs.registry }}/hiloop/omnigent-host:${{ steps.release.outputs.host-tag }}
           cache-from: type=gha,scope=hiloop-native-images
@@ -202,6 +206,10 @@ jobs:
           server_ref="${REGISTRY}/hiloop/omnigent-server@${SERVER_DIGEST}"
           host_ref="${REGISTRY}/hiloop/omnigent-host@${HOST_DIGEST}"
           docker pull "$server_ref"
+          server_config="$(docker image inspect "$server_ref" --format '{{json .Config}}')"
+          jq -e --arg revision "$GITHUB_SHA" '
+            .Labels["org.opencontainers.image.revision"] == $revision
+          ' <<<"$server_config" >/dev/null
           docker run --rm "$server_ref" python -c '
           from omnigent.onboarding.sandboxes.hiloop import HiloopSandboxLauncher
           from omnigent.server.managed_hosts import _hiloop_launcher_factory
@@ -210,7 +218,8 @@ jobs:
           '
           docker pull "$host_ref"
           host_config="$(docker image inspect "$host_ref" --format '{{json .Config}}')"
-          jq -e '
+          jq -e --arg revision "$GITHUB_SHA" '
+            .Labels["org.opencontainers.image.revision"] == $revision and
             .User == "1000:1000" and
             .WorkingDir == "/" and
             .Entrypoint == [
@@ -277,9 +286,26 @@ jobs:
               --certificate-oidc-issuer "$issuer" "$ref" >/dev/null 2>&1; then
               cosign attest --type cyclonedx --predicate "$sbom" "$ref"
             fi
-            if gh attestation verify "oci://${ref}" --repo "$GITHUB_REPOSITORY" \
-              --bundle-from-oci --predicate-type https://slsa.dev/provenance/v1 \
-              --cert-identity-regex "$identity_re"; then
+            provenance_json=""
+            if provenance_json="$(gh attestation verify "oci://${ref}" \
+              --repo "$GITHUB_REPOSITORY" --bundle-from-oci \
+              --predicate-type https://slsa.dev/provenance/v1 \
+              --cert-identity-regex "$identity_re" --format json 2>/dev/null)"; then
+              sources="$(jq -c \
+                '[.[].verificationResult.signature.certificate.sourceRepositoryDigest] | unique' \
+                <<<"$provenance_json")"
+              source_refs="$(jq -c \
+                '[.[].verificationResult.signature.certificate.sourceRepositoryRef] | unique' \
+                <<<"$provenance_json")"
+              expected_sources="$(jq -cn --arg source "$GITHUB_SHA" '[$source]')"
+              [[ "$sources" == "$expected_sources" && "$source_refs" == '["refs/heads/main"]' ]] || {
+                echo "::error::${ref} already has provenance for another source or ref; refusing to create a multi-source digest."
+                exit 1
+              }
+              gh attestation verify "oci://${ref}" --repo "$GITHUB_REPOSITORY" \
+                --bundle-from-oci --predicate-type https://slsa.dev/provenance/v1 \
+                --cert-identity-regex "$identity_re" --source-digest "$GITHUB_SHA" \
+                --source-ref refs/heads/main >/dev/null
               printf '%s-provenance=true\n' "$name" >> "$GITHUB_OUTPUT"
             else
               printf '%s-provenance=false\n' "$name" >> "$GITHUB_OUTPUT"

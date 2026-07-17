@@ -60,6 +60,7 @@
 # Must satisfy pyproject requires-python (>=3.12); 3.11 fails dependency resolution.
 ARG PYTHON_VERSION=3.12
 ARG NODE_VERSION=24.15.0
+ARG SOURCE_REVISION
 
 # ── Web UI builder ──────────────────────────────────────
 # Builds the web SPA so `docker build` works from a clean checkout —
@@ -365,6 +366,8 @@ CMD ["sleep", "infinity"]
 # A one-use, non-root host that receives its proof-bound launch over loopback.
 # Keep the generic host target above entrypoint-free for other sandbox providers.
 FROM host AS hiloop-host
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 RUN groupadd --gid 1000 omnigent \
  && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /tmp \
@@ -386,6 +389,8 @@ CMD []
 
 # ── Server runtime (default target) ─────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
