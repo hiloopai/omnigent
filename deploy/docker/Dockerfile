@@ -1,4 +1,5 @@
-# Omnigent images: server (default target) + host (`--target host`).
+# Omnigent images: server (default), generic host (`--target host`), and the
+# fork-owned Hiloop runtime (`--target hiloop-host`).
 #
 # The default/final target builds the server image (external-runner
 # mode): the FastAPI / WebSocket coordinator — HTTP + SSE routes, the
@@ -41,6 +42,9 @@
 #   docker build -t omnigent-host:latest --target host \
 #                -f deploy/docker/Dockerfile .
 #
+#   docker build -t omnigent-hiloop-host:latest --target hiloop-host \
+#                -f deploy/docker/Dockerfile .
+#
 # Behind corporate package proxies (the host target also installs the
 # harness CLIs from npm, so it needs the npm proxy too):
 #
@@ -56,6 +60,7 @@
 # Must satisfy pyproject requires-python (>=3.12); 3.11 fails dependency resolution.
 ARG PYTHON_VERSION=3.12
 ARG NODE_VERSION=24.15.0
+ARG SOURCE_REVISION
 
 # ── Web UI builder ──────────────────────────────────────
 # Builds the web SPA so `docker build` works from a clean checkout —
@@ -357,8 +362,35 @@ WORKDIR /root
 # sandbox create` runs so a bare `docker run` behaves the same way.
 CMD ["sleep", "infinity"]
 
+# ── Hiloop host runtime (`--target hiloop-host`) ───────────────
+# A one-use, non-root host that receives its proof-bound launch over loopback.
+# Keep the generic host target above entrypoint-free for other sandbox providers.
+FROM host AS hiloop-host
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
+
+RUN groupadd --gid 1000 omnigent \
+ && useradd --uid 1000 --gid 1000 --no-create-home --home-dir /tmp \
+      --shell /bin/bash omnigent
+
+ENV HOME=/tmp \
+    IS_SANDBOX=1 \
+    OMNIGENT_BOOTSTRAP_EXEC=/opt/venv/bin/omnigent \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    XDG_CACHE_HOME=/tmp/.cache \
+    XDG_CONFIG_HOME=/tmp/.config \
+    XDG_DATA_HOME=/tmp/.local/share
+
+WORKDIR /
+USER 1000:1000
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "omnigent.onboarding.sandboxes.hiloop_bootstrap"]
+CMD []
+
 # ── Server runtime (default target) ─────────────────────
 FROM python:${PYTHON_VERSION}-slim AS runtime
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
