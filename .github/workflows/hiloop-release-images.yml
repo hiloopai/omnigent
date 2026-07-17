@@ -16,10 +16,13 @@ on:
       - "setup.py"
       - "uv.lock"
       - "web/package-lock.json"
+      - ".github/scripts/hiloop-release-contract.py"
       - ".github/workflows/hiloop-release-images.yml"
   workflow_dispatch:
   pull_request:
     paths:
+      - "deploy/docker/Dockerfile"
+      - ".github/scripts/hiloop-release-contract.py"
       - ".github/workflows/hiloop-release-images.yml"
 
 permissions:
@@ -53,10 +56,11 @@ jobs:
           grep -Fq "github.ref == 'refs/heads/main'" "$workflow"
           grep -Fq 'role/gha-omnigent-image-push' "$workflow"
           grep -Fq 'target: runtime' "$workflow"
-          grep -Fq 'target: host' "$workflow"
+          grep -Fq 'target: hiloop-host' "$workflow"
           grep -Fq 'trivy sbom' "$workflow"
           grep -Fq 'cosign attest --type cyclonedx' "$workflow"
           grep -Fq 'actions/attest-build-provenance@' "$workflow"
+          python3 .github/scripts/hiloop-release-contract.py
 
   publish:
     if: github.repository == 'hiloopai/omnigent' && github.ref == 'refs/heads/main'
@@ -105,7 +109,7 @@ jobs:
           {
             printf 'registry=%s\n' "$registry"
             printf 'server-tag=native-%s-%s\n' "$timestamp" "$sha"
-            printf 'host-tag=base-%s-%s\n' "$timestamp" "$sha"
+            printf 'host-tag=native-host-%s-%s\n' "$timestamp" "$sha"
           } >> "$GITHUB_OUTPUT"
 
       - id: existing
@@ -147,12 +151,12 @@ jobs:
 
       - if: steps.existing.outputs.host-exists != 'true'
         id: build-host
-        name: Build and push managed-host base (amd64)
+        name: Build and push native Hiloop host (amd64)
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           file: deploy/docker/Dockerfile
-          target: host
+          target: hiloop-host
           platforms: linux/amd64
           push: true
           tags: ${{ steps.release.outputs.registry }}/hiloop/omnigent-host:${{ steps.release.outputs.host-tag }}
@@ -205,8 +209,38 @@ jobs:
           assert callable(_hiloop_launcher_factory)
           '
           docker pull "$host_ref"
-          docker run --rm "$host_ref" python -c '
+          host_config="$(docker image inspect "$host_ref" --format '{{json .Config}}')"
+          jq -e '
+            .User == "1000:1000" and
+            .WorkingDir == "/" and
+            .Entrypoint == [
+              "/opt/venv/bin/python",
+              "-m",
+              "omnigent.onboarding.sandboxes.hiloop_bootstrap"
+            ] and
+            ((.Cmd // []) | length == 0) and
+            ([
+              "HOME=/tmp",
+              "IS_SANDBOX=1",
+              "OMNIGENT_BOOTSTRAP_EXEC=/opt/venv/bin/omnigent",
+              "PYTHONDONTWRITEBYTECODE=1",
+              "PYTHONUNBUFFERED=1",
+              "XDG_CACHE_HOME=/tmp/.cache",
+              "XDG_CONFIG_HOME=/tmp/.config",
+              "XDG_DATA_HOME=/tmp/.local/share"
+            ] - .Env | length == 0)
+          ' <<<"$host_config" >/dev/null
+          docker run --rm --entrypoint /opt/venv/bin/python "$host_ref" -c '
+          import grp
+          import os
+          import pwd
+
           from omnigent.onboarding.sandboxes.hiloop_bootstrap import main
+
+          assert (os.getuid(), os.getgid()) == (1000, 1000)
+          assert pwd.getpwuid(1000).pw_name == "omnigent"
+          assert pwd.getpwuid(1000).pw_dir == "/tmp"
+          assert grp.getgrgid(1000).gr_name == "omnigent"
           assert callable(main)
           '
 
@@ -261,7 +295,7 @@ jobs:
           push-to-registry: true
 
       - if: steps.secure.outputs.host-provenance != 'true'
-        name: Attest managed-host-base build provenance
+        name: Attest native Hiloop host build provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ${{ steps.release.outputs.registry }}/hiloop/omnigent-host
@@ -289,5 +323,5 @@ jobs:
             echo
             echo "- source: \`${GITHUB_SHA}\`"
             echo "- server: \`${REGISTRY}/hiloop/omnigent-server@${SERVER_DIGEST}\`"
-            echo "- managed-host base: \`${REGISTRY}/hiloop/omnigent-host@${HOST_DIGEST}\`"
+            echo "- Hiloop host: \`${REGISTRY}/hiloop/omnigent-host@${HOST_DIGEST}\`"
           } >> "$GITHUB_STEP_SUMMARY"
