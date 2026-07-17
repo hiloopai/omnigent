@@ -36,7 +36,8 @@ dependencies = [
     # >=14: the `e2b` extra's SDK (>=2.26) needs rich>=14 (was >=13,<14).
     "rich>=14,<15",
     "prompt_toolkit>=3.0,<4",
-    # 1.28.1 adds WebSocket Host/Origin validation (CVE-2026-59950).
+    # Supported patched SDK range: 1.28.1 fixes CVE-2026-59950; review MCP 2
+    # separately because it removes deprecated transports.
     "mcp>=1.28.1,<2",
     "starlette>=1.0.1,<2",
     "uvicorn[standard]>=0.30,<1",
