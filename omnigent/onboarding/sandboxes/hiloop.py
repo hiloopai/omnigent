@@ -25,8 +25,10 @@ from omnigent.onboarding.sandboxes.base import (
 from omnigent.onboarding.sandboxes.hiloop_bootstrap import (
     BOOTSTRAP_SCHEMA,
     DEFAULT_PORT,
+    MAX_SERVER_CA_BYTES,
     validate_model,
     validate_model_gateway_url,
+    validate_server_ca_pem,
 )
 from omnigent.onboarding.sandboxes.hiloop_session import _SessionBootstrap
 
@@ -226,6 +228,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         bootstrap_port: int = DEFAULT_PORT,
         api_ca: str | None = None,
         gateway_ca: str | None = None,
+        server_ca: str | None = None,
         expected_gateway_authority: str | None = None,
         operation_timeout_s: float = 900.0,
         api: _Api | None = None,
@@ -247,6 +250,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._bootstrap_port = bootstrap_port
         self._api_ca = api_ca
         self._gateway_ca = gateway_ca
+        self._server_ca = server_ca
         self._expected_gateway_authority = expected_gateway_authority
         self._operation_timeout_s = operation_timeout_s
         self._api_override = api
@@ -260,6 +264,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         self._resolved_project_id()
         self._resolved_key()
         self._validate_api_ca()
+        self._resolved_server_ca_pem()
         if self._bootstrap_override is None:
             gateway_ca = self._resolved_gateway_ca()
             if gateway_ca and not Path(gateway_ca).is_file():
@@ -272,6 +277,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
         if self._api_url is not None:
             self._resolved_api_url()
         self._validate_api_ca()
+        self._resolved_server_ca_pem()
 
     def provision(self, name: str) -> str:
         image_reference, image_digest = self._validated()
@@ -341,6 +347,7 @@ class HiloopSandboxLauncher(SandboxLauncher):
             "workspace": self._workspace_path,
             "model_gateway_url": self._resolved_model_gateway_url(),
             "model": self._resolved_model(),
+            "server_ca_pem": self._resolved_server_ca_pem(),
         }
         try:
             self._bootstrap().launch(sandbox_id, payload)
@@ -451,6 +458,28 @@ class HiloopSandboxLauncher(SandboxLauncher):
     def _resolved_api_ca(self) -> str | None:
         value = (self._api_ca or os.environ.get(API_CA_ENV_VAR, "")).strip()
         return value or None
+
+    def _resolved_server_ca_pem(self) -> str:
+        path = (self._server_ca or "").strip()
+        if not path:
+            return ""
+        try:
+            with Path(path).open("rb") as stream:
+                value = stream.read(MAX_SERVER_CA_BYTES + 1)
+        except OSError as exc:
+            raise click.ClickException(
+                "Hiloop coordinator server CA must be a readable PEM trust bundle"
+            ) from exc
+        if not value or len(value) > MAX_SERVER_CA_BYTES:
+            raise click.ClickException(
+                "Hiloop coordinator server CA must be 1 byte through 64 KiB"
+            )
+        try:
+            return validate_server_ca_pem(value.decode("ascii"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise click.ClickException(
+                "Hiloop coordinator server CA must be a readable PEM trust bundle"
+            ) from exc
 
     def _validate_api_ca(self) -> None:
         try:

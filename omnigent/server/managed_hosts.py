@@ -75,6 +75,7 @@ stores into ``create_app``):
            model: gpt-5.6-terra
            api_ca: /run/hiloop/api/ca.crt  # optional additional API CA
            gateway_ca: /run/hiloop/session-gateway/ca.crt  # optional custom CA
+           server_ca: /run/hiloop/coordinator-server/ca.crt  # optional server CA
 
    The image defaults to the official prebaked host image
    (``ghcr.io/omnigent-ai/omnigent-host:latest``; see
@@ -619,6 +620,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
         "bootstrap_port",
         "api_ca",
         "gateway_ca",
+        "server_ca",
         "expected_gateway_authority",
     }
     unknown = sorted(set(section) - allowed)
@@ -668,6 +670,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
     bootstrap_port = positive_int(section, "bootstrap_port", 17_891, "sandbox.hiloop")
     api_ca = optional_string("api_ca")
     gateway_ca = optional_string("gateway_ca")
+    server_ca = optional_string("server_ca")
     expected_gateway_authority = optional_string("expected_gateway_authority")
 
     from omnigent.onboarding.sandboxes.hiloop import HiloopSandboxLauncher
@@ -688,6 +691,7 @@ def _hiloop_launcher_factory(raw: dict[str, object]) -> Callable[[], SandboxLaun
             bootstrap_port=bootstrap_port,
             api_ca=api_ca,
             gateway_ca=gateway_ca,
+            server_ca=server_ca,
             expected_gateway_authority=expected_gateway_authority,
         )
 

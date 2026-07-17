@@ -280,6 +280,8 @@ _RUNNER_ENV_ALLOWLIST: frozenset[str] = frozenset(
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
         "NODE_EXTRA_CA_CERTS",
         # Environment descriptor baked into the sandbox host image
         # (deploy/docker/Dockerfile `host` target), never set on

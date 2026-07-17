@@ -192,7 +192,7 @@ def test_start_host_uses_proof_bound_session_bootstrap() -> None:
         (
             "sandbox-native-1",
             {
-                "schema": "omnigent.hiloop-bootstrap/v2",
+                "schema": "omnigent.hiloop-bootstrap/v3",
                 "token": "short-lived-host-token",
                 "host_id": "host-1",
                 "host_name": "managed-native",
@@ -200,9 +200,60 @@ def test_start_host_uses_proof_bound_session_bootstrap() -> None:
                 "workspace": "/workspace",
                 "model_gateway_url": _MODEL_GATEWAY_URL,
                 "model": _MODEL,
+                "server_ca_pem": "",
             },
         )
     ]
+
+
+def test_start_host_delivers_bounded_coordinator_ca_over_proof_channel(
+    tmp_path: Path,
+) -> None:
+    server_ca, _ = ensure_ca(cache_dir=tmp_path)
+    bootstrap = _FakeBootstrap()
+    launcher = HiloopSandboxLauncher(
+        api_url="https://api.hiloop.test",
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        image=_IMAGE,
+        workspace_revision=_WORKSPACE,
+        model_gateway_url=_MODEL_GATEWAY_URL,
+        model=_MODEL,
+        api_key="hiloop-test-key",
+        server_ca=str(server_ca),
+        api=_FakeApi(),
+        bootstrap=bootstrap,
+    )
+
+    launcher.start_host(
+        "sandbox-native-1",
+        token="short-lived-host-token",
+        host_id="host-1",
+        host_name="managed-native",
+        server_url="https://agents.hiloop.test",
+    )
+
+    assert bootstrap.calls[0][1]["server_ca_pem"] == server_ca.read_text()
+
+
+@pytest.mark.parametrize("size", [0, (64 * 1024) + 1])
+def test_coordinator_ca_file_is_strictly_bounded(tmp_path: Path, size: int) -> None:
+    server_ca = tmp_path / "server-ca.pem"
+    server_ca.write_bytes(b"x" * size)
+    launcher = HiloopSandboxLauncher(
+        api_url="https://api.hiloop.test",
+        project_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        image=_IMAGE,
+        workspace_revision=_WORKSPACE,
+        model_gateway_url=_MODEL_GATEWAY_URL,
+        model=_MODEL,
+        api_key="hiloop-test-key",
+        server_ca=str(server_ca),
+        api=_FakeApi(),
+        bootstrap=_FakeBootstrap(),
+    )
+
+    with pytest.raises(Exception, match="1 byte through 64 KiB"):
+        launcher.prepare()
 
 
 def test_start_host_rejects_clone_instead_of_bypassing_branchfs() -> None:
