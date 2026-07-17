@@ -3227,6 +3227,27 @@ def _accumulate_session_usage(
     usage_obj = resp_obj.get("usage")
     if not isinstance(usage_obj, dict):
         return None
+    # Relay harnesses carry their next-turn context fill on the terminal
+    # response itself. Persist it through the same label-backed snapshot
+    # contract used by native forwarders; otherwise a successful relay turn
+    # records billing usage but GET /v1/sessions still reports
+    # ``last_total_tokens: null``. Older/single-call harnesses may omit the
+    # explicit context field, in which case their positive per-turn total is
+    # the correct fallback.
+    context_tokens = usage_obj.get("context_tokens")
+    if not (
+        isinstance(context_tokens, int)
+        and not isinstance(context_tokens, bool)
+        and context_tokens >= 0
+    ):
+        total_for_context = usage_obj.get("total_tokens")
+        context_tokens = (
+            total_for_context
+            if isinstance(total_for_context, int)
+            and not isinstance(total_for_context, bool)
+            and total_for_context > 0
+            else None
+        )
     input_tokens = usage_obj.get("input_tokens", 0)
     output_tokens = usage_obj.get("output_tokens", 0)
     total_tokens = usage_obj.get("total_tokens", 0)
@@ -3311,6 +3332,14 @@ def _accumulate_session_usage(
         delta["by_model"] = {llm_model: model_delta}
 
     new_current = conversation_store.increment_session_usage(session_id, delta)
+    # Advance the context snapshot only after the corresponding usage delta
+    # commits. A failed/no-op billing write must not make the public snapshot
+    # look as though the relay turn was durably accounted.
+    if context_tokens is not None:
+        conversation_store.set_labels(
+            session_id,
+            {_LAST_CONTEXT_TOKENS_LABEL_KEY: str(context_tokens)},
+        )
     # Per-user daily rollup (policy-gated; this is the per-turn delta).
     _record_daily_cost(conv, cost_delta, conversation_store)
     return _priced_cost_for_display(new_current)
