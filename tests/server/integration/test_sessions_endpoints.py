@@ -4301,6 +4301,57 @@ async def test_accumulate_session_usage_prices_from_usage_model(
     assert usage.get("total_cost_usd") == pytest.approx(0.002)
 
 
+async def test_accumulate_relay_usage_persists_context_tokens_in_snapshot(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """Relay completion usage drives the label-backed session context snapshot."""
+    from omnigent.server.routes import sessions as sessions_routes
+
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+    store = SqlAlchemyConversationStore(db_uri)
+
+    sessions_routes._accumulate_session_usage(
+        {
+            "usage": {
+                "input_tokens": 5000,
+                "output_tokens": 700,
+                "total_tokens": 5700,
+                "context_tokens": 5400,
+                "model": "harness-model",
+            }
+        },
+        session["id"],
+        store,
+    )
+
+    snapshot = await client.get(f"/v1/sessions/{session['id']}")
+    assert snapshot.status_code == 200, snapshot.text
+    assert snapshot.json()["last_total_tokens"] == 5400
+
+
+async def test_accumulate_relay_usage_falls_back_to_positive_total_tokens(
+    client: httpx.AsyncClient,
+    db_uri: str,
+) -> None:
+    """Single-call relay harnesses without context_tokens expose their total."""
+    from omnigent.server.routes import sessions as sessions_routes
+
+    agent = await create_test_agent(client)
+    session = await _create_session(client, agent["id"])
+
+    sessions_routes._accumulate_session_usage(
+        {"usage": {"input_tokens": 123, "output_tokens": 7, "total_tokens": 130}},
+        session["id"],
+        SqlAlchemyConversationStore(db_uri),
+    )
+
+    snapshot = await client.get(f"/v1/sessions/{session['id']}")
+    assert snapshot.status_code == 200, snapshot.text
+    assert snapshot.json()["last_total_tokens"] == 130
+
+
 async def test_accumulate_session_usage_prefers_provider_cost(
     client: httpx.AsyncClient,
     db_uri: str,

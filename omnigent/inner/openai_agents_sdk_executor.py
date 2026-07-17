@@ -1815,11 +1815,11 @@ class OpenAIAgentsSDKExecutor(Executor):
             # ``compute_llm_cost`` expects Anthropic semantics where
             # ``input_tokens`` is the non-cached portion and
             # ``cache_read_input_tokens`` is additive. Extract cached
-            # tokens from ``prompt_tokens_details.cached_tokens`` and
+            # tokens from the Agents SDK's ``input_tokens_details.cached_tokens`` and
             # subtract so downstream billing uses the cheaper cache rate.
             cached_tok = 0
             for r in raw_responses:
-                details = getattr(r.usage, "prompt_tokens_details", None)
+                details = getattr(r.usage, "input_tokens_details", None)
                 if details is not None:
                     cached = getattr(details, "cached_tokens", None)
                     if cached is None and isinstance(details, dict):

@@ -108,9 +108,9 @@ class _FakeModelSettings:
 
 
 @dataclass
-class _FakePromptTokensDetails:
+class _FakeInputTokensDetails:
     """
-    Minimal stand-in for OpenAI's ``prompt_tokens_details`` object.
+    Minimal stand-in for openai-agents' ``input_tokens_details`` object.
 
     :param cached_tokens: Number of tokens served from the prompt cache.
     """
@@ -128,7 +128,7 @@ class _FakeUsage:
     :param total_tokens: Sum of input and output tokens for this call.
         ``0`` means the SDK did not report a total; the executor falls
         back to ``input_tokens + output_tokens``.
-    :param prompt_tokens_details: Optional breakdown of prompt tokens,
+    :param input_tokens_details: Optional breakdown of input tokens,
         including ``cached_tokens``. ``None`` means the SDK did not
         report cache details.
     """
@@ -136,7 +136,7 @@ class _FakeUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
-    prompt_tokens_details: _FakePromptTokensDetails | None = None
+    input_tokens_details: _FakeInputTokensDetails | None = None
 
 
 @dataclass
@@ -742,6 +742,114 @@ class TestOpenAIAgentsSDKExecutor(unittest.TestCase):
             self.assertTrue("store" not in body or body["store"] is False)
             self.assertEqual(len(events), 1)
             self.assertIsInstance(events[0], ExecutorError)
+
+        _run(_t())
+
+    def test_real_agents_sdk_stream_preserves_usage_and_cache_details(self):
+        """The locked SDK's terminal usage survives the complete executor path."""
+
+        async def _t():
+            import json
+
+            import httpx
+            from openai import AsyncOpenAI
+
+            response = {
+                "id": "resp_usage_test",
+                "object": "response",
+                "created_at": 0,
+                "status": "completed",
+                "background": False,
+                "billing": {"payer": "developer"},
+                "error": None,
+                "incomplete_details": None,
+                "instructions": "Be helpful.",
+                "max_output_tokens": 4096,
+                "max_tool_calls": None,
+                "model": "gpt-5.6-terra",
+                "output": [
+                    {
+                        "id": "msg_usage_test",
+                        "type": "message",
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "done",
+                                "annotations": [],
+                                "logprobs": [],
+                            }
+                        ],
+                    }
+                ],
+                "parallel_tool_calls": True,
+                "previous_response_id": None,
+                "prompt_cache_key": None,
+                "prompt_cache_retention": None,
+                "reasoning": {"effort": None, "summary": None},
+                "safety_identifier": None,
+                "service_tier": "default",
+                "store": False,
+                "temperature": None,
+                "text": {"format": {"type": "text"}, "verbosity": "medium"},
+                "tool_choice": "auto",
+                "tools": [],
+                "top_logprobs": 0,
+                "top_p": None,
+                "truncation": "disabled",
+                "usage": {
+                    "input_tokens": 123,
+                    "input_tokens_details": {"cached_tokens": 20},
+                    "output_tokens": 7,
+                    "output_tokens_details": {"reasoning_tokens": 2},
+                    "total_tokens": 130,
+                },
+                "user": None,
+                "metadata": {},
+            }
+            event = {"type": "response.completed", "sequence_number": 1, "response": response}
+            wire = f"event: response.completed\ndata: {json.dumps(event)}\n\n"
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(
+                    200,
+                    request=request,
+                    headers={"content-type": "text/event-stream"},
+                    content=wire.encode(),
+                )
+
+            http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            client = AsyncOpenAI(
+                api_key="test-proof-token",
+                base_url="https://model-gateway.invalid/v1",
+                http_client=http_client,
+                max_retries=0,
+            )
+            executor = OpenAIAgentsSDKExecutor(client=client, model="gpt-5.6-terra")
+            try:
+                events = await _collect(
+                    executor.run_turn(
+                        [{"role": "user", "content": "hi", "session_id": "usage-real-sdk"}],
+                        [],
+                        "Be helpful.",
+                    )
+                )
+            finally:
+                await client.close()
+
+            terminal = next(event for event in events if isinstance(event, TurnComplete))
+            self.assertEqual(
+                terminal.usage,
+                {
+                    "input_tokens": 103,
+                    "output_tokens": 7,
+                    "total_tokens": 130,
+                    "context_tokens": 130,
+                    "model": "gpt-5.6-terra",
+                    "cache_read_input_tokens": 20,
+                },
+            )
 
         _run(_t())
 
@@ -2457,7 +2565,7 @@ def test_policy_evaluator_allow_proceeds_to_run() -> None:
 
 def test_turn_usage_subtracts_cached_tokens_from_input() -> None:
     """
-    When ``prompt_tokens_details.cached_tokens`` is present, the
+    When ``input_tokens_details.cached_tokens`` is present, the
     executor must subtract cached tokens from ``input_tokens`` and
     report them as ``cache_read_input_tokens``.
 
@@ -2474,7 +2582,7 @@ def test_turn_usage_subtracts_cached_tokens_from_input() -> None:
                     input_tokens=10000,
                     output_tokens=500,
                     total_tokens=10500,
-                    prompt_tokens_details=_FakePromptTokensDetails(cached_tokens=8000),
+                    input_tokens_details=_FakeInputTokensDetails(cached_tokens=8000),
                 )
             )
         ]
@@ -2512,7 +2620,7 @@ def test_turn_usage_subtracts_cached_tokens_from_input() -> None:
 
 def test_turn_usage_no_cached_tokens_omits_cache_key() -> None:
     """
-    When no ``prompt_tokens_details`` is present, the usage dict
+    When no ``input_tokens_details`` is present, the usage dict
     must NOT contain ``cache_read_input_tokens`` — the executor
     degrades gracefully to the pre-cache behavior.
     """
@@ -2568,7 +2676,7 @@ def test_turn_usage_cached_tokens_multi_call_sums_across_responses() -> None:
                     input_tokens=6000,
                     output_tokens=100,
                     total_tokens=6100,
-                    prompt_tokens_details=_FakePromptTokensDetails(cached_tokens=4000),
+                    input_tokens_details=_FakeInputTokensDetails(cached_tokens=4000),
                 )
             ),
             _FakeRawResponse(
@@ -2576,7 +2684,7 @@ def test_turn_usage_cached_tokens_multi_call_sums_across_responses() -> None:
                     input_tokens=7000,
                     output_tokens=200,
                     total_tokens=7200,
-                    prompt_tokens_details=_FakePromptTokensDetails(cached_tokens=5000),
+                    input_tokens_details=_FakeInputTokensDetails(cached_tokens=5000),
                 )
             ),
         ]
