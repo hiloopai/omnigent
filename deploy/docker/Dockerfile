@@ -135,7 +135,7 @@ ENV VIRTUAL_ENV=/opt/venv \
 # targets /opt/venv rather than creating /build/.venv.
 RUN uv sync --locked --active --no-dev --no-cache \
       --default-index ${PYPI_INDEX_URL} \
- && python -c 'import importlib.metadata as m, tomllib; from agents.usage import Usage; locked = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"] if "version" in p}; packages = ("openai", "openai-agents", "pydantic"); assert all(m.version(p) == locked[p] for p in packages), {p: (m.version(p), locked[p]) for p in packages}; assert Usage().input_tokens_details.cached_tokens == 0'
+ && python -c 'import importlib.metadata as m, tomllib; from agents.usage import Usage; locked = {p["name"]: p["version"] for p in tomllib.load(open("uv.lock", "rb"))["package"] if "version" in p}; packages = ("mcp", "openai", "openai-agents", "pydantic"); assert all(m.version(p) == locked[p] for p in packages), {p: (m.version(p), locked[p]) for p in packages}; assert Usage().input_tokens_details.cached_tokens == 0'
 
 # ── Server builder ──────────────────────────────────────
 # Server-only additions on top of the shared builder: the SPA bundle
