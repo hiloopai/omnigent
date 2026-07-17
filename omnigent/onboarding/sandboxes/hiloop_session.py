@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import queue
 import ssl
+import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -38,11 +39,19 @@ _MAX_GATEWAY_CA_BYTES = 1 << 20
 _DEFAULT_GRANT_SECONDS = 3_600
 _AUTHORITY_TIMEOUT_SECONDS = 30.0
 _REQUEST_QUEUE_DEPTH = 8
+_TARGET_READY_RETRY_BUDGET_SECONDS = 10.0
+_TARGET_READY_RETRY_INITIAL_SECONDS = 0.05
+_TARGET_READY_RETRY_MAX_SECONDS = 0.5
+_TARGET_READY_MAX_ATTEMPTS = 32
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class _HiloopSessionError(RuntimeError):
     """A sanitized authority, gateway, or carrier contract failure."""
+
+
+class _TargetUnavailable(_HiloopSessionError):
+    """The proof succeeded but the loopback listener is not ready yet."""
 
 
 class _Authority(Protocol):
@@ -173,7 +182,7 @@ class _SessionBootstrap:
                 encoded_payload = encode_frame(payload)
             except ValueError as exc:
                 raise _HiloopSessionError("Omnigent bootstrap request is invalid") from exc
-            response = self._open(gateway, grant, identity, encoded_payload)
+            response = self._open_when_ready(gateway, grant, identity, encoded_payload)
         except grpc.RpcError as exc:
             raise _HiloopSessionError(
                 f"Hiloop sandbox session failed ({_grpc_code(exc)})"
@@ -185,6 +194,40 @@ class _SessionBootstrap:
                 authority_channel.close()
         if response != {"schema": BOOTSTRAP_SCHEMA, "status": "accepted"}:
             raise _HiloopSessionError("sandbox rejected the Omnigent bootstrap request")
+
+    def _open_when_ready(
+        self,
+        gateway: _Gateway,
+        grant: _Grant,
+        identity: _ProofIdentity,
+        payload: bytes,
+    ) -> dict[str, str]:
+        deadline = time.monotonic() + min(
+            self._timeout_s,
+            _TARGET_READY_RETRY_BUDGET_SECONDS,
+        )
+        delay = _TARGET_READY_RETRY_INITIAL_SECONDS
+        for _attempt in range(_TARGET_READY_MAX_ATTEMPTS):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                return self._open(
+                    gateway,
+                    grant,
+                    identity,
+                    payload,
+                    timeout_s=remaining,
+                )
+            except _TargetUnavailable:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
+                delay = min(delay * 2, _TARGET_READY_RETRY_MAX_SECONDS)
+        raise _HiloopSessionError(
+            "Hiloop sandbox bootstrap target did not become ready within its retry budget"
+        )
 
     def _issue_grant(
         self,
@@ -219,6 +262,8 @@ class _SessionBootstrap:
         grant: _Grant,
         identity: _ProofIdentity,
         payload: bytes,
+        *,
+        timeout_s: float,
     ) -> dict[str, str]:
         requests: queue.Queue[wire.OpenRequest | None] = queue.Queue(maxsize=_REQUEST_QUEUE_DEPTH)
         connection_id = uuid.uuid4().bytes
@@ -231,7 +276,7 @@ class _SessionBootstrap:
                 )
             )
         )
-        call = gateway.Open(_request_iterator(requests), timeout=self._timeout_s)
+        call = gateway.Open(_request_iterator(requests), timeout=timeout_s)
         try:
             challenge_frame = _next_response(call)
             if (
@@ -255,6 +300,11 @@ class _SessionBootstrap:
                 raise _HiloopSessionError("Hiloop session gateway omitted its open result")
             outcome = result_frame.open_result.WhichOneof("outcome")
             if outcome == "error":
+                if (
+                    result_frame.open_result.error.code
+                    == wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE
+                ):
+                    raise _TargetUnavailable("Hiloop sandbox bootstrap target is not ready")
                 raise _HiloopSessionError(
                     "Hiloop session gateway rejected the connection "
                     f"({_error_token(result_frame.open_result.error.code)})"

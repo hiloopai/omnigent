@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import ssl
 import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -15,16 +16,23 @@ from urllib.parse import urlsplit
 
 from omnigent.host.identity import HOST_ID_ENV_VAR, HOST_NAME_ENV_VAR, HOST_TOKEN_ENV_VAR
 
-BOOTSTRAP_SCHEMA = "omnigent.hiloop-bootstrap/v2"
+BOOTSTRAP_SCHEMA = "omnigent.hiloop-bootstrap/v3"
 DEFAULT_PORT = 17891
-_MAX_FRAME_BYTES = 16 * 1024
+_MAX_FRAME_BYTES = 128 * 1024
+MAX_SERVER_CA_BYTES = 64 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_CERTIFICATE_BODY = re.compile(r"[A-Za-z0-9+/=\r\n]+")
+_CERTIFICATE_BEGIN = "-----BEGIN CERTIFICATE-----"
+_CERTIFICATE_END = "-----END CERTIFICATE-----"
+_PEM_WHITESPACE = " \t\r\n"
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _MODEL_GATEWAY_TOKEN = "/var/run/secrets/hiloop/model-gateway/token"
 _CONFIG_HOME = Path("/tmp/.omnigent")
+_SERVER_CA_PATH = _CONFIG_HOME / "coordinator-server-ca.pem"
+_SERVER_TRUST_BUNDLE_PATH = _CONFIG_HOME / "coordinator-server-trust.pem"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class BootstrapRequest:
     """Validated inputs needed to replace the bootstrap listener with a host."""
 
@@ -35,6 +43,7 @@ class BootstrapRequest:
     workspace: str
     model_gateway_url: str
     model: str
+    server_ca_pem: str
 
 
 def write_frame(connection: socket.socket, payload: dict[str, str]) -> None:
@@ -101,6 +110,7 @@ def validate_request(payload: dict[str, str]) -> BootstrapRequest:
         "workspace",
         "model_gateway_url",
         "model",
+        "server_ca_pem",
     }
     if set(payload) != required or payload.get("schema") != BOOTSTRAP_SCHEMA:
         raise ValueError("bootstrap request has an invalid schema")
@@ -116,6 +126,7 @@ def validate_request(payload: dict[str, str]) -> BootstrapRequest:
     workspace = _workspace(payload["workspace"])
     model_gateway_url = validate_model_gateway_url(payload["model_gateway_url"])
     model = validate_model(payload["model"])
+    server_ca_pem = validate_server_ca_pem(payload["server_ca_pem"])
     return BootstrapRequest(
         token=token,
         host_id=payload["host_id"],
@@ -124,6 +135,7 @@ def validate_request(payload: dict[str, str]) -> BootstrapRequest:
         workspace=workspace,
         model_gateway_url=model_gateway_url,
         model=model,
+        server_ca_pem=server_ca_pem,
     )
 
 
@@ -218,6 +230,49 @@ def validate_model(value: str) -> str:
     return value
 
 
+def validate_server_ca_pem(value: str) -> str:
+    """Validate one optional, bounded coordinator-server CA bundle."""
+    if not value:
+        return ""
+    try:
+        encoded = value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("bootstrap coordinator server CA must be ASCII PEM") from exc
+    if len(encoded) > MAX_SERVER_CA_BYTES:
+        raise ValueError("bootstrap coordinator server CA exceeds 64 KiB")
+    blocks = _certificate_blocks(value)
+    context = ssl.create_default_context()
+    for block in blocks:
+        try:
+            context.load_verify_locations(cadata=block)
+        except (OSError, ssl.SSLError) as exc:
+            raise ValueError("bootstrap coordinator server CA must be a PEM trust bundle") from exc
+    return value
+
+
+def _certificate_blocks(value: str) -> tuple[str, ...]:
+    """Consume a certificate-only PEM bundle in linear time."""
+    blocks: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        start = value.find(_CERTIFICATE_BEGIN, cursor)
+        if start < 0:
+            if value[cursor:].strip(_PEM_WHITESPACE):
+                raise ValueError("bootstrap coordinator server CA must contain certificates only")
+            break
+        if value[cursor:start].strip(_PEM_WHITESPACE):
+            raise ValueError("bootstrap coordinator server CA must contain certificates only")
+        body_start = start + len(_CERTIFICATE_BEGIN)
+        end = value.find(_CERTIFICATE_END, body_start)
+        if end < 0 or _CERTIFICATE_BODY.fullmatch(value[body_start:end]) is None:
+            raise ValueError("bootstrap coordinator server CA must contain certificates only")
+        cursor = end + len(_CERTIFICATE_END)
+        blocks.append(value[start:cursor])
+    if not blocks:
+        raise ValueError("bootstrap coordinator server CA must contain certificates only")
+    return tuple(blocks)
+
+
 def _write_provider_config(request: BootstrapRequest, config_home: Path = _CONFIG_HOME) -> None:
     """Write non-secret model routing whose auth helper reads the projected token."""
     config_home.mkdir(mode=0o700, parents=False, exist_ok=False)
@@ -245,11 +300,43 @@ def _write_provider_config(request: BootstrapRequest, config_home: Path = _CONFI
         stream.write("\n")
 
 
+def _write_server_trust(request: BootstrapRequest, config_home: Path = _CONFIG_HOME) -> None:
+    """Augment system roots with the proof-delivered coordinator CA."""
+    if not request.server_ca_pem:
+        return
+    context = ssl.create_default_context()
+    try:
+        context.load_verify_locations(cadata=request.server_ca_pem)
+    except (OSError, ssl.SSLError) as exc:  # defensive: validation ran before filesystem writes
+        raise RuntimeError("coordinator server CA trust preparation failed") from exc
+    certificates = context.get_ca_certs(binary_form=True)
+    if not certificates:
+        raise RuntimeError("coordinator server CA produced an empty trust bundle")
+    combined = b"".join(
+        ssl.DER_cert_to_PEM_cert(certificate).encode("ascii") for certificate in certificates
+    )
+    _write_private_file(
+        config_home / _SERVER_CA_PATH.name,
+        request.server_ca_pem.encode("ascii"),
+    )
+    _write_private_file(config_home / _SERVER_TRUST_BUNDLE_PATH.name, combined)
+
+
+def _write_private_file(path: Path, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    for optional_flag in ("O_CLOEXEC", "O_NOFOLLOW"):
+        flags |= getattr(os, optional_flag, 0)
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(content)
+
+
 def _prepare_provider_config(request: BootstrapRequest) -> None:
     token_path = Path(_MODEL_GATEWAY_TOKEN)
     if not token_path.is_file() or not os.access(token_path, os.R_OK):
         raise RuntimeError("projected model gateway identity is unavailable")
     _write_provider_config(request)
+    _write_server_trust(request)
 
 
 def _exec_host(request: BootstrapRequest) -> NoReturn:
@@ -268,6 +355,18 @@ def _exec_host(request: BootstrapRequest) -> NoReturn:
             "XDG_DATA_HOME": "/tmp/.local/share",
         }
     )
+    if request.server_ca_pem:
+        trust_bundle = str(_SERVER_TRUST_BUNDLE_PATH)
+        environment.update(
+            {
+                "SSL_CERT_FILE": trust_bundle,
+                "REQUESTS_CA_BUNDLE": trust_bundle,
+                "CURL_CA_BUNDLE": trust_bundle,
+                "GIT_SSL_CAINFO": trust_bundle,
+                "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": trust_bundle,
+                "NODE_EXTRA_CA_CERTS": str(_SERVER_CA_PATH),
+            }
+        )
     executable = os.environ.get("OMNIGENT_BOOTSTRAP_EXEC", "omnigent")
     os.execvpe(executable, [executable, "host", "--server", request.server_url], environment)
 

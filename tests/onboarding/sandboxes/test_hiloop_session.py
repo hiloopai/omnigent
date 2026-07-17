@@ -82,6 +82,9 @@ class _FakeOpenCall(Iterator[wire.OpenResponse]):
         self._responses = self._serve()
         self.cancelled = False
         self.bootstrap_payload: dict[str, str] | None = None
+        self.connection_id: bytes | None = None
+        self.signed_ticket: bytes | None = None
+        self.client_proof_public_key: bytes | None = None
 
     def __iter__(self) -> _FakeOpenCall:
         return self
@@ -99,6 +102,9 @@ class _FakeOpenCall(Iterator[wire.OpenResponse]):
         assert opened.open.signed_ticket == _TICKET
         assert len(opened.open.client_proof_public_key) == 32
         assert len(opened.open.connection_id) == 16
+        self.connection_id = bytes(opened.open.connection_id)
+        self.signed_ticket = bytes(opened.open.signed_ticket)
+        self.client_proof_public_key = bytes(opened.open.client_proof_public_key)
 
         challenge = b"c" * 32
         yield wire.OpenResponse(challenge=wire.SandboxSessionClientChallenge(nonce=challenge))
@@ -145,7 +151,7 @@ class _FakeOpenCall(Iterator[wire.OpenResponse]):
             request_bytes.extend(request.data.payload)
         self.bootstrap_payload = decode_frame(bytes(request_bytes))
 
-        response = encode_frame({"schema": "omnigent.hiloop-bootstrap/v2", "status": "accepted"})
+        response = encode_frame({"schema": "omnigent.hiloop-bootstrap/v3", "status": "accepted"})
         split = len(response) // 2
         yield wire.OpenResponse(data=wire.SandboxSessionData(offset=0, payload=response[:split]))
         credit = next(self._requests)
@@ -176,9 +182,124 @@ class _FakeGateway:
         return self.call
 
 
+class _RejectedOpenCall(Iterator[wire.OpenResponse]):
+    def __init__(
+        self,
+        requests: Iterator[wire.OpenRequest],
+        code: int,
+    ) -> None:
+        self._requests = requests
+        self._code = code
+        self._responses = self._serve()
+        self.cancelled = False
+        self.connection_id: bytes | None = None
+        self.signed_ticket: bytes | None = None
+        self.client_proof_public_key: bytes | None = None
+
+    def __iter__(self) -> _RejectedOpenCall:
+        return self
+
+    def __next__(self) -> wire.OpenResponse:
+        return next(self._responses)
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+    def _serve(self) -> Iterator[wire.OpenResponse]:
+        opened = next(self._requests)
+        assert opened.WhichOneof("frame") == "open"
+        self.connection_id = bytes(opened.open.connection_id)
+        self.signed_ticket = bytes(opened.open.signed_ticket)
+        self.client_proof_public_key = bytes(opened.open.client_proof_public_key)
+        challenge = b"r" * 32
+        yield wire.OpenResponse(challenge=wire.SandboxSessionClientChallenge(nonce=challenge))
+        proof = next(self._requests)
+        assert proof.WhichOneof("frame") == "proof"
+        signed = (
+            _PROOF_DOMAIN
+            + hashlib.sha256(opened.open.signed_ticket).digest()
+            + opened.open.connection_id
+            + challenge
+        )
+        Ed25519PublicKey.from_public_bytes(opened.open.client_proof_public_key).verify(
+            proof.proof.signature,
+            signed,
+        )
+        yield wire.OpenResponse(
+            open_result=wire.SandboxSessionOpenResult(
+                error=wire.SandboxSessionError(code=self._code, message="internal detail")
+            )
+        )
+
+
+class _AcceptedResetCall(Iterator[wire.OpenResponse]):
+    def __init__(self, requests: Iterator[wire.OpenRequest]) -> None:
+        self._requests = requests
+        self._responses = self._serve()
+        self.cancelled = False
+
+    def __iter__(self) -> _AcceptedResetCall:
+        return self
+
+    def __next__(self) -> wire.OpenResponse:
+        return next(self._responses)
+
+    def cancel(self) -> bool:
+        self.cancelled = True
+        return True
+
+    def _serve(self) -> Iterator[wire.OpenResponse]:
+        opened = next(self._requests)
+        assert opened.WhichOneof("frame") == "open"
+        yield wire.OpenResponse(challenge=wire.SandboxSessionClientChallenge(nonce=b"a" * 32))
+        proof = next(self._requests)
+        assert proof.WhichOneof("frame") == "proof"
+        yield wire.OpenResponse(
+            open_result=wire.SandboxSessionOpenResult(
+                accepted=wire.SandboxSessionOpenAccepted(
+                    initial_send_credit=256 * 1024,
+                    initial_receive_credit=256 * 1024,
+                )
+            )
+        )
+        data = next(self._requests)
+        assert data.WhichOneof("frame") == "data"
+        yield wire.OpenResponse(
+            reset=wire.SandboxSessionReset(
+                error=wire.SandboxSessionError(code=wire.SANDBOX_SESSION_ERROR_CODE_CARRIER_LOST)
+            )
+        )
+
+
+class _ScriptedGateway:
+    def __init__(self, outcomes: list[int | str]) -> None:
+        self._outcomes = outcomes
+        self.calls: list[_RejectedOpenCall | _FakeOpenCall | _AcceptedResetCall] = []
+        self.timeouts: list[float] = []
+
+    def Open(
+        self,
+        requests: Iterator[wire.OpenRequest],
+        *,
+        timeout: float,
+    ) -> _RejectedOpenCall | _FakeOpenCall | _AcceptedResetCall:
+        self.timeouts.append(timeout)
+        outcome = self._outcomes[len(self.calls)]
+        if outcome == "success":
+            call: _RejectedOpenCall | _FakeOpenCall | _AcceptedResetCall = _FakeOpenCall(requests)
+        elif outcome == "accepted-reset":
+            call = _AcceptedResetCall(requests)
+        else:
+            assert isinstance(outcome, int)
+            call = _RejectedOpenCall(requests, outcome)
+        self.calls.append(call)
+        return call
+
+
 def _payload() -> dict[str, str]:
     return {
-        "schema": "omnigent.hiloop-bootstrap/v2",
+        "schema": "omnigent.hiloop-bootstrap/v3",
         "token": "a-secure-one-time-managed-host-token",
         "host_id": "host-1",
         "host_name": "managed-native",
@@ -186,6 +307,7 @@ def _payload() -> dict[str, str]:
         "workspace": "/workspace",
         "model_gateway_url": "http://model-gateway.control.svc:8080/v1",
         "model": "gpt-5.6-terra",
+        "server_ca_pem": "",
     }
 
 
@@ -233,6 +355,159 @@ def test_direct_session_bootstrap_rejects_unexpected_gateway_authority() -> None
 
     with pytest.raises(_HiloopSessionError, match="unexpected gateway authority"):
         bootstrap.launch("sandbox-native-1", _payload())
+
+
+def test_bootstrap_retries_only_pre_accept_target_unavailable_with_one_grant() -> None:
+    authority = _FakeAuthority()
+    gateway = _ScriptedGateway(
+        [
+            wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE,
+            wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE,
+            "success",
+        ]
+    )
+    bootstrap = _SessionBootstrap(
+        api_url="https://api.hiloop.test",
+        api_key="secret-key",
+        remote_port=17_891,
+        gateway_ca=None,
+        expected_gateway_authority="sessions.hiloop.test:443",
+        timeout_s=20,
+        authority=authority,
+        gateway=gateway,
+    )
+
+    bootstrap.launch("sandbox-native-1", _payload())
+
+    assert len(authority.calls) == 1
+    assert len(gateway.calls) == 3
+    rejected = [call for call in gateway.calls[:2] if isinstance(call, _RejectedOpenCall)]
+    assert len(rejected) == 2
+    assert all(call.cancelled for call in rejected)
+    success = gateway.calls[2]
+    assert isinstance(success, _FakeOpenCall)
+    connection_ids = [call.connection_id for call in rejected] + [success.connection_id]
+    assert all(connection_ids)
+    assert len(set(connection_ids)) == 3
+    authority_request = authority.calls[0][0]
+    assert all(call.signed_ticket == _TICKET for call in [*rejected, success])
+    assert all(
+        call.client_proof_public_key == authority_request.client_proof_public_key
+        for call in [*rejected, success]
+    )
+    assert success.bootstrap_payload == _payload()
+
+
+def test_bootstrap_does_not_retry_other_pre_accept_errors() -> None:
+    authority = _FakeAuthority()
+    gateway = _ScriptedGateway([wire.SANDBOX_SESSION_ERROR_CODE_TARGET_TIMEOUT])
+    bootstrap = _SessionBootstrap(
+        api_url="https://api.hiloop.test",
+        api_key="secret-key",
+        remote_port=17_891,
+        gateway_ca=None,
+        expected_gateway_authority="sessions.hiloop.test:443",
+        timeout_s=20,
+        authority=authority,
+        gateway=gateway,
+    )
+
+    with pytest.raises(_HiloopSessionError, match="target_timeout"):
+        bootstrap.launch("sandbox-native-1", _payload())
+
+    assert len(authority.calls) == 1
+    assert len(gateway.calls) == 1
+
+
+def test_bootstrap_never_retries_after_open_was_accepted() -> None:
+    gateway = _ScriptedGateway(["accepted-reset"])
+    bootstrap = _SessionBootstrap(
+        api_url="https://api.hiloop.test",
+        api_key="secret-key",
+        remote_port=17_891,
+        gateway_ca=None,
+        expected_gateway_authority="sessions.hiloop.test:443",
+        timeout_s=20,
+        authority=_FakeAuthority(),
+        gateway=gateway,
+    )
+
+    with pytest.raises(_HiloopSessionError, match="carrier_lost"):
+        bootstrap.launch("sandbox-native-1", _payload())
+
+    assert len(gateway.calls) == 1
+
+
+def test_target_unavailable_retry_is_attempt_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(hiloop_session, "_TARGET_READY_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(hiloop_session.time, "sleep", lambda _delay: None)
+    gateway = _ScriptedGateway(
+        [
+            wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE,
+            wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE,
+        ]
+    )
+    bootstrap = _SessionBootstrap(
+        api_url="https://api.hiloop.test",
+        api_key="secret-key",
+        remote_port=17_891,
+        gateway_ca=None,
+        expected_gateway_authority="sessions.hiloop.test:443",
+        timeout_s=20,
+        authority=_FakeAuthority(),
+        gateway=gateway,
+    )
+
+    with pytest.raises(_HiloopSessionError, match="retry budget"):
+        bootstrap.launch("sandbox-native-1", _payload())
+
+    assert len(gateway.calls) == 2
+
+
+@pytest.mark.parametrize(("timeout_s", "expected_budget"), [(20.0, 10.0), (0.2, 0.2)])
+def test_target_unavailable_retry_uses_one_decreasing_wall_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_s: float,
+    expected_budget: float,
+) -> None:
+    class _Clock:
+        def __init__(self) -> None:
+            self.now = 100.0
+            self.sleeps: list[float] = []
+
+        def monotonic(self) -> float:
+            return self.now
+
+        def sleep(self, delay: float) -> None:
+            self.sleeps.append(delay)
+            self.now += delay
+
+    clock = _Clock()
+    monkeypatch.setattr(hiloop_session.time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(hiloop_session.time, "sleep", clock.sleep)
+    gateway = _ScriptedGateway([wire.SANDBOX_SESSION_ERROR_CODE_TARGET_UNAVAILABLE] * 32)
+    bootstrap = _SessionBootstrap(
+        api_url="https://api.hiloop.test",
+        api_key="secret-key",
+        remote_port=17_891,
+        gateway_ca=None,
+        expected_gateway_authority="sessions.hiloop.test:443",
+        timeout_s=timeout_s,
+        authority=_FakeAuthority(),
+        gateway=gateway,
+    )
+
+    with pytest.raises(_HiloopSessionError, match="retry budget"):
+        bootstrap.launch("sandbox-native-1", _payload())
+
+    assert clock.now == pytest.approx(100.0 + expected_budget)
+    assert gateway.timeouts[0] == pytest.approx(expected_budget)
+    assert all(
+        later < earlier
+        for earlier, later in zip(gateway.timeouts[:-1], gateway.timeouts[1:], strict=True)
+    )
 
 
 @pytest.mark.parametrize(

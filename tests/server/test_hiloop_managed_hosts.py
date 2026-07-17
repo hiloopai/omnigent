@@ -36,10 +36,12 @@ def _config() -> dict[str, object]:
 
 def test_parse_native_hiloop_config(tmp_path: Path) -> None:
     api_ca, _ = ensure_ca(cache_dir=tmp_path)
+    server_ca, _ = ensure_ca(cache_dir=tmp_path / "server")
     raw = _config()
     hiloop = raw["hiloop"]
     assert isinstance(hiloop, dict)
     hiloop["api_ca"] = str(api_ca)
+    hiloop["server_ca"] = str(server_ca)
 
     config = parse_sandbox_config(raw)
 
@@ -53,6 +55,7 @@ def test_parse_native_hiloop_config(tmp_path: Path) -> None:
     assert launcher._model_gateway_url == "http://model-gateway.control.svc:8080/v1"
     assert launcher._model == "gpt-5.6-terra"
     assert launcher._api_ca == str(api_ca)
+    assert launcher._server_ca == str(server_ca)
 
 
 def test_invalid_api_ca_is_rejected_during_config_parse(tmp_path: Path) -> None:
@@ -64,6 +67,20 @@ def test_invalid_api_ca_is_rejected_during_config_parse(tmp_path: Path) -> None:
     hiloop["api_ca"] = str(api_ca)
 
     with pytest.raises(ValueError, match="Hiloop API CA"):
+        parse_sandbox_config(raw)
+
+
+def test_invalid_coordinator_server_ca_is_rejected_during_config_parse(
+    tmp_path: Path,
+) -> None:
+    server_ca = tmp_path / "invalid-server-ca.pem"
+    server_ca.write_text("not a certificate")
+    raw = _config()
+    hiloop = raw["hiloop"]
+    assert isinstance(hiloop, dict)
+    hiloop["server_ca"] = str(server_ca)
+
+    with pytest.raises(ValueError, match="coordinator server CA"):
         parse_sandbox_config(raw)
 
 

@@ -1302,6 +1302,12 @@ def test_build_runner_env_allowlists_host_env_and_strips_secrets() -> None:
         "DATABRICKS_AUTH_STORAGE": "plaintext",
         "ANTHROPIC_API_KEY": "sk-harness",
         "IS_SANDBOX": "1",
+        "SSL_CERT_FILE": "/tmp/.omnigent/coordinator-server-trust.pem",
+        "REQUESTS_CA_BUNDLE": "/tmp/.omnigent/coordinator-server-trust.pem",
+        "CURL_CA_BUNDLE": "/tmp/.omnigent/coordinator-server-trust.pem",
+        "GIT_SSL_CAINFO": "/tmp/.omnigent/coordinator-server-trust.pem",
+        "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH": "/tmp/.omnigent/coordinator-server-trust.pem",
+        "NODE_EXTRA_CA_CERTS": "/tmp/.omnigent/coordinator-server-ca.pem",
         "DATABRICKS_TOKEN": "dapi-secret",
         "AWS_SECRET_ACCESS_KEY": "aws-secret",
         "SOME_RANDOM_VAR": "x",
@@ -1344,6 +1350,14 @@ def test_build_runner_env_allowlists_host_env_and_strips_secrets() -> None:
     # needs it to allow --dangerously-skip-permissions under root in
     # sandbox containers. Only the baked host image ever sets it.
     assert env["IS_SANDBOX"] == "1"
+    assert env["SSL_CERT_FILE"] == "/tmp/.omnigent/coordinator-server-trust.pem"
+    assert env["REQUESTS_CA_BUNDLE"] == "/tmp/.omnigent/coordinator-server-trust.pem"
+    assert env["CURL_CA_BUNDLE"] == "/tmp/.omnigent/coordinator-server-trust.pem"
+    assert env["GIT_SSL_CAINFO"] == "/tmp/.omnigent/coordinator-server-trust.pem"
+    assert env["GRPC_DEFAULT_SSL_ROOTS_FILE_PATH"] == (
+        "/tmp/.omnigent/coordinator-server-trust.pem"
+    )
+    assert env["NODE_EXTRA_CA_CERTS"] == "/tmp/.omnigent/coordinator-server-ca.pem"
     # The claude-sdk sandbox bypass flag forwards — it is read inside the
     # harness, so a bare ``OMNIGENT_CLAUDE_SDK_NO_SANDBOX=1 omnigent run …``
     # must reach the runner without also forcing
